@@ -357,6 +357,8 @@ pub struct WowtypeCandidateInfo {
     pub emoji: *const c_char,
     /// 1.10 起：候选后面的小字（五笔还要打的码、反查的五笔码），没有是空串。
     pub comment: *const c_char,
+    /// 1.11 起：候选在列表里的位置（1 起）；0 表示不知道。
+    pub index: usize,
 }
 
 pub const WOWTYPE_CAND_WORD: c_int = 0;
@@ -372,6 +374,7 @@ struct CCandidate {
     comment: CString,
     consumed: usize,
     kind: c_int,
+    index: usize,
 }
 
 impl CCandidate {
@@ -385,10 +388,11 @@ impl CCandidate {
             commit: self.commit.as_ptr(),
             emoji: self.emoji.as_ptr(),
             comment: self.comment.as_ptr(),
+            index: self.index,
         }
     }
 
-    fn new(c: &Candidate) -> Self {
+    fn new(c: &Candidate, index: usize) -> Self {
         Self {
             text: to_c(&c.text),
             pinyin: to_c(&c.pinyin),
@@ -396,6 +400,7 @@ impl CCandidate {
             emoji: to_c(&c.emoji),
             comment: to_c(&c.comment),
             consumed: c.consumed,
+            index,
             kind: match c.kind {
                 CandidateKind::Word => WOWTYPE_CAND_WORD,
                 CandidateKind::Plain => WOWTYPE_CAND_PLAIN,
@@ -436,6 +441,8 @@ pub struct WowtypeFrame {
     pub translate_status: *const c_char,
     /// 1.10 起：translate_text 是译完的最终结果。
     pub translate_done: c_int,
+    /// 1.11 起：这次上屏的候选在列表里的位置（1 起）；不是选候选为 0。
+    pub choice_index: usize,
 }
 
 impl Default for WowtypeFrame {
@@ -463,6 +470,7 @@ impl Default for WowtypeFrame {
             translate_title: EMPTY.as_ptr(),
             translate_status: EMPTY.as_ptr(),
             translate_done: 0,
+            choice_index: 0,
         }
     }
 }
@@ -530,7 +538,10 @@ impl WowtypeSession {
         self.commit = frame.commit.as_deref().map(to_c);
         self.preedit = to_c(&frame.preedit);
         self.shown_start = frame.cand_start;
-        self.last_choice = self.session.last_choice().map(CCandidate::new);
+        self.last_choice = self
+            .session
+            .last_choice()
+            .map(|c| CCandidate::new(c, self.session.last_choice_index()));
         self.frame = WowtypeFrame {
             handled: c_int::from(frame.handled),
             commit: self.commit.as_ref().map_or(ptr::null(), |c| c.as_ptr()),
@@ -556,6 +567,7 @@ impl WowtypeSession {
             wake_after_ms: frame.wake_after_ms,
             ..WowtypeFrame::default()
         };
+        self.frame.choice_index = self.session.last_choice_index();
         if !frame.aux.is_empty() {
             self.aux = to_c(&frame.aux);
             self.frame.aux = self.aux.as_ptr();
@@ -632,7 +644,8 @@ impl WowtypeSession {
                 .session
                 .display_candidates()
                 .iter()
-                .map(CCandidate::new)
+                .enumerate()
+                .map(|(index, candidate)| CCandidate::new(candidate, index + 1))
                 .collect();
             self.c_generation = self.session.generation();
         }

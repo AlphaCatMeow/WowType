@@ -66,6 +66,13 @@ bool envFlag(const char *name, bool fallback) {
 
 constexpr const char *kConfigFile = "conf/wowtype.conf";
 
+/// 统计用的墙上时间（Unix 毫秒）：日界和 10 秒间隔都按它算。
+int64_t statsNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
 std::string userDataDir() {
     std::string base;
     if (const char *data = std::getenv("XDG_DATA_HOME"); data && *data) {
@@ -618,6 +625,15 @@ WowtypeEngine::WowtypeEngine(fcitx::Instance *instance)
     applyConfig();
     setupVoiceOverlay();
     setupControl();
+    const std::string statsDir = userDataDir();
+    if (!statsDir.empty()) {
+        const std::string statsPath = statsDir + "/stats.json";
+        stats_ = wowtype_stats_new(statsPath.c_str());
+        if (!stats_) {
+            WLOG_W() << "WowType: 建不了打字统计 " << statsPath << "："
+                     << (wowtype_last_error() ? wowtype_last_error() : "unknown");
+        }
+    }
 }
 
 namespace {
@@ -1109,6 +1125,11 @@ WowtypeEngine::~WowtypeEngine() {
         wowtype_engine_free(core_);
         core_ = nullptr;
     }
+    flushStats();
+    if (stats_) {
+        wowtype_stats_free(stats_);
+        stats_ = nullptr;
+    }
     voiceTimer_.reset();
     if (voice_) {
         wowtype_voice_free(voice_);
@@ -1181,6 +1202,7 @@ void WowtypeEngine::finishCommit(fcitx::InputContext *ic, WowtypeState *state,
     const bool learned = frame && frame->learned;
     if (ic && !text.empty()) {
         // 会话已经补好了空格；互译时攒原文也是会话做的，这里上屏的是译文、原文或不在互译时的字
+        recordStats(text, frame);
         ic->commitString(text);
     }
     if (learned && core_ && !text.empty()) {
@@ -1324,7 +1346,8 @@ void WowtypeEngine::applySessionFrame(fcitx::InputContext *ic, WowtypeState *sta
         maybeSaveUserDict(true);
     }
     if (frame && frame->commit) {
-        // 学没学到词看 frame->learned；选了 emoji 由会话记进最近用过
+        // 学没学到词看 frame->learned；选了 emoji 由会话记进最近用过。
+        // 候选位置从 frame->choice_index 拿（1.11），统计用。
         finishCommit(ic, state, frame);
         updateInputPanel(ic, state);
         return;
@@ -1726,6 +1749,10 @@ void WowtypeEngine::keyEvent(const fcitx::InputMethodEntry & /*entry*/,
     const fcitx::Key key = event.key();
     const auto sym = key.sym();
 
+    // 按键热力图：所有按键都经过这里（输入法消费掉的、还给应用的都算），松开也传，
+    // 长按和合成的自动重复由核心去重。密码框在 recordKey 里排除。
+    recordKey(ic, event.origKey(), !event.isRelease());
+
     if (voice_ && handleVoiceKey(ic, state, event)) {
         return;
     }
@@ -1914,6 +1941,7 @@ void WowtypeEngine::deactivate(const fcitx::InputMethodEntry &entry,
     }
     reset(entry, event);
     maybeSaveUserDict(true);
+    flushStats();
 }
 
 void WowtypeEngine::reset(const fcitx::InputMethodEntry & /*entry*/,
@@ -2335,6 +2363,61 @@ void WowtypeEngine::clearTranslation(WowtypeState *state) {
     }
 }
 
+void WowtypeEngine::recordStats(const std::string &text, const WowtypeFrame *frame) {
+    if (!stats_ || text.empty()) {
+        return;
+    }
+    const std::string src = typingSource();
+    const std::string scheme = shuangpin_ ? typingScheme() : std::string();
+    unsigned candidate = frame ? static_cast<unsigned>(frame->choice_index) : 0;
+    if (src == "translate") {
+        candidate = 0; // 互译上屏的不是候选
+    }
+    wowtype_stats_commit(stats_, text.c_str(), src.c_str(),
+                         scheme.empty() ? nullptr : scheme.c_str(),
+                         static_cast<int>(candidate), statsNowMs());
+}
+
+void WowtypeEngine::recordKey(fcitx::InputContext *ic, const fcitx::Key &key, bool down) {
+    if (!stats_ || !ic) {
+        return;
+    }
+    if (ic->capabilityFlags().test(fcitx::CapabilityFlag::PasswordOrSensitive)) {
+        return;
+    }
+    wowtype_stats_key(stats_, 0, static_cast<unsigned>(key.code()), down ? 1 : 0, statsNowMs());
+}
+
+void WowtypeEngine::flushStats() {
+    if (!stats_) {
+        return;
+    }
+    if (wowtype_stats_flush(stats_, statsNowMs()) != 0) {
+        WLOG_W() << "WowType: 打字统计写入失败："
+                 << (wowtype_last_error() ? wowtype_last_error() : "unknown");
+    }
+}
+
+std::string WowtypeEngine::typingSource() const {
+    if (translateMode_) {
+        return "translate";
+    }
+    if (asciiMode_) {
+        return "english";
+    }
+    return shuangpin_ ? "shuangpin" : "quanpin";
+}
+
+std::string WowtypeEngine::typingScheme() const {
+    std::string id = shuangpinScheme_;
+    for (char &ch : id) {
+        if (ch >= 'A' && ch <= 'Z') {
+            ch = static_cast<char>(ch - 'A' + 'a');
+        }
+    }
+    return id;
+}
+
 uint64_t WowtypeEngine::nowMs() {
     return static_cast<uint64_t>(fcitx::now(CLOCK_MONOTONIC) / 1000);
 }
@@ -2377,6 +2460,7 @@ uint32_t WowtypeEngine::tickTranslate() {
     }
     if (frame->commit) {
         // 按过回车，译好了：上屏译文（正在打的拼音留着，不清编辑区）
+        recordStats(frame->commit, frame);
         ic->commitString(frame->commit);
         translateDrawn_.clear();
         updateInputPanel(ic, state);

@@ -417,6 +417,16 @@ public:
     /// 互译：上屏译文；还没译好就记下来，好了再上屏。
 
 private:
+    /// 一次上屏记进打字统计（只分类计数，不保存文字）。`frame` 带候选位置时一并记。
+    void recordStats(const std::string &text, const WowtypeFrame *frame);
+    /// 记一次按键（按键热力图）。密码框里的按键不计。
+    void recordKey(fcitx::InputContext *ic, const fcitx::Key &key, bool down);
+    /// 把攒着的统计写进文件（失焦、退出时）。
+    void flushStats();
+    /// 当前输入模式在统计里的名字。
+    std::string typingSource() const;
+    /// 双拼方案在统计里的名字（小写枚举名）；不是双拼时为空。
+    std::string typingScheme() const;
     /// 词库在后台线程载入；载入好之前 core_ 为空，按键照常进编辑区。
     bool coreReady();
     /// 配置里换了词库：存好用户词、清掉各输入框的编辑状态，在后台换新词库。
@@ -600,6 +610,9 @@ private:
     fcitx::Key toggleKey_;
     fcitx::Key translateModeKey_;
     /// 最近用过的 emoji（最近的在前），存在 ~/.local/share/wowtype/emoji-recent.txt。
+
+    /// 打字统计（按天聚合，见 core/src/stats.rs）；数据目录不可写时为空。
+    WowtypeStats *stats_ = nullptr;
 
     WowtypeVoice *voice_ = nullptr;
     /// 语音结果同时复制到剪贴板（默认关）。

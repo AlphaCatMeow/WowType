@@ -612,6 +612,8 @@ pub struct Session<'e> {
     pending: Option<String>,
     /// 这次调用上屏的字是选哪个候选来的；原样上屏输入时是 None。
     last_choice: Option<Candidate>,
+    /// 这个候选在列表里的位置（1 起）；没选候选时是 0。
+    last_choice_index: usize,
     /// 这次调用忘掉了学过的词（frame 取走）。
     forgot: bool,
     /// 这次调用上屏的里有学到的选词（frame 取走）。
@@ -658,6 +660,7 @@ impl Default for Session<'_> {
             grid_cursor: 0,
             pending: None,
             last_choice: None,
+            last_choice_index: 0,
             forgot: false,
             learned: false,
             quotes: [false; 2],
@@ -745,6 +748,7 @@ impl<'e> Session<'e> {
     /// 处理一次按键。
     pub fn key(&mut self, key: &Key) -> Frame {
         self.last_choice = None;
+        self.last_choice_index = 0;
         if key.time_ms != 0 {
             self.now_ms = key.time_ms;
         }
@@ -2098,6 +2102,7 @@ impl<'e> Session<'e> {
             String::new()
         };
         self.last_choice = None;
+        self.last_choice_index = 0;
         if chosen.consumed < self.remaining().len() {
             self.push_selection(Selection {
                 text: pick.to_string(),
@@ -2208,6 +2213,7 @@ impl<'e> Session<'e> {
     /// 上文也不算数了（回来时光标可能在别处）。互译攒着的原文不动，要丢掉用 [`Session::clear_translation`]。
     pub fn reset(&mut self, commit_pending: bool) -> Frame {
         self.last_choice = None;
+        self.last_choice_index = 0;
         if commit_pending && self.composing() {
             self.commit_input_now();
         } else {
@@ -2325,6 +2331,16 @@ impl<'e> Session<'e> {
     /// 上一次调用上屏的字是选哪个候选来的；原样上屏输入、没上屏是 None。
     pub fn last_choice(&self) -> Option<&Candidate> {
         self.last_choice.as_ref()
+    }
+
+    /// 上一次上屏的候选在列表里的位置（1 起）；不是选候选上屏时为 0。
+    pub fn last_choice_index(&self) -> usize {
+        self.last_choice_index
+    }
+
+    fn set_last_choice(&mut self, chosen: Candidate, index: usize) {
+        self.last_choice = Some(chosen);
+        self.last_choice_index = index.saturating_add(1);
     }
 
     fn clear(&mut self) {
@@ -2690,6 +2706,7 @@ impl<'e> Session<'e> {
     /// 序号不对时什么也不做（handled = false）。过渡：外壳的鼠标点候选、展开面板点一行用。
     pub fn choose(&mut self, index: usize) -> Frame {
         self.last_choice = None;
+        self.last_choice_index = 0;
         if self.tool.is_some() {
             let ok = self.tool.as_ref().is_some_and(|t| index < t.items.len());
             if ok {
@@ -2704,6 +2721,7 @@ impl<'e> Session<'e> {
     /// 选候选框里显示的第 index 个（一页，或展开面板的一屏），见 [`Session::choose`]。
     pub fn select(&mut self, index: usize) -> Frame {
         self.last_choice = None;
+        self.last_choice_index = 0;
         if self.tool.is_some() {
             let shown = self.frame(false);
             return self.choose(shown.cand_start + index);
@@ -2728,12 +2746,12 @@ impl<'e> Session<'e> {
                 self.finish(text);
                 // 打字推荐的 emoji：记进最近用过（表情面板里排最前）
                 crate::recent_emoji::remember(&chosen.emoji);
-                self.last_choice = Some(chosen);
+                self.set_last_choice(chosen, index);
             }
             CandidateKind::Plain if chosen.consumed >= remaining => {
                 let text = self.selected_text() + &chosen.text;
                 self.finish(text);
-                self.last_choice = Some(chosen);
+                self.set_last_choice(chosen, index);
             }
             _ if chosen.consumed < remaining => {
                 // 句首词：先放进已选栈，剩下的拼音继续选
@@ -2747,7 +2765,7 @@ impl<'e> Session<'e> {
             }
             _ => {
                 self.commit_with(&chosen.text, &chosen.pinyin);
-                self.last_choice = Some(chosen);
+                self.set_last_choice(chosen, index);
             }
         }
         true
@@ -2756,6 +2774,7 @@ impl<'e> Session<'e> {
     /// 上屏已选的词 + 还没选的原始输入，原始输入也记一次选词（和回车、`reset(true)` 一样）。
     pub fn commit_input(&mut self) -> Frame {
         self.last_choice = None;
+        self.last_choice_index = 0;
         self.commit_input_now();
         self.frame(true)
     }

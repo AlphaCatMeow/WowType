@@ -16,7 +16,7 @@
  * 删函数或改参数含义时升主版本。外壳启动时用 wowtype_abi_version() 比对主版本。
  * 规则见 docs/ABI.md。 */
 #define WOWTYPE_ABI_VERSION_MAJOR 1
-#define WOWTYPE_ABI_VERSION_MINOR 10
+#define WOWTYPE_ABI_VERSION_MINOR 11
 
 #ifdef __cplusplus
 extern "C" {
@@ -491,6 +491,7 @@ typedef struct {
     const char *translate_title;  /* 候选框上方：方向标签 +「互译：」 */
     const char *translate_status; /* 候选框下方的一行：出错原因、「翻译中…」、怎么上屏，没有是空串 */
     int translate_done;     /* translate_text 是译完的最终结果 */
+    size_t choice_index;    /* 1.11 起：这次上屏的候选在列表里的位置（1 起）；不是选候选为 0 */
 } WowtypeFrame;
 
 /* 建会话。engine 可以传 NULL（词库没载入好时也能打字，载入好了用 set_engine 补上）；
@@ -599,6 +600,7 @@ typedef struct {
     const char *emoji;  /* emoji 本身；不是 emoji 为空串 */
     const char *comment; /* 1.10 起：画在候选后面的小字，不上屏（五笔还要打的码、z 临时拼音反查的五笔码），
                           * 没有为空串 */
+    size_t index;       /* 1.11 起：这个候选在列表里的位置（1 起）；0 表示不知道 */
 } WowtypeCandidateInfo;
 /* 候选个数。没有引擎、没在打字时为 0。 */
 size_t wowtype_session_candidate_total(WowtypeSession *session);
@@ -619,6 +621,47 @@ typedef struct {
 } WowtypeSessionView;
 /* 返回 0 成功，-1 参数为 NULL。 */
 int wowtype_session_view(WowtypeSession *session, WowtypeSessionView *out);
+
+/* ---------------- 打字统计（1.11 起） ----------------
+ *
+ * 只记本机的聚合计数：每天各类字符数、活跃毫秒、每个键按下的次数、候选位置。
+ * 不保存输入内容、按键顺序或上下文。输入法用 wowtype_stats_* 记录，设置界面读同一个 JSON 文件。
+ *
+ * 口径：两次上屏间隔超过 10 秒算休息，不计入活跃时长；速度只算汉字与字母；
+ * 长按只算一次；密码框里的按键和上屏不计。统计默认打开，设置界面可以关闭或清空。
+ */
+typedef struct WowtypeStats WowtypeStats;
+
+/* 创建记录器。path 是统计文件的绝对路径；失败返回 NULL，原因用 wowtype_last_error 取。 */
+WowtypeStats *wowtype_stats_new(const char *path);
+void wowtype_stats_free(WowtypeStats *stats);
+
+/* 一次物理按键。platform：0 = X11/fcitx5（code 是 XKB 键码），1 = macOS（NSEvent.keyCode）。
+ * down 非 0 表示按下，0 表示松开。返回 0 成功。 */
+int wowtype_stats_key(WowtypeStats *stats, int platform, unsigned int code, int down,
+                      int64_t now_ms);
+
+/* 一次上屏。text 只用来分类（汉字/字母/数字/标点/表情），不落盘。
+ * source：quanpin / shuangpin / english / translate；scheme 是双拼方案 id，没有传 NULL/空串。
+ * cand_index：候选在列表里的位置（1 起），不是选候选上屏时传 0。返回 0 成功。 */
+int wowtype_stats_commit(WowtypeStats *stats, const char *text, const char *source,
+                         const char *scheme, int cand_index, int64_t now_ms);
+
+/* 把攒着的计数写进文件（失焦、退出时调用）。返回 0 成功，-1 失败。 */
+int wowtype_stats_flush(WowtypeStats *stats, int64_t now_ms);
+
+/* 缓存的开关：1 开，0 关。最多 30 秒重读一次文件。 */
+int wowtype_stats_enabled(WowtypeStats *stats);
+
+/* 设置界面用：清空统计（保留开关，换一个随机代数）。返回 0 成功。 */
+int wowtype_stats_clear_file(const char *path, uint64_t generation);
+
+/* 设置界面用：打开或关闭统计。返回 0 成功。 */
+int wowtype_stats_set_enabled(const char *path, int enabled);
+
+/* 当前 Unix 毫秒。 */
+int64_t wowtype_stats_now_ms(void);
+
 
 #ifdef __cplusplus
 }
