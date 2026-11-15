@@ -117,13 +117,18 @@ pub struct LexEntry {
     pub initials: Vec<u8>,
 }
 
+/// [`LexEntry::is_rare`] 的判定，给手里只有词和频次的地方用。
+pub fn is_rare_char(word: &str, freq: f64) -> bool {
+    freq < 1.0 && word.chars().count() == 1
+}
+
 impl LexEntry {
     /// 生僻字：频次不到 1 的单字（大字表补进来的读音，见 tools/rime2tsv.py --extra-chars）。
     ///
     /// 它们不参与组句、不占前几页，只在翻页的长尾里列出来，保证一个音节的字都找得到。
     /// 一个音节动辄几百个这样的字（yi 有六百多），让束搜索每一步都去排它们会慢很多。
     pub fn is_rare(&self) -> bool {
-        self.freq < 1.0 && self.word.chars().count() == 1
+        is_rare_char(&self.word, self.freq)
     }
 
     /// CJK 扩展 B 区及以后（U+20000 起）的单字，通用规范汉字表里的除外（[`COMMON_EXT_CHARS`]）。

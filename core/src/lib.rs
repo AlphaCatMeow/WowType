@@ -970,8 +970,13 @@ impl Engine {
 
     /// 翻页用的长尾：前面几页之后，把输入能对上的词全补上，直到 `max_candidates`。
     ///
-    /// 照着微信输入法：先是整个输入的同音词（按词频），再是句首词（长的在前），
-    /// 最后是第一个音节的单字。前面已经有的不重复；排第一的结果没纠错时不补纠错出来的词。
+    /// 顺序：整个输入的同音词（按词频）→ 句首词（长的在前）→ 第一个音节的常用单字 →
+    /// 换一种切法才对得上的词（houxuanci 的「后续」）→ 第一个音节的生僻字 →
+    /// 换一种切法才对得上的单字。前面已经有的不重复；排第一的结果没纠错时不补纠错出来的词。
+    ///
+    /// 输入框里显示的切法（ling'lian'jie）是用户看着打的那一种：整句不对时接下来多半是
+    /// 按这个切法一个字一个字选，所以它的常用字排在换切法的词（ling li | an jie 的「凌厉」）
+    /// 前面，换切法的单字放到最后。
     fn append_more_candidates(
         &self,
         raw: &str,
@@ -1064,14 +1069,19 @@ impl Engine {
         } else {
             None
         };
-        // 词在前、单字在后；换一种切法才对得上的句首词（houxuanci 的「后续」）夹在中间
-        let (chars, words): (Vec<_>, Vec<_>) =
-            heads.into_iter().partition(|c| c.text.chars().count() == 1);
+        // 词在前、单字在后。换一种切法才对得上的：词夹在常用字和生僻字之间，单字放最后
+        let single = |c: &Candidate| c.text.chars().count() == 1;
+        let (chars, words): (Vec<_>, Vec<_>) = heads.into_iter().partition(single);
+        let (rare_chars, chars): (Vec<_>, Vec<_>) = chars.into_iter().partition(is_rare_char);
+        let (other_chars, other_words): (Vec<_>, Vec<_>) =
+            other_splits.into_iter().partition(single);
         for mut candidate in whole
             .into_iter()
             .chain(words)
-            .chain(other_splits)
             .chain(chars)
+            .chain(other_words)
+            .chain(rare_chars)
+            .chain(other_chars)
         {
             if result.len() >= max {
                 break;
@@ -1939,7 +1949,8 @@ fn promote_picked(candidates: &mut Vec<Candidate>) {
 /// 是简拼或纠错结果时没法对齐字母，只要求它至少两个音节。
 ///
 /// 返回被筛掉、但换一种切法也说得通的词：词本身是完整全拼，剩下的字母也能整个切成
-/// 音节（houxuanci 里的「后续」= hou xu | an ci）。它们不该挤进前几页，长尾最后补上。
+/// 音节（houxuanci 里的「后续」= hou xu | an ci）。它们不该挤进前几页，长尾里补上
+/// （位置见 [`Engine::append_more_candidates`]）。
 fn prefix_on_syllable_boundaries(
     result: &[Candidate],
     normalized: &str,
@@ -2005,12 +2016,17 @@ fn prefix_on_syllable_boundaries(
 }
 
 /// 这串字母能不能整个切成合法的全拼音节（an ci、ci）。
+///
+/// 没有元音的音节（ng、hm、hng，「嗯」「噷」「哼」）不算：linglianjie 切成 li | ng lian jie
+/// 没人会这么打，算进去的话 li 的几百个单字都成了「换一种切法」的候选。
 fn splits_into_syllables(letters: &str) -> bool {
+    let voiced = |s: &str| s.bytes().any(|b| b"aeiouv".contains(&b));
     let mut ok = vec![false; letters.len() + 1];
     ok[0] = true;
     for end in 1..=letters.len() {
         for len in 1..=6.min(end) {
-            if ok[end - len] && is_valid(&letters[end - len..end]) {
+            let syllable = &letters[end - len..end];
+            if ok[end - len] && voiced(syllable) && is_valid(syllable) {
                 ok[end] = true;
                 break;
             }
@@ -2050,6 +2066,11 @@ fn abbrev_graph(
         },
     );
     graph.has_complete_path().then_some(graph)
+}
+
+/// 长尾里的生僻字（[`crate::lexicon::LexEntry::is_rare`]：频次不到 1 的单字）。
+fn is_rare_char(c: &Candidate) -> bool {
+    c.words.len() == 1 && crate::lexicon::is_rare_char(&c.words[0].text, c.words[0].freq)
 }
 
 /// 全拼和只打声母的音节混着的候选（k yi -> 可以，yong z wen -> 用中文）。
@@ -2584,7 +2605,7 @@ mod tests {
 
     #[test]
     fn other_split_heads_come_before_chars() {
-        // houxuanci 也能切成 hou xu | an ci：「后续」排在单字前面
+        // houxuanci 也能切成 hou xu | an ci：「后续」排在生僻字前面（常用字之后）
         let mut e = engine(concat!(
             "hou xuan ci\t候选词\t3000\nhou xuan\t候选\t4000\n",
             "hou xu\t后续\t3000\nan\t按\t5000\n",
@@ -2598,6 +2619,49 @@ mod tests {
         assert!(at("后续").is_some(), "{texts:?}");
         assert!(at("后续") < at("㕈"), "{texts:?}");
         assert!(at("候选") < at("后续"), "正常切分的词在前：{texts:?}");
+    }
+
+    #[test]
+    fn first_syllable_chars_come_before_other_splits() {
+        // linglianjie：输入框里切的是 ling'lian'jie。第一页放不下的 ling 的常用字（零）要排在
+        // 换一种切法的词（ling li | an jie 的「凌厉」）前面；li | ng lian jie 不算一种切法
+        let mut e = engine(concat!(
+            "ling\t令\t9000\nling\t灵\t8000\nling\t领\t7000\nling\t另\t6000\n",
+            "ling\t凌\t5000\nling\t玲\t4000\nling\t零\t3000\nling\t龄\t2000\n",
+            "ling\t㖫\t0.8\n",
+            "ling li\t凌厉\t3000\nling li\t伶俐\t2000\n",
+            "li\t里\t90000\nli\t力\t80000\nng\t嗯\t5000\n",
+            "lian jie\t连接\t5000\nlian\t连\t5000\njie\t接\t5000\nan\t按\t5000\n",
+        ));
+        e.set_max_candidates(1000);
+        let list = e.input("linglianjie");
+        let texts: Vec<&str> = list.iter().map(|c| c.text.as_str()).collect();
+        let at = |t: &str| texts.iter().position(|x| *x == t);
+        for common in ["零", "龄"] {
+            assert!(at(common).is_some(), "{texts:?}");
+            assert!(at(common) < at("凌厉"), "{common} 应在换切法的词前面：{texts:?}");
+        }
+        assert!(at("凌厉").is_some() && at("伶俐").is_some(), "{texts:?}");
+        assert!(at("凌厉") < at("㖫"), "换切法的词在生僻字前面：{texts:?}");
+        assert!(at("里").is_none() && at("力").is_none(), "li | ng… 不是一种切法：{texts:?}");
+    }
+
+    #[test]
+    fn other_split_chars_come_last() {
+        // fangan 也能切成 fan | gan：「反」排在 fang 的所有单字（包括生僻字）后面
+        let mut e = engine(concat!(
+            "fang an\t方案\t9000\n",
+            "fang\t放\t9000\nfang\t方\t8000\nfang\t房\t7000\nfang\t防\t6000\n",
+            "fang\t访\t5000\nfang\t仿\t4000\nfang\t纺\t3000\nfang\t㑂\t0.8\n",
+            "fan\t反\t90000\ngan\t干\t9000\nan\t按\t5000\n",
+        ));
+        e.set_max_candidates(1000);
+        let list = e.input("fangan");
+        let texts: Vec<&str> = list.iter().map(|c| c.text.as_str()).collect();
+        let at = |t: &str| texts.iter().position(|x| *x == t);
+        assert!(at("反").is_some(), "换切法的单字还在：{texts:?}");
+        assert!(at("纺") < at("反"), "{texts:?}");
+        assert!(at("㑂") < at("反"), "{texts:?}");
     }
 
     #[test]
