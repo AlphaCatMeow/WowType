@@ -448,9 +448,27 @@ def quote_value(value):
     return value
 
 
+def config_lines(values):
+    """要写进 wowtype.conf 的设置项：只写和默认值不一样的。没写的项插件读成默认值（reloadConfig 先重置成默认），
+    以后改了默认值，动过设置的老用户也跟着新默认值走。
+
+    例外是读的时候要按别的项推断的（spec/config.json 的 whenMissing）：TranslateBaseUrl 填了时
+    TranslateLocal 缺省读成 False，这时 True 也要明写。InputScheme 推断靠的是旧键 Shuangpin，
+    它读进来就丢了，不会再写回文件，不用管。"""
+    lines = []
+    for key in DEFAULTS:
+        value = values.get(key, DEFAULTS[key])
+        if value == DEFAULTS[key] and not (key == "TranslateLocal"
+                                           and values.get("TranslateBaseUrl", "").strip()):
+            continue
+        lines.append(f"{key}={quote_value(value)}")
+    return lines
+
+
 def write_config(values, extra):
-    lines = [f"{key}={quote_value(values[key])}" for key in DEFAULTS]
-    write_atomic(CONFIG_FILE, "\n".join(lines + extra) + "\n")
+    """存设置：和默认值不一样的项，加上原文里设置界面不认识的行（extra）原样留着。"""
+    lines = config_lines(values) + list(extra)
+    write_atomic(CONFIG_FILE, "\n".join(lines) + "\n" if lines else "")
 
 
 def log(message):
@@ -2422,6 +2440,37 @@ def translate_engine_self_test():
             values, extra = read_config()
             write_config(values, extra)  # 写回去以后这一项是明确的，不再靠推断
             assert "TranslateLocal=False" in open(CONFIG_FILE, encoding="utf-8").read()
+        finally:
+            CONFIG_FILE = saved
+
+
+def config_write_self_test():
+    """存盘只写和默认值不一样的项；不认识的行留着；要推断的 TranslateLocal 照写。"""
+    global CONFIG_FILE
+    import tempfile
+    saved = CONFIG_FILE
+    with tempfile.TemporaryDirectory() as tmp:
+        CONFIG_FILE = os.path.join(tmp, "wowtype.conf")
+        try:
+            assert config_lines(DEFAULTS) == []
+            write_config(dict(DEFAULTS), [])
+            assert open(CONFIG_FILE, encoding="utf-8").read() == ""
+            assert read_config()[0] == DEFAULTS
+            # 老文件：每一项都写着（包括默认值），外加不认识的键和 [Hotkey] 分组
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                f.write("".join(f"{k}={v}\n" for k, v in DEFAULTS.items()) +
+                        "PageSize=5\nFutureKey=x\n[Hotkey]\nTriggerKeys=\n")
+            values, extra = read_config()
+            write_config(values, extra)
+            text = open(CONFIG_FILE, encoding="utf-8").read()
+            assert text == "PageSize=5\nFutureKey=x\n[Hotkey]\nTriggerKeys=\n", text
+            assert read_config()[0] == {**DEFAULTS, "PageSize": "5"}
+            # 填了翻译接口又选回本地模型：TranslateLocal=True 不写的话读回来是 False
+            values = {**DEFAULTS, "TranslateBaseUrl": "https://a/v1", "TranslateLocal": "True"}
+            assert config_lines(values) == ["TranslateBaseUrl=https://a/v1", "TranslateLocal=True"]
+            write_config(values, [])
+            assert read_config()[0]["TranslateLocal"] == "True"
+            assert config_lines({**DEFAULTS, "Lexicon": " /a b "}) == ['Lexicon=" /a b "']
         finally:
             CONFIG_FILE = saved
 
@@ -5326,6 +5375,7 @@ if __name__ == "__main__":
         download_self_test()
         llama_self_test()
         translate_engine_self_test()
+        config_write_self_test()
         voice_model_self_test()
         lexicon_self_test()
         # fcitx5 默认配置：左 Shift 是「临时切换输入法」
