@@ -99,6 +99,8 @@ int main(int argc, char **argv) {
     }
     check(wowtype_engine_set_domain_lm(e, "/nonexistent/words.domain.lm") == -1, "set_domain_lm 文件不在返回 -1");
     check(wowtype_engine_set_domain_lm(e, NULL) == 0, "set_domain_lm(NULL) 去掉");
+    check(wowtype_nnlm_check("/nonexistent/nlrgpt2_nnlm.bin") == -1, "nnlm_check 文件不在返回 -1");
+    check(wowtype_nnlm_check(lexicon) == -1, "nnlm_check 词库不是模型");
 
     check(wowtype_engine_add_user_word(e, "wo wo te", "我特") == 0, "add_user_word");
     c = wowtype_engine_input(e, "wowote");

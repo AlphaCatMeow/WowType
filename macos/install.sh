@@ -14,6 +14,10 @@ stop_running() {
 }
 
 if [[ "${1:-}" == "--uninstall" ]]; then
+  # 新版自己会卸（关掉输入源、停掉输入法、去掉登记、删掉程序）；老版本不认 --uninstall，照下面的老办法
+  if [[ -x "$dest/Contents/MacOS/WowType" ]] && "$dest/Contents/MacOS/WowType" --uninstall; then
+    exit 0
+  fi
   [[ -x "$dest/Contents/MacOS/WowType" ]] && "$dest/Contents/MacOS/WowType" --disable || true
   stop_running
   rm -rf "$dest"

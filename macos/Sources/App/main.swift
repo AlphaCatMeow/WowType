@@ -6,6 +6,7 @@
 //   … --settings [general|input|emoji|voice|translate|words] 设置窗口（另一个进程，输入法菜单里「设置…」开的就是它）
 //   … --install-lexicon [wanxiang | 文件.tar.gz]      装万象词库并切过去；--use-lexicon rime-ice|wanxiang 切换
 //   … --download-model [--accept-license]          下载本地翻译模型（缺 llama-server 时一起下）
+//   … --uninstall                                   卸载（关掉、去掉登记、删掉程序；用户数据留着）
 //   … --version
 
 import AppKit
@@ -26,7 +27,7 @@ func selfTest() -> Bool {
     print("WowType \(appVersion)，核心接口版本 \(Engine.abiVersion)")
     print("资源目录 \(AppState.shared.resourceDir.path)")
     print("数据目录 \(AppState.shared.supportDir.path)")
-    for name in ["lexicon.tsv", "english.txt", "words.lm", "s2t.tsv", "wubi86.tsv"] {
+    for name in ["lexicon.tsv", "english.txt", "words.lm", "s2t.tsv", "wubi86.tsv", "nnlm.bin"] {
         print("  \(name)：\(AppState.shared.resource(name) == nil ? "没有" : "有")")
     }
     let start = Date()
@@ -261,6 +262,10 @@ if arguments.count > 1 {
     case "--download-model": ok = downloadModelCommand(accepted: arguments.contains("--accept-license"))
     case "--install-voice-model", "--remove-voice-model": ok = voiceModelCommand(Array(arguments.dropFirst()))
     case "--voice-test": ok = voiceTest(arguments.count > 2 ? arguments[2] : "")
+    case "--uninstall":
+        let result = Installer.uninstall(supportDir: AppState.shared.supportDir)
+        print(result.message)
+        ok = result.ok
     case "--version":
         print(appVersion)
         ok = true
@@ -268,7 +273,7 @@ if arguments.count > 1 {
         print("用法：WowType [--register | --enable | --select | --disable | --selftest | --settings [页面] | --version |\n"
               + "              --install-lexicon [wanxiang | 文件.tar.gz] | --use-lexicon rime-ice|wanxiang |\n"
               + "              --download-model [--accept-license] | --install-voice-model [语音包.apk] |\n"
-              + "              --remove-voice-model | --voice-test 说的话.wav]")
+              + "              --remove-voice-model | --voice-test 说的话.wav | --uninstall]")
         ok = false
     }
     exit(ok ? 0 : 1)

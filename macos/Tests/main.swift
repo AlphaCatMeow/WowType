@@ -757,15 +757,33 @@ do {
     check(Set(WowtypeConfig.keys).count == WowtypeConfig.keys.count
           && WowtypeConfig.keys.allSatisfy { d.value(forKey: $0) != nil }, "每个键都有写法")
     let template = WowtypeConfig.template()
-    check(WowtypeConfig.keys.allSatisfy { template.contains("\n" + $0 + "=") }, "模板里每个键都有")
+    check(WowtypeConfig.keys.allSatisfy { template.contains("\n# " + $0 + "=") }, "模板里每个键都有（注释掉的默认值）")
     // 加了新设置（模板里多了一行）却没加进 keys / setValue / value(forKey:)：设置窗口写不回去
     let templateKeys = template.split(separator: "\n").compactMap { line -> String? in
-        guard !line.hasPrefix("#"), let eq = line.firstIndex(of: "=") else { return nil }
-        return String(line[..<eq])
+        guard line.hasPrefix("# "), let eq = line.firstIndex(of: "=") else { return nil }
+        let key = line[line.index(line.startIndex, offsetBy: 2)..<eq]
+        return key.allSatisfy({ $0.isASCII && $0.isLetter }) ? String(key) : nil
     }
     check(Set(templateKeys) == Set(WowtypeConfig.keys) && templateKeys.allSatisfy { d.value(forKey: $0) != nil },
           "模板里的键都能写回去", "\(Set(templateKeys).symmetricDifference(WowtypeConfig.keys))")
-    check(d.value(forKey: "CheckUpdate") == nil, "不认识的键没有写法")
+    // 模板里一项都不生效：以后改了默认值，没改过的人跟着变
+    let activeLines = template.split(separator: "\n").filter { !$0.hasPrefix("#") && $0.contains("=") }
+    check(activeLines.isEmpty, "模板里的设置行都注释掉了", "\(activeLines)")
+    check(d.value(forKey: "NoSuchKey") == nil, "不认识的键没有写法")
+
+    // 从模板写：只写改过的键，就地换掉注释掉的那一行，别的键还是注释
+    var one = WowtypeConfig()
+    one.pageSize = 5
+    one.traditional = true
+    let fromTemplate = one.serialized(into: nil)
+    let written = fromTemplate.split(separator: "\n").filter { !$0.hasPrefix("#") && $0.contains("=") }
+    check(written == ["PageSize=5", "Traditional=True"], "从模板写只写改过的键", "\(written)")
+    check(!fromTemplate.contains("# PageSize=") && fromTemplate.contains("# 每页候选个数，3–9\nPageSize=5\n")
+          && fromTemplate.contains("\n# Fuzzy=False\n"), "改过的键换掉注释掉的那一行，说明还在上面", fromTemplate)
+    check(WowtypeConfig.parse(fromTemplate) == one && one.serialized(into: fromTemplate) == fromTemplate,
+          "从模板写的读回来一样，再写一次不变")
+    check(one.serialized(into: "# 我的设置\n#PageSize=7\n") == "# 我的设置\nPageSize=5\nTraditional=True\n",
+          "自己注释掉的设置行也就地换掉", one.serialized(into: "# 我的设置\n#PageSize=7\n"))
 
     // 每一项都改成不是默认值：写出来读回来一样（不管从模板、空文件还是只有注释的文件开始）
     var all = WowtypeConfig()
@@ -1924,6 +1942,15 @@ do {
     let custom = LocalModel.plan(modelExists: false, serverFound: false, customServer: true, asset: arm)
     check(custom.wantModel && !custom.wantLlama && custom.llamaUnavailable && custom.bytes == LocalModel.size,
           "自己写了 llama-server 的位置：不替它下载", "\(custom)")
+    // 以前下载的 llama-server 不是现在钉的构建：重新下载；下载不了时照旧用它
+    let stale = LocalModel.plan(modelExists: true, serverFound: true, customServer: false, asset: arm, serverOutdated: true)
+    check(stale.wantLlama && stale.llamaOutdated && !stale.ready && !stale.llamaUnavailable && stale.bytes == 16_650_691,
+          "下载的 llama-server 构建旧了：重新下载", "\(stale)")
+    let staleNoAsset = LocalModel.plan(modelExists: true, serverFound: true, customServer: false, asset: nil, serverOutdated: true)
+    check(staleNoAsset.ready && !staleNoAsset.canDownload && !staleNoAsset.llamaOutdated,
+          "构建旧了但这台 Mac 下载不了新的：照旧用", "\(staleNoAsset)")
+    check(!LocalModel.plan(modelExists: true, serverFound: true, customServer: true, asset: arm, serverOutdated: true).wantLlama,
+          "自己写了 llama-server 的位置：不管构建号")
 
     // 和 Linux 设置的 human_size 一样：f"{n / 1e9:.2f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB"
     check(LocalModel.sizeText(LocalModel.size + 16_650_691) == "1.15 GB", "大小写成 1.15 GB（和 Linux 一样）",
@@ -2036,6 +2063,50 @@ do {
     check(LexiconPack.installedVersion(folder: dir) == nil, "没有 lexicon.tsv 算没装")
     unlink(dir + "/VERSION")
     rmdir(dir)
+}
+
+// MARK: 检查更新（AppUpdate）
+
+do {
+    check(AppUpdate.version(tag: "v0.4.1") == "0.4.1" && AppUpdate.version(tag: "0.4.1") == "0.4.1", "tag 去掉 v")
+    check(AppUpdate.version(tag: "") == nil && AppUpdate.version(tag: "v") == nil && AppUpdate.version(tag: "v1/../x") == nil
+          && AppUpdate.version(tag: "v1 2") == nil && AppUpdate.version(tag: "-1") == nil, "不像版本号的 tag 不认")
+    check(AppUpdate.packageName(version: "0.4.1") == "WowType-0.4.1-macos.pkg", "macOS 安装包的名字")
+    check(AppUpdate.isNewer("0.4.1", than: "0.4.0") && AppUpdate.isNewer("0.10.0", than: "0.9.9")
+          && AppUpdate.isNewer("0.4.0.1", than: "0.4.0"), "新版本")
+    check(!AppUpdate.isNewer("0.4.0", than: "0.4.0") && !AppUpdate.isNewer("0.3.12", than: "0.4.0"), "一样的、旧的不算新版本")
+    check(!AppUpdate.isNewer("0.4.1", than: "dev") && !AppUpdate.isRelease("dev") && AppUpdate.isRelease("0.4.0"),
+          "开发版不提示更新")
+    let state = AppUpdate.State(text: "checked=1700000000\nlatest=v0.4.1\n")
+    check(state == AppUpdate.State(checked: 1_700_000_000, latest: "v0.4.1") && AppUpdate.State(text: state.text) == state,
+          "记的检查状态读写", state.text)
+    check(AppUpdate.State(text: "乱写\nchecked=abc\nlatest=../x\n") == AppUpdate.State(), "写坏的检查状态当没查过")
+    check(!AppUpdate.due(state, now: 1_700_000_000 + 3600) && AppUpdate.due(state, now: 1_700_000_000 + 86_400)
+          && AppUpdate.due(state, now: 1_600_000_000) && AppUpdate.due(AppUpdate.State(), now: 1_700_000_000),
+          "一天最多查一次（时钟往回拨了也查）")
+    // 包名和 install.sh 的 macOS 分支一样（规格目录旁边就是仓库根）
+    let specDir = getenv("WOWTYPE_SPEC_DIR").map { String(cString: $0) } ?? "spec"
+    if let installer = readFile(specDir + "/../install.sh") {
+        check(installer.contains("package=\"WowType-$version-macos.pkg\""), "macOS 安装包的名字和 install.sh 一样")
+    } else {
+        print("skip 对照 install.sh 的包名（没找到 install.sh）")
+    }
+}
+
+// MARK: 诊断信息里的设置打码（DiagnosticsText）
+
+do {
+    let conf = "# 注释 TranslateBaseUrl=https://a@b/c\nPageSize=5\n"
+        + "TranslateBaseUrl=https://user:sk-123@api.example.com:8443/v1/sk-456\nTranslateKey=sk-789\n"
+        + "ApiToken = \"abc\"\nEmojiKey=Control+period\nTranslateModel=\nMyKey=\n[Hotkey]\nX=1"
+    let masked = DiagnosticsText.maskConfig(conf)
+    check(masked == "# 注释 TranslateBaseUrl=https://a@b/c\nPageSize=5\n"
+          + "TranslateBaseUrl=https://api.example.com:8443/…\nTranslateKey=（已打码）\n"
+          + "ApiToken=（已打码）\nEmojiKey=Control+period\nTranslateModel=\nMyKey=\n[Hotkey]\nX=1",
+          "诊断信息里的设置：接口地址只留主机，像密钥的键打码，别的原样", masked)
+    check(DiagnosticsText.maskURL("") == "" && DiagnosticsText.maskURL("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434/…"
+          && DiagnosticsText.maskURL("\"https://k@x.org\"") == "https://x.org/…" && DiagnosticsText.maskURL("sk-abc") == "（已打码）",
+          "网址只留协议和主机")
 }
 
 // MARK: 设置契约（spec/config.json、spec/lexicon-pack.json；Linux 两端在 scripts/test-config-contract.py 对照）

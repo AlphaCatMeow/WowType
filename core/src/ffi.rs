@@ -1226,6 +1226,16 @@ mod tests {
         assert_eq!(read("WOWTYPE_ABI_VERSION_MINOR"), ABI_VERSION_MINOR);
         assert_eq!(wowtype_abi_version(), 1011);
     }
+
+    #[test]
+    fn nnlm_check_rejects_bad_files() {
+        assert_eq!(unsafe { wowtype_nnlm_check(ptr::null()) }, -1);
+        let missing = CString::new("/nonexistent/nlrgpt2_nnlm.bin").unwrap();
+        assert_eq!(unsafe { wowtype_nnlm_check(missing.as_ptr()) }, -1);
+        // 别的文件（词库）不是模型
+        let lexicon = CString::new(concat!(env!("CARGO_MANIFEST_DIR"), "/data/demo_lexicon.tsv")).unwrap();
+        assert_eq!(unsafe { wowtype_nnlm_check(lexicon.as_ptr()) }, -1);
+    }
 }
 
 #[cfg(test)]
