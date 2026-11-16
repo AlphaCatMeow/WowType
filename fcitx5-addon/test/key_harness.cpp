@@ -3084,6 +3084,19 @@ void runDataFileCase() {
     write(root / "system" / "words.lm", "lm2", 2);
     check(!wowtype::isStaleBundledCopy(root / "user" / "words.lm", root / "system" / "words.lm", "words.lm"),
           "words.lm 可能是自己训的，不动");
+    // 字节数和官方发布的一样的 words.lm 是拷进来的官方模型（稀疏文件，不占盘）
+    std::filesystem::resize_file(root / "user" / "words.lm", wowtype::kOfficialLmSizes[0]);
+    check(wowtype::isStaleBundledCopy(root / "user" / "words.lm", root / "system" / "words.lm", "words.lm"),
+          "拷进来的官方 words.lm 让给安装包的");
+    write(root / "user" / "wubi86.tsv", "a\t工\t99454797\naa\t式\t1\n", 7);
+    write(root / "system" / "wubi86.tsv", "a\t工\t99454797\naa\t式\t2\n", 2);
+    check(wowtype::isStaleBundledCopy(root / "user" / "wubi86.tsv", root / "system" / "wubi86.tsv",
+                                      "wubi86.tsv"),
+          "拷进来的五笔码表同样处理");
+    write(root / "user" / "wubi86.tsv", "a\t工\t5\n", 7);
+    check(!wowtype::isStaleBundledCopy(root / "user" / "wubi86.tsv", root / "system" / "wubi86.tsv",
+                                       "wubi86.tsv"),
+          "自己做的五笔码表照旧优先");
     fs::remove_all(root);
 }
 

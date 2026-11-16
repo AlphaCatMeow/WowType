@@ -174,15 +174,17 @@ cargo test --locked -p wowtype-core
 cmake -S fcitx5-addon -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 cmake --build build -j"$(nproc)"
 sudo cmake --install build
-sudo install -m755 target/release/wowtype-check target/release/wowtype-show /usr/bin/
-install -Dm644 -t "${XDG_DATA_HOME:-$HOME/.local/share}/wowtype" \
-  dist/data/lexicon.tsv dist/data/english.txt dist/data/words.lm dist/data/wubi86.tsv
 ```
 
 CMake 使用 Fcitx 5 导出的安装路径：Debian / Ubuntu 通常为 `/usr/lib/<multiarch>/fcitx5`，
 Arch 为 `/usr/lib/fcitx5`，Fedora / openSUSE 为 `/usr/lib64/fcitx5`。
 可用 `pkg-config --variable=libdir Fcitx5Core` 查看本机库目录。
-设置界面、输入法注册文件和简繁映射表由 CMake 一起安装；真实词库放入当前用户的数据目录。
+设置界面、输入法注册文件、简繁映射表、自检工具（`wowtype-check`、`wowtype-show`）和第 2 节生成的
+`dist/data` 里的词库、英文词表、语言模型、五笔码表都由 `cmake --install` 装好（装在 `/usr/share/wowtype/`），
+不用再往用户目录拷文件。以后更新数据：重新跑第 2 节的脚本，再 `sudo cmake --install build`。
+数据放在别处时加 `-DWOWTYPE_DATA_DIR=<目录>`。
+以前按旧说明拷进 `~/.local/share/wowtype/` 的那几个文件不用管，插件认得出来、会改用新装的（见
+[CONFIG.md](CONFIG.md) 的「数据文件」）。
 
 需要可由包管理器卸载的包时，Debian / Ubuntu 可用
 `scripts/package-deb.sh engine "$version" dist/pkg`，Fedora 可用
@@ -199,7 +201,7 @@ cmake --build build-text -j"$(nproc)"
 sudo cmake --install build-text
 ```
 
-这条构建路径不需要 ALSA 开发包；后续仍按通用步骤安装词库和自检工具。
+这条构建路径不需要 ALSA 开发包；词库和自检工具同样由 `cmake --install` 装好。
 如果不需要设置界面，再添加 `-DWOWTYPE_INSTALL_SETTINGS=OFF`，使用 `fcitx5-configtool` 添加输入法。
 维护开发环境时可用 `scripts/build-linux.sh --addon` 统一构建与测试。
 真实词库存在时会运行按键测试，测试失败会直接返回非零状态。

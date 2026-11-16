@@ -252,7 +252,7 @@ home-manager 的 `i18n.inputMethod.fcitx5.addons` 用法相同。
 ### 检查是否装好
 
 ```bash
-wowtype-check --lexicon /usr/share/wowtype/lexicon.tsv    # 源码安装的用 ~/.local/share/wowtype/lexicon.tsv
+wowtype-check --lexicon /usr/share/wowtype/lexicon.tsv
 wowtype-show  --lexicon /usr/share/wowtype/lexicon.tsv nihao
 # nihao: 1.你好词 2.拟好词 ...
 ```
@@ -493,7 +493,7 @@ WowType 默认用自己的绿色主题：选中的词是图标里的那种绿，
 | 输入法列表里找不到 WowType | 添加时取消勾选「仅显示当前语言」；确认 `/usr/share/fcitx5/inputmethod/wowtype.conf` 存在；`wowtype-config --restart-fcitx` 重启 |
 | KDE Wayland 下已经开着的程序能打字，新打开的程序打不了 | fcitx5 是用 `fcitx5 -r` 或托盘「重新启动」重启的，没经过 KWin。运行 `wowtype-config --restart-fcitx`，或注销再登录 |
 | 某个程序里打不了中文，别的程序可以 | 重启 fcitx5 以后 Chrome / Electron 程序要彻底退出再打开 |
-| 能打，但候选很少、很多常用词没有 | 没找到词库，用的是演示词库。用安装包装的话重装一遍（安装包自带词库）；从源码装的把 `lexicon.tsv` 放进 `~/.local/share/wowtype/` |
+| 能打，但候选很少、很多常用词没有 | 没找到词库，用的是演示词库。用安装包装的话重装一遍（安装包自带词库）；从源码装的先跑 `scripts/make-data.sh "" dist/data`，再 `sudo cmake --install build`（词库跟着一起装） |
 | 第一次切到 WowType 时要等一两秒 | 正常：第一次要载入词库并生成快照，之后约 0.3 秒 |
 | 按右 Alt 提示「没有语音模型」 | 到 WowType 设置的「语音」页点「下载」（或运行 `wowtype-config --install-voice-model`） |
 | 按右 Alt 提示「开不了麦克风」 | 在系统设置的「声音」里确认有输入设备；`arecord -l` 应该能列出麦克风 |
@@ -535,7 +535,7 @@ WowType 自己的日志在 `~/.local/state/wowtype/wowtype.log`（满 512 KB 换
 ```bash
 cargo test --workspace                     # Rust 测试（需要 libasound2-dev，语音守护进程还要 libx11-dev libxkbcommon-dev）
 ./scripts/abi-smoke.sh                     # C 接口冒烟测试
-scripts/addon-test.sh ~/.local/share/wowtype/lexicon.tsv ~/.local/share/wowtype/english.txt
+scripts/addon-test.sh /usr/share/wowtype/lexicon.tsv /usr/share/wowtype/english.txt
                                            # 插件按键测试：起一个私有的 fcitx5，不影响你正在用的输入法
 WOWTYPE_VOICE_WAV=说的话.wav WOWTYPE_VOICE_EXPECT=期望的字 scripts/addon-test.sh ...
                                            # 加跑语音用例：用 WAV 代替麦克风，要先下载好语音模型

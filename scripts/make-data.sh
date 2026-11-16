@@ -115,7 +115,9 @@ rm "$OUT/lexicon.rime.tsv" "$OUT/lexicon.hot.tsv"
 cat "$RIME/en_dicts/en.dict.yaml" "$RIME/en_dicts/en_ext.dict.yaml" > "$OUT/english.txt"
 cp "$RIME/LICENSE" "$OUT/LICENSE"
 
-# 词级语言模型，训练语料与命令见 Release 说明；换模型时同时改 URL 和 sha256
+# 词级语言模型，训练语料与命令见 Release 说明；换模型时同时改 URL 和 sha256，
+# 并把新模型的字节数加进 fcitx5-addon/src/data_files.h 的 kOfficialLmSizes 和 settings/wowtype-config 的
+# OFFICIAL_LM_SIZES（旧的留着）：老用户目录里拷进去的官方模型靠它认出来、让给安装包带的新模型
 LM_URL=https://github.com/Gloridust/WowType/releases/download/lm-2026.11.09/words.lm.xz
 LM_SHA256=42cb7c4a7cededa29b1a9ff105530085529fefff96535cc051341ebd51605dbe
 if [[ -n "${WOWTYPE_LM_FILE:-}" ]]; then

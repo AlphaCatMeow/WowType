@@ -71,7 +71,10 @@ LEXICON_CANDIDATES = [
 BUNDLED_DATA_MARKERS = {
     "lexicon.tsv": "# 由 tools/rime2tsv.py 生成",
     "english.txt": "# Rime dictionary",
+    "wubi86.tsv": "a\t工\t99454797",
 }
+# 发布过的官方 words.lm 的字节数（二进制文件没有标记可看），和插件的 kOfficialLmSizes 一样
+OFFICIAL_LM_SIZES = (38455852,)  # lm-2026.11.09
 
 
 def stale_bundled_copy(user, system):
@@ -79,13 +82,17 @@ def stale_bundled_copy(user, system):
 
     和插件的 isStaleBundledCopy（fcitx5-addon/src/data_files.h）同一条规则：第一行是 WowType 生成的
     标准数据，系统目录里也有一份，而且用户目录这份不比系统目录的新（系统目录的时间戳早于 2000 年时
-    看不出新旧，也算）。0.3.4 以前 README 让大家把词库拷进用户目录，后来安装包自带了，那份却一直优先。"""
-    marker = BUNDLED_DATA_MARKERS.get(os.path.basename(user))
-    if not marker or not os.path.isfile(system):
+    看不出新旧，也算）；words.lm 看字节数是不是某一版官方发布的。
+    0.3.4 以前 README 让大家把词库拷进用户目录，后来安装包自带了，那份却一直优先。"""
+    name = os.path.basename(user)
+    marker = BUNDLED_DATA_MARKERS.get(name)
+    if not os.path.isfile(system) or not (marker or name == "words.lm"):
         return False
     try:
         if os.path.samefile(user, system):
             return False
+        if name == "words.lm":
+            return os.path.getsize(user) in OFFICIAL_LM_SIZES
         with open(user, "rb") as f:
             first = f.readline().decode("utf-8", "replace")
         if not first.startswith(marker):
@@ -102,6 +109,8 @@ def lexicon_in_use_candidates():
     user, system = LEXICON_CANDIDATES[1], LEXICON_CANDIDATES[2]
     stale = os.path.isfile(user) and stale_bundled_copy(user, system)
     return [p for p in LEXICON_CANDIDATES if not (stale and p == user)]
+
+
 # 五笔码表，和插件找数据文件的顺序一样：环境变量、用户数据目录、系统目录
 WUBI_CANDIDATES = [
     os.environ.get("WOWTYPE_WUBI", ""),
@@ -466,7 +475,10 @@ def read_config():
 
 def find_wubi_table():
     """五笔码表的路径，找不到是 None（设置里五笔灰掉，说清楚为什么）。"""
-    return next((path for path in WUBI_CANDIDATES if path and os.path.isfile(path)), None)
+    user, system = WUBI_CANDIDATES[1], WUBI_CANDIDATES[2]
+    stale = os.path.isfile(user) and stale_bundled_copy(user, system)
+    return next((path for path in WUBI_CANDIDATES
+                 if path and os.path.isfile(path) and not (stale and path == user)), None)
 
 
 def write_atomic(path, text):
@@ -2041,7 +2053,22 @@ def stale_copy_self_test():
         assert stale_bundled_copy(user, system), "系统目录时间戳是 1970 年时也算旧副本"
         os.remove(system)
         assert not stale_bundled_copy(user, system)
-        assert not stale_bundled_copy(os.path.join(root, "user", "words.lm"), system)
+        # words.lm：字节数和官方发布的一样才算拷进来的官方模型
+        user_lm = os.path.join(root, "user", "words.lm")
+        system_lm = os.path.join(root, "system", "words.lm")
+        write(system_lm, "lm2", 2)
+        write(user_lm, "lm", 7)
+        assert not stale_bundled_copy(user_lm, system_lm), "自己训的 words.lm 照旧优先"
+        with open(user_lm, "wb") as f:
+            f.truncate(OFFICIAL_LM_SIZES[0])  # 稀疏文件，不占盘
+        assert stale_bundled_copy(user_lm, system_lm)
+        user_wubi = os.path.join(root, "user", "wubi86.tsv")
+        system_wubi = os.path.join(root, "system", "wubi86.tsv")
+        write(system_wubi, "a\t工\t99454797\n", 2)
+        write(user_wubi, "a\t工\t99454797\n", 7)
+        assert stale_bundled_copy(user_wubi, system_wubi)
+        write(user_wubi, "a\t工\t5\n", 7)
+        assert not stale_bundled_copy(user_wubi, system_wubi), "自己做的五笔码表照旧优先"
 
 
 def lexicon_self_test():

@@ -111,6 +111,25 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../core/data/s2t.tsv")
     )
 endif()
 
+# 真实词库、英文词表、词级语言模型、五笔码表：scripts/make-data.sh、make-wubi.sh 生成在 dist/data，
+# 有就一起装进系统数据目录（OPTIONAL：安装时没有就跳过，插件退到 demo 词典）。
+# 以前源码安装要自己把它们拷进 ~/.local/share/wowtype/，那份拷贝以后会一直挡在新版数据前面。
+# 各发行版的打包脚本自己放这几个文件（同样的位置），这里多装一遍不碍事；不想要就 -DWOWTYPE_DATA_DIR=
+set(WOWTYPE_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../dist/data" CACHE PATH
+    "Directory with lexicon.tsv, english.txt, words.lm and wubi86.tsv (scripts/make-data.sh output); empty to skip")
+if(WOWTYPE_DATA_DIR)
+    foreach(_wowtype_data lexicon.tsv english.txt words.lm wubi86.tsv)
+        install(FILES "${WOWTYPE_DATA_DIR}/${_wowtype_data}"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/wowtype" OPTIONAL)
+    endforeach()
+endif()
+# 自检工具 wowtype-check、wowtype-show：和核心库一起由 cargo 编在同一个目录
+get_filename_component(_wowtype_cargo_dir "${WOWTYPE_CORE_LIB}" DIRECTORY)
+foreach(_wowtype_tool wowtype-check wowtype-show)
+    install(PROGRAMS "${_wowtype_cargo_dir}/${_wowtype_tool}"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}" OPTIONAL)
+endforeach()
+
 configure_file(conf/wowtype.conf.in
     "${CMAKE_CURRENT_BINARY_DIR}/wowtype.conf" @ONLY)
 # 插件清单里要求的 fcitx5 版本：编译时版本的「主.次.0」（5.1.x 上编的写 5.1.0，22.04 的 5.0.14 上编的写 5.0.0）。
