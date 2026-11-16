@@ -920,6 +920,24 @@ void WowtypeEngine::reloadConfig() {
     applyConfig();
     wantedLexicon_ = resolveLexicon(*config_.lexicon);
     maybeSwitchLexicon();
+    // 设置界面刚导入了神经语言模型（导入完会让插件重新读设置）：文件变了就载入，不用重启 fcitx5。
+    // 词库还在后台载入时不用管，载入那边会读到新文件
+    if (core_) {
+        static std::string loadedStamp;
+        const std::string nnlm = findDataFile("WOWTYPE_NNLM", "wetype/nlrgpt2_nnlm.bin");
+        std::error_code ec;
+        std::string stamp;
+        if (!nnlm.empty()) {
+            stamp = nnlm + ":" + std::to_string(std::filesystem::file_size(nnlm, ec)) + ":" +
+                    std::to_string(std::filesystem::last_write_time(nnlm, ec).time_since_epoch().count());
+        }
+        if (!stamp.empty() && stamp != loadedStamp) {
+            if (wowtype_engine_load_nnlm(core_, nnlm.c_str()) > 0) {
+                WLOG_I() << "WowType: 载入神经语言模型 " << nnlm;
+                loadedStamp = stamp;
+            }
+        }
+    }
 }
 
 void WowtypeEngine::maybeSwitchLexicon() {

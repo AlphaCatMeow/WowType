@@ -341,8 +341,10 @@ cargo run --release -p wowtype-core --bin wowtype-lmbuild -- \
 
 **神经语言模型（可选）**：微信输入法自带一个按字预测下一个字的小模型（`nlrgpt2_nnlm.bin`），
 WowType 能读它来给整句候选重排（日常整句的首选命中率从约 75% 提到约 84%，每次按键多 2ms 左右）。
-模型是腾讯的，WowType 不分发；手上有微信输入法 macOS 版（3.0.0）的安装包或程序时，运行
-`python3 tools/install_wetype_nnlm.py <WeType 的 .zip 或 .app>` 取出来，重启 fcitx5 生效。
+模型是腾讯的，WowType 不分发：到微信输入法官网下载 macOS 版（3.0.0）的安装包（.zip，Linux 上也是下这个），
+在「WowType 设置 → 输入 → 整句增强模型」点「导入…」选它，马上生效，不用重启。
+命令行也行：`python3 tools/install_wetype_nnlm.py <WeType 的 .zip 或 .app>`。版本对不上（MD5 不认识）时不装。
+macOS 版暂时还不读这个模型。
 
 **领域词级模型（可选）**：手上有一批某个领域的语料（工作群聊天、某个专业的文档）时，可以用同一个工具训一个小模型，
 放进数据目录叫 `words.domain.lm`，和 `words.lm` 按 6:4 混着用，这个领域里常连着用的词排得更靠前。

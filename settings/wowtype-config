@@ -105,11 +105,21 @@ def stale_bundled_copy(user, system):
     return system_mtime < 946684800 or user_mtime <= system_mtime
 
 
+def without_stale_copy(candidates):
+    """插件找数据文件的顺序（环境变量、用户目录、系统目录），去掉用户目录里的旧副本。"""
+    out = []
+    for path in candidates:
+        if path and path.startswith(DATA_DIR + os.sep) and os.path.isfile(path):
+            system = os.path.join(SYSTEM_DATA_DIR, os.path.relpath(path, DATA_DIR))
+            if stale_bundled_copy(path, system):
+                continue
+        out.append(path)
+    return out
+
+
 def lexicon_in_use_candidates():
     """插件找默认词库的顺序，去掉用户目录里的旧副本。"""
-    user, system = LEXICON_CANDIDATES[1], LEXICON_CANDIDATES[2]
-    stale = os.path.isfile(user) and stale_bundled_copy(user, system)
-    return [p for p in LEXICON_CANDIDATES if not (stale and p == user)]
+    return without_stale_copy(LEXICON_CANDIDATES)
 
 
 # 五笔码表，和插件找数据文件的顺序一样：环境变量、用户数据目录、系统目录
@@ -476,10 +486,8 @@ def read_config():
 
 def find_wubi_table():
     """五笔码表的路径，找不到是 None（设置里五笔灰掉，说清楚为什么）。"""
-    user, system = WUBI_CANDIDATES[1], WUBI_CANDIDATES[2]
-    stale = os.path.isfile(user) and stale_bundled_copy(user, system)
-    return next((path for path in WUBI_CANDIDATES
-                 if path and os.path.isfile(path) and not (stale and path == user)), None)
+    return next((path for path in without_stale_copy(WUBI_CANDIDATES)
+                 if path and os.path.isfile(path)), None)
 
 
 def write_atomic(path, text):
@@ -2050,6 +2058,99 @@ def install_lexicon_cli(args):
     return 0
 
 
+# ---------------------------------------------------------------- 神经语言模型
+# 微信输入法自带的字级神经语言模型（16 MB），有它整句候选更准。模型是腾讯的，WowType 不分发：
+# 用户自己下载微信输入法的 macOS 安装包（.zip），在设置里点「导入」，这里从包里取出来、核对后放好。
+# 和命令行的 tools/install_wetype_nnlm.py 做的一样。
+NNLM_NAME = "nlrgpt2_nnlm.bin"
+NNLM_FILE = os.environ.get("WOWTYPE_NNLM") or os.path.join(DATA_DIR, "wetype", NNLM_NAME)
+# 微信输入法 3.0.0（macOS）里的版本，核心按它写的读取代码；别的版本格式可能不同，不装
+NNLM_KNOWN_MD5 = {"edca685aba600497de298dd68a5d5e4d"}
+NNLM_MAX_BYTES = 200 << 20
+
+
+def read_wetype_nnlm(src):
+    """从微信输入法的安装包（.zip）、程序目录（.app）或模型文件本身读出模型；不是就抛 ValueError。"""
+    import zipfile
+    if os.path.isdir(src):
+        for root, _dirs, files in os.walk(src):
+            if NNLM_NAME in files:
+                with open(os.path.join(root, NNLM_NAME), "rb") as f:
+                    return f.read(NNLM_MAX_BYTES)
+        raise ValueError(f"这个目录里没有 {NNLM_NAME}")
+    if zipfile.is_zipfile(src):
+        with zipfile.ZipFile(src) as z:
+            hits = [i for i in z.infolist()
+                    if i.filename == NNLM_NAME or i.filename.endswith("/" + NNLM_NAME)]
+            if not hits:
+                raise ValueError(f"这个安装包里没有 {NNLM_NAME}，要微信输入法 macOS 版的安装包（.zip）")
+            if hits[0].file_size > NNLM_MAX_BYTES:
+                raise ValueError("包里的模型文件大得不对，不装")
+            return z.read(hits[0])
+    if os.path.getsize(src) > NNLM_MAX_BYTES:
+        raise ValueError("这不是微信输入法的安装包（.zip），也不是模型文件")
+    with open(src, "rb") as f:
+        return f.read()
+
+
+def install_wetype_nnlm(src, dest=None):
+    """导入神经语言模型，返回字节数。版本对不上（MD5 不认识）抛 ValueError，不装。"""
+    dest = dest or NNLM_FILE
+    data = read_wetype_nnlm(src)
+    if hashlib.md5(data).hexdigest() not in NNLM_KNOWN_MD5:
+        raise ValueError("模型的版本对不上：要微信输入法 3.0.0（macOS 版）安装包里的那一个")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = dest + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, dest)
+    return len(data)
+
+
+def nnlm_self_test():
+    """神经语言模型导入：从 zip、目录、文件本身取；版本不对、包里没有都不装（不联网）。"""
+    import tempfile
+    import zipfile
+    global NNLM_KNOWN_MD5
+    saved = NNLM_KNOWN_MD5
+    model = b"fake nnlm " * 100
+    NNLM_KNOWN_MD5 = {hashlib.md5(model).hexdigest()}
+    try:
+        with tempfile.TemporaryDirectory() as root:
+            dest = os.path.join(root, "out", "wetype", NNLM_NAME)
+            pack = os.path.join(root, "WeType.zip")
+            with zipfile.ZipFile(pack, "w") as z:
+                z.writestr("WeType.app/Contents/Resources/" + NNLM_NAME, model)
+                z.writestr("WeType.app/Contents/Info.plist", "x")
+            assert install_wetype_nnlm(pack, dest) == len(model)
+            with open(dest, "rb") as f:
+                assert f.read() == model
+            os.remove(dest)
+            app = os.path.join(root, "WeType.app", "Contents", "Resources")
+            os.makedirs(app)
+            with open(os.path.join(app, NNLM_NAME), "wb") as f:
+                f.write(model)
+            assert install_wetype_nnlm(os.path.join(root, "WeType.app"), dest) == len(model)
+            assert install_wetype_nnlm(os.path.join(app, NNLM_NAME), dest) == len(model)
+            os.remove(dest)
+            empty = os.path.join(root, "other.zip")
+            with zipfile.ZipFile(empty, "w") as z:
+                z.writestr("readme.txt", "x")
+            wrong = os.path.join(root, "wrong.zip")
+            with zipfile.ZipFile(wrong, "w") as z:
+                z.writestr(NNLM_NAME, b"another version")
+            for bad in (empty, wrong, os.path.join(root, "WeType.app", "Contents", "Info.plist")):
+                try:
+                    install_wetype_nnlm(bad, dest)
+                except (ValueError, OSError):
+                    pass
+                else:
+                    raise AssertionError(f"{bad} 不该装上")
+                assert not os.path.exists(dest) and not os.path.exists(dest + ".tmp")
+    finally:
+        NNLM_KNOWN_MD5 = saved
+
+
 def stale_copy_self_test():
     """用户目录里老版本拷进来的自带词库让给安装包的；用户自己的照旧（和插件的按键测试同几种情况）。"""
     import tempfile
@@ -2094,6 +2195,7 @@ def stale_copy_self_test():
         assert stale_bundled_copy(user_wubi, system_wubi)
         write(user_wubi, "a\t工\t5\n", 7)
         assert not stale_bundled_copy(user_wubi, system_wubi), "自己做的五笔码表照旧优先"
+        assert without_stale_copy([]) == [] and without_stale_copy(["", "/x"]) == ["", "/x"]
 
 
 def lexicon_self_test():
@@ -3589,6 +3691,20 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.custom_lexicon_row.add_prefix(self.custom_lexicon_check)
         self.custom_lexicon_row.set_activatable_widget(self.custom_lexicon_check)
         group.add(self.custom_lexicon_row)
+
+        # 神经语言模型：腾讯的模型，不随 WowType 分发，用户下载微信输入法的安装包后在这里导入
+        self.nnlm_row = Adw.ActionRow(title="整句增强模型")
+        self.nnlm_import = Gtk.Button(label="导入…", valign=Gtk.Align.CENTER,
+                                      tooltip_text="选下载好的微信输入法 macOS 版安装包（.zip）")
+        self.nnlm_import.connect("clicked", self.on_nnlm_import)
+        self.nnlm_row.add_suffix(self.nnlm_import)
+        self.nnlm_delete = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER,
+                                      tooltip_text="删除整句增强模型")
+        self.nnlm_delete.add_css_class("flat")
+        self.nnlm_delete.connect("clicked", self.on_nnlm_delete)
+        self.nnlm_row.add_suffix(self.nnlm_delete)
+        group.add(self.nnlm_row)
+        self.refresh_nnlm()
         self.rime_check.connect("toggled", self.on_lexicon_choice)
         self.wanxiang_check.connect("toggled", self.on_lexicon_choice)
         self.refresh_lexicon()
@@ -3704,6 +3820,50 @@ class SettingsWindow(Adw.ApplicationWindow):
                 return  # 取消
             self.start_lexicon_install(path)
         dialog.open(self, None, chosen)
+
+    def refresh_nnlm(self):
+        have = os.path.isfile(NNLM_FILE)
+        self.nnlm_row.set_subtitle(
+            "已导入，长句的第一候选更准" if have else
+            "可选。微信输入法自带的小模型（16 MB），长句的第一候选更准。"
+            "它是腾讯的，WowType 不带：先到微信输入法官网下载 macOS 版安装包（.zip），再点「导入」")
+        self.nnlm_import.set_label("重新导入…" if have else "导入…")
+        self.nnlm_delete.set_visible(have)
+
+    def on_nnlm_import(self, _button):
+        dialog = FileDialog(title="选微信输入法的安装包")
+        packs = Gtk.FileFilter(name="微信输入法安装包（*.zip）或模型文件（*.bin）")
+        packs.add_pattern("*.zip")
+        packs.add_pattern("*.bin")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(packs)
+        dialog.set_filters(filters)
+
+        def chosen(dialog, result):
+            try:
+                path = dialog.open_finish(result).get_path()
+            except GLib.Error:
+                return  # 取消
+            try:
+                size = install_wetype_nnlm(path)
+            except (ValueError, OSError) as e:
+                log(f"导入整句增强模型失败：{e}")
+                self.toast(f"没导入：{e}")
+                return
+            log(f"导入了整句增强模型（{human_size(size)}）")
+            self.fcitx.reload()  # 插件重新读设置时发现模型文件变了就载入，不用重启
+            self.toast("已导入，马上生效")
+            self.refresh_nnlm()
+        dialog.open(self, None, chosen)
+
+    def on_nnlm_delete(self, _button):
+        try:
+            os.remove(NNLM_FILE)
+        except OSError:
+            pass
+        log("删掉了整句增强模型")
+        self.toast("已删除，重启输入法后不再使用")
+        self.refresh_nnlm()
 
     def on_lexicon_delete(self, _button):
         if active_lexicon(self.values)[0] == "wanxiang":
@@ -5452,6 +5612,7 @@ if __name__ == "__main__":
         voice_model_self_test()
         lexicon_self_test()
         stale_copy_self_test()
+        nnlm_self_test()
         # fcitx5 默认配置：左 Shift 是「临时切换输入法」
         hotkey = {"TriggerKeys": {"0": "Control+space", "1": "Zenkaku_Hankaku"},
                   "AltTriggerKeys": {"0": "Shift_L"}}
