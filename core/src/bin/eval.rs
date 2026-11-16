@@ -653,7 +653,7 @@ fn main() {
     if let Some(path) = &write_baseline {
         let mut out = String::new();
         out.push_str("# 排序评测基线：scripts/eval.sh 用当时的代码跑出来的（各列是条数）。\n");
-        out.push_str("# 改了排序、要更新它：scripts/eval.sh <数据目录> --write-baseline，提交说明里贴前后对比（见 tools/eval/README.md）。\n");
+        out.push_str("# 改了排序、要更新它：scripts/eval.sh <数据目录> --update-baseline，提交说明里贴前后对比（见 tools/eval/README.md）。\n");
         if let Some(data) = data_identity(&lexicon_path) {
             let _ = writeln!(out, "# 数据\t{data}");
         }

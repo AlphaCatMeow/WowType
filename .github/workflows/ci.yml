@@ -195,6 +195,41 @@ jobs:
           name: pkg-data-wanxiang
           path: dist/pkg
 
+  # 排序评测：用 data 任务的真实数据（rime-ice 词库 + words.lm + english.txt，两个外壳默认设置下的配置，
+  # 不带神经语言模型）跑 tools/eval/ 下的全部用例。回归集 regress.tsv 必须全过；其余各组的 top1
+  # （同音词组还有「通过」）比 tools/eval/baseline.tsv 低超过 0.5 个百分点就失败。汇总表在这次运行的 Summary 页。
+  # 本地跑同一套、改了排序怎么更新基线：tools/eval/README.md。
+  ranking-eval:
+    name: 排序评测（真实词库）
+    needs: data
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: data
+          path: dist/data
+      - name: 词库钉在基线记的 rime-ice 提交上
+        # data 任务克隆的是 rime-ice 最新的提交。和基线记的不一样时，用基线那个提交重新生成词库
+        # （words.lm 用 data 任务下载好的，不再下载），免得 rime-ice 一更新、排序没改也比不过基线
+        run: |
+          want=$(awk -F'\t' '$1 == "# 数据" { print $3 }' tools/eval/baseline.tsv)
+          have=$(sed -n 's/^版本：\([0-9a-f]*\).*/\1/p' dist/data/SOURCE.txt)
+          echo "基线的 rime-ice：${want:-没记}，data 任务的：${have:-不知道}"
+          if [ -n "$want" ] && [ "$want" != "$have" ]; then
+            git init -q "$RUNNER_TEMP/rime-ice"
+            git -C "$RUNNER_TEMP/rime-ice" fetch -q --depth 1 https://github.com/iDvel/rime-ice.git "$want"
+            git -C "$RUNNER_TEMP/rime-ice" checkout -q FETCH_HEAD
+            WOWTYPE_LM_FILE=dist/data/words.lm scripts/make-data.sh "$RUNNER_TEMP/rime-ice" dist/eval-data
+            echo "EVAL_DATA=dist/eval-data" >> "$GITHUB_ENV"
+          else
+            echo "EVAL_DATA=dist/data" >> "$GITHUB_ENV"
+          fi
+      - name: 评测（回归集必须全过，其余各组和基线比）
+        run: scripts/eval.sh "$EVAL_DATA"
+
   addon:
     name: 插件 · ${{ matrix.distro }} · ${{ matrix.arch }}
     needs: [data, data-wanxiang]
