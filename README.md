@@ -191,7 +191,9 @@ sudo apt install ./wowtype_*.deb
 ```
 
 `apt` 会顺带装上设置界面要用的 GTK 4 和 libadwaita（`python3-gi`、`gir1.2-gtk-4.0`、`gir1.2-adw-1`）。
-加了 `--no-install-recommends` 的话不会装，打字不受影响，只是打不开设置界面。
+装完打开应用菜单里的「WowType 设置」，点第一页的「一键设置」（或者在终端运行 `wowtype-config --setup`）：
+输入法框架还不是 fcitx5 时问你要不要用 `im-config` 切过去（之后注销重新登录），fcitx5 正在运行的话问你要不要重启它，
+再把 WowType 加进输入法列表。
 
 > 0.3.3 及以前的版本，词库是单独的 `wowtype-data-rime-ice` 包。装新版时 apt 会自动把它删掉（文件由新包接管），不用管它。
 
@@ -201,7 +203,7 @@ sudo apt install ./wowtype_*.deb
 
 ```bash
 sudo dnf install ./wowtype-*.rpm
-wowtype-config --add-to-group      # 把 WowType 加进 fcitx5 的输入法列表
+wowtype-config --setup             # 把 WowType 加进 fcitx5 的输入法列表（fcitx5 在跑时会问要不要重启它）
 ```
 
 `dnf` 会顺带装上 fcitx5 和设置界面要用的 PyGObject、GTK 4、libadwaita。

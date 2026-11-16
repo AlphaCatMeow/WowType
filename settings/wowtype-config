@@ -23,17 +23,77 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-import gi
 
-# 界面文字全是简体中文。系统语言是英文时 Pango 给汉字挑字形会挑到繁体（台湾）那一套，
-# 「、」「。」画在格子正中间；告诉它优先简体中文。
-if "zh" not in os.environ.get("PANGO_LANGUAGE", ""):
-    os.environ["PANGO_LANGUAGE"] = ":".join(
-        x for x in ("zh-cn", os.environ.get("PANGO_LANGUAGE", "")) if x)
+def missing_gui_libraries(error):
+    """PyGObject / GTK 4 / libadwaita 没装全（--no-install-recommends、手动删了包）：告诉用户缺什么、怎么装，
+    不要静默退出（从应用菜单点「WowType 设置」会毫无反应）。有终端就打印；没有终端时用 zenity、kdialog、
+    notify-send 里有的那个说（插件在后台叫的 --startup 只发通知，最多一天一次）。"""
+    ids = ""
+    for path in ("/etc/os-release", "/usr/lib/os-release"):
+        try:
+            with open(path, encoding="utf-8") as f:
+                ids = " ".join(line.partition("=")[2].strip().strip("\"'").lower() for line in f
+                               if line.startswith(("ID=", "ID_LIKE=")))
+            break
+        except OSError:
+            continue
+    words = ids.split()
+    if any(w in words for w in ("debian", "ubuntu", "deepin")):
+        command = "sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1"
+    elif any(w in words for w in ("fedora", "rhel")):
+        command = "sudo dnf install python3-gobject gtk4 libadwaita gobject-introspection"
+    elif "arch" in words:
+        command = "sudo pacman -S --needed python-gobject gtk4 libadwaita"
+    else:
+        command = "用系统的包管理器装上 PyGObject、GTK 4、libadwaita"
+    title = "WowType 设置打不开：缺少界面库"
+    body = f"WowType 设置要 PyGObject、GTK 4 和 libadwaita，请在终端里运行：\n{command}\n\n（{error}）"
+    print(f"{title}\n{body}", file=sys.stderr)
+    if sys.stderr.isatty():
+        return
+    background = any(flag in sys.argv for flag in ("--startup", "--check-update", "--notify-setup"))
+    if background:
+        stamp = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
+                             "wowtype", "missing-gui")
+        try:
+            if time.time() - os.path.getmtime(stamp) < 24 * 3600:
+                return
+        except OSError:
+            pass
+        try:
+            os.makedirs(os.path.dirname(stamp), exist_ok=True)
+            open(stamp, "w").close()
+        except OSError:
+            pass
+    tools = [] if background else [
+        ["zenity", "--error", "--no-wrap", f"--title={title}", f"--text={body}"],
+        ["kdialog", "--title", title, "--error", body]]
+    tools.append(["notify-send", "--app-name=WowType", "--icon=wowtype", title, body])
+    for argv in tools:
+        if shutil.which(argv[0]):
+            try:
+                if subprocess.run(argv, timeout=3600, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL).returncode == 0:
+                    return
+            except (OSError, subprocess.SubprocessError):
+                continue
 
-gi.require_version("Gtk", "4.0")
-gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
+
+try:
+    import gi
+
+    # 界面文字全是简体中文。系统语言是英文时 Pango 给汉字挑字形会挑到繁体（台湾）那一套，
+    # 「、」「。」画在格子正中间；告诉它优先简体中文。
+    if "zh" not in os.environ.get("PANGO_LANGUAGE", ""):
+        os.environ["PANGO_LANGUAGE"] = ":".join(
+            x for x in ("zh-cn", os.environ.get("PANGO_LANGUAGE", "")) if x)
+
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Adw", "1")
+    from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
+except (ImportError, ValueError) as e:
+    missing_gui_libraries(e)
+    sys.exit(1)
 
 APP_ID = "io.github.Gloridust.WowType.Config"
 VERSION = "@VERSION@"

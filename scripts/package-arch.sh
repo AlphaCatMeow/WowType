@@ -50,10 +50,11 @@ pkgdesc='WeChat-style pinyin input method for fcitx5, with bundled dictionaries 
 arch=('x86_64')
 url='https://github.com/Gloridust/WowType'
 license=('MIT' 'Apache-2.0' 'GPL-3.0-only' 'CC-BY-SA-4.0' 'Unicode-3.0' 'LGPL-3.0-only')
-depends=('fcitx5' 'alsa-lib' 'gcc-libs' 'glibc' 'python')
+# 设置界面（python-gobject、gtk4、libadwaita）和 GTK / Qt 程序里打字要的 fcitx5-gtk、fcitx5-qt 都是硬依赖
+depends=('fcitx5' 'fcitx5-gtk' 'fcitx5-qt' 'alsa-lib' 'gcc-libs' 'glibc' 'python'
+         'python-gobject' 'gtk4' 'libadwaita')
 makedepends=('rust' 'cmake' 'extra-cmake-modules' 'pkgconf')
-optdepends=('python-gobject: settings app' 'gtk4: settings app' 'libadwaita: settings app'
-            'noto-fonts-emoji: color emoji in candidates' 'curl: translate mode')
+optdepends=('noto-fonts-emoji: color emoji in candidates' 'curl: translate mode')
 # makepkg handles ELF stripping and byte-sized .PKGINFO/.MTREE/.BUILDINFO.
 # Avoid a second debug package in the CI release artifacts.
 options=('!debug')
