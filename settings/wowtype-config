@@ -61,11 +61,47 @@ ISSUES_URL = f"{HOMEPAGE}/issues/new"
 # 界面上的中文标点要用简体中文字体画，见 SettingsApp.update_font_css；装了哪个用哪个
 CJK_SC_FONTS = ["Noto Sans CJK SC", "Source Han Sans SC", "Source Han Sans CN",
                 "WenQuanYi Micro Hei", "WenQuanYi Zen Hei", "Droid Sans Fallback"]
+SYSTEM_DATA_DIR = "/usr/share/wowtype"
 LEXICON_CANDIDATES = [
     os.environ.get("WOWTYPE_LEXICON", ""),
     os.path.join(DATA_DIR, "lexicon.tsv"),
-    "/usr/share/wowtype/lexicon.tsv",
+    os.path.join(SYSTEM_DATA_DIR, "lexicon.tsv"),
 ]
+# 安装包自带、WowType 自己生成的数据文件的第一行，见 stale_bundled_copy
+BUNDLED_DATA_MARKERS = {
+    "lexicon.tsv": "# 由 tools/rime2tsv.py 生成",
+    "english.txt": "# Rime dictionary",
+}
+
+
+def stale_bundled_copy(user, system):
+    """用户目录里的这份是不是老版本按说明拷进来的自带数据，插件会改用系统目录里安装包带的那份。
+
+    和插件的 isStaleBundledCopy（fcitx5-addon/src/data_files.h）同一条规则：第一行是 WowType 生成的
+    标准数据，系统目录里也有一份，而且用户目录这份不比系统目录的新（系统目录的时间戳早于 2000 年时
+    看不出新旧，也算）。0.3.4 以前 README 让大家把词库拷进用户目录，后来安装包自带了，那份却一直优先。"""
+    marker = BUNDLED_DATA_MARKERS.get(os.path.basename(user))
+    if not marker or not os.path.isfile(system):
+        return False
+    try:
+        if os.path.samefile(user, system):
+            return False
+        with open(user, "rb") as f:
+            first = f.readline().decode("utf-8", "replace")
+        if not first.startswith(marker):
+            return False
+        user_mtime = os.stat(user).st_mtime
+        system_mtime = os.stat(system).st_mtime
+    except OSError:
+        return False
+    return system_mtime < 946684800 or user_mtime <= system_mtime
+
+
+def lexicon_in_use_candidates():
+    """插件找默认词库的顺序，去掉用户目录里的旧副本。"""
+    user, system = LEXICON_CANDIDATES[1], LEXICON_CANDIDATES[2]
+    stale = os.path.isfile(user) and stale_bundled_copy(user, system)
+    return [p for p in LEXICON_CANDIDATES if not (stale and p == user)]
 # 五笔码表，和插件找数据文件的顺序一样：环境变量、用户数据目录、系统目录
 WUBI_CANDIDATES = [
     os.environ.get("WOWTYPE_WUBI", ""),
@@ -602,7 +638,7 @@ class PinyinGuesser:
         threading.Thread(target=self._load, daemon=True).start()
 
     def _load(self):
-        for path in LEXICON_CANDIDATES:
+        for path in lexicon_in_use_candidates():
             if path and os.path.exists(path):
                 try:
                     with open(path, "rb") as f:
@@ -1420,6 +1456,10 @@ def collect_diagnostics():
                  VOICE_MODEL_DIR]:
         line = _file_line(path)
         if line:
+            system = os.path.join(SYSTEM_DATA_DIR, os.path.basename(path))
+            if (path.startswith(DATA_DIR + os.sep) and os.path.isfile(path)
+                    and stale_bundled_copy(path, system)):
+                line += "（老版本拷进来的自带数据，比安装包带的旧，插件改用系统目录那份，这份可以删掉）"
             add(line)
     for label, path in (("自定义词", CUSTOM_FILE),
                         ("自动学到的词", os.path.join(DATA_DIR, "user.tsv")),
@@ -1971,6 +2011,37 @@ def install_lexicon_cli(args):
     print("已切到" + ("万象拼音" if values["Lexicon"] else "雾凇拼音（默认）") +
           ("，fcitx5 正在后台换词库，过几秒生效" if running else "，fcitx5 下次启动时生效"))
     return 0
+
+
+def stale_copy_self_test():
+    """用户目录里老版本拷进来的自带词库让给安装包的；用户自己的照旧（和插件的按键测试同几种情况）。"""
+    import tempfile
+    stock = "# 由 tools/rime2tsv.py 生成，来源：rime_ice.dict.yaml\nni hao\t你好\t1\n"
+    now = time.time()
+    with tempfile.TemporaryDirectory() as root:
+        user = os.path.join(root, "user", "lexicon.tsv")
+        system = os.path.join(root, "system", "lexicon.tsv")
+        os.makedirs(os.path.dirname(user))
+        os.makedirs(os.path.dirname(system))
+
+        def write(path, text, days_ago):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.utime(path, (now - days_ago * 86400, now - days_ago * 86400))
+
+        write(system, stock, 2)
+        write(user, stock, 7)
+        assert stale_bundled_copy(user, system)
+        write(user, stock, 0)
+        assert not stale_bundled_copy(user, system), "自己重新生成的新词库照旧优先"
+        write(user, "ni hao\t你好\t1\n", 7)
+        assert not stale_bundled_copy(user, system), "自己做的词库照旧优先"
+        write(user, stock, 0)
+        os.utime(system, (0, 0))
+        assert stale_bundled_copy(user, system), "系统目录时间戳是 1970 年时也算旧副本"
+        os.remove(system)
+        assert not stale_bundled_copy(user, system)
+        assert not stale_bundled_copy(os.path.join(root, "user", "words.lm"), system)
 
 
 def lexicon_self_test():
@@ -5328,6 +5399,7 @@ if __name__ == "__main__":
         translate_engine_self_test()
         voice_model_self_test()
         lexicon_self_test()
+        stale_copy_self_test()
         # fcitx5 默认配置：左 Shift 是「临时切换输入法」
         hotkey = {"TriggerKeys": {"0": "Control+space", "1": "Zenkaku_Hankaku"},
                   "AltTriggerKeys": {"0": "Shift_L"}}

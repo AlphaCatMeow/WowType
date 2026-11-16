@@ -22,6 +22,7 @@
 #include <iterator>
 
 #include "clipboard_copy.h"
+#include "data_files.h"
 #include <fcitx/addonmanager.h>
 #include <fcitx/candidatelist.h>
 #include <fcitx/inputmethodentry.h>
@@ -3043,6 +3044,49 @@ void runVoiceCancelCases(Instance &instance, std::function<void()> done) {
 }
 
 /// 语音结果复制到剪贴板：用假的 wl-copy（把标准输入写进文件）代替真的剪贴板。
+/// 用户目录里老版本拷进来的自带词库让给安装包带的新版；用户自己的照旧优先。
+void runDataFileCase() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / ("wowtype-data-" + std::to_string(::getpid()));
+    fs::remove_all(root);
+    fs::create_directories(root / "user");
+    fs::create_directories(root / "system");
+    const auto write = [](const fs::path &path, const std::string &text, int daysAgo) {
+        std::ofstream(path, std::ios::binary) << text;
+        fs::last_write_time(path, fs::file_time_type::clock::now() - std::chrono::hours(24 * daysAgo));
+    };
+    const std::string stock = "# 由 tools/rime2tsv.py 生成，来源：rime_ice.dict.yaml\nni hao\t你好\t1\n";
+    const fs::path user = root / "user" / "lexicon.tsv";
+    const fs::path system = root / "system" / "lexicon.tsv";
+    write(system, stock, 2);
+    write(user, stock, 7);
+    check(wowtype::isStaleBundledCopy(user, system, "lexicon.tsv"),
+          "用户目录里比安装包旧的自带词库是旧副本，让给安装包的");
+    write(user, stock, 0);
+    check(!wowtype::isStaleBundledCopy(user, system, "lexicon.tsv"),
+          "自己重新生成、比安装包新的自带词库照旧优先");
+    write(user, "ni hao\t你好\t1\n", 7);
+    check(!wowtype::isStaleBundledCopy(user, system, "lexicon.tsv"), "自己做的词库（没有生成标记）照旧优先");
+    write(user, stock, 7);
+    fs::remove(system);
+    check(!wowtype::isStaleBundledCopy(user, system, "lexicon.tsv"), "系统目录没有时用用户目录的");
+    write(system, stock, 2);
+    // 可复现构建把系统目录的时间戳设成 1970 年：看不出新旧，也让给安装包
+    write(user, stock, 0);
+    fs::last_write_time(system, fs::file_time_type::clock::now() - std::chrono::hours(24 * 365 * 40));
+    check(wowtype::isStaleBundledCopy(user, system, "lexicon.tsv"), "系统目录时间戳是 1970 年时也算旧副本");
+    write(root / "user" / "english.txt", "# Rime dictionary\nhello\n", 7);
+    write(root / "system" / "english.txt", "# Rime dictionary\nhello\nworld\n", 2);
+    check(wowtype::isStaleBundledCopy(root / "user" / "english.txt", root / "system" / "english.txt",
+                                      "english.txt"),
+          "英文词表同样处理");
+    write(root / "user" / "words.lm", "lm", 7);
+    write(root / "system" / "words.lm", "lm2", 2);
+    check(!wowtype::isStaleBundledCopy(root / "user" / "words.lm", root / "system" / "words.lm", "words.lm"),
+          "words.lm 可能是自己训的，不动");
+    fs::remove_all(root);
+}
+
 void runClipboardCase() {
     const auto dir = std::filesystem::temp_directory_path() /
                      ("wowtype-clip-" + std::to_string(::getpid()));
@@ -3100,6 +3144,7 @@ int main(int argc, char **argv) {
     dispatcher = &mainDispatcher;
     mainDispatcher.schedule([&instance]() {
         runCases(instance);
+        runDataFileCase();
         runClipboardCase();
         runModeCase(instance, [&instance]() {
         runTranslateCase(instance, [&instance]() {

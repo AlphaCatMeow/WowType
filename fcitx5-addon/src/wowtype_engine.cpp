@@ -1,5 +1,6 @@
 #include "wowtype_engine.h"
 #include "clipboard_copy.h"
+#include "data_files.h"
 #include "wowtype_log.h"
 
 #include <algorithm>
@@ -79,6 +80,7 @@ std::string userDataDir() {
 }
 
 /// 按顺序找第一个存在的文件：环境变量 > 用户数据目录 > 系统目录。
+/// 用户目录里那份是老版本按说明拷进来的自带数据、比安装包带的旧时让给系统目录（见 isStaleBundledCopy）。
 std::string findDataFile(const char *envName, const std::string &fileName) {
     if (const char *env = std::getenv(envName); env && *env) {
         return env;
@@ -87,17 +89,22 @@ std::string findDataFile(const char *envName, const std::string &fileName) {
     const std::string user = userDataDir();
     const std::string system = std::string(kSystemDataDir) + "/" + fileName;
     if (!user.empty() && std::filesystem::exists(user + "/" + fileName, ec)) {
-        // 从源码装过的会在用户目录放一份词库；后来装了安装包，系统目录里的是新版，
-        // 用户目录那份照样优先、而且一直用下去。比系统目录的旧就在日志里提一句
+        const std::string mine = user + "/" + fileName;
+        if (wowtype::isStaleBundledCopy(mine, system, fileName)) {
+            WLOG_I() << "WowType: " << mine << " 是老版本拷进来的自带数据，比安装包带的旧，改用 " << system
+                     << "（这份没在用，可以删掉）";
+            return system;
+        }
+        // 用户自己放的（训练的 words.lm、自己做的词库）照旧优先；比安装包带的旧时提一句
         std::error_code userEc;
         std::error_code systemEc;
-        const auto userTime = std::filesystem::last_write_time(user + "/" + fileName, userEc);
+        const auto userTime = std::filesystem::last_write_time(mine, userEc);
         const auto systemTime = std::filesystem::last_write_time(system, systemEc);
         if (!userEc && !systemEc && systemTime > userTime) {
-            WLOG_W() << "WowType: 用的是 " << user << "/" << fileName << "，它比 " << system
-                     << " 旧；想用安装包带的新版就把用户目录这份删掉或改名";
+            WLOG_W() << "WowType: 用的是 " << mine << "，它比 " << system
+                     << " 旧；不是你自己放的话，删掉它就会用安装包带的新版";
         }
-        return user + "/" + fileName;
+        return mine;
     }
     if (std::filesystem::exists(system, ec)) {
         return system;
