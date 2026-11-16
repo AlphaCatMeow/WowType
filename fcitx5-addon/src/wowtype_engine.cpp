@@ -250,6 +250,37 @@ std::pair<std::uintmax_t, long long> fileStamp(const std::string &path) {
     return {size, static_cast<long long>(time.time_since_epoch().count())};
 }
 
+/// 整句增强模型（字级神经语言模型）用哪一份：环境变量 WOWTYPE_NNLM 指定了就只用它；否则先用用户导入的
+/// 微信输入法模型（wetype/nlrgpt2_nnlm.bin，腾讯的，不随 WowType 分发），没有再用 nnlm.bin（安装包自带的
+/// WowType 自己训的，在系统数据目录；用户目录里放了一份就先用那份）。都没有返回空。
+/// what 写上是哪一份，给日志用。
+std::string findNnlm(std::string &what) {
+    if (const char *env = std::getenv("WOWTYPE_NNLM"); env && *env) {
+        what = "环境变量 WOWTYPE_NNLM 指定的模型";
+        return env;
+    }
+    if (std::string wetype = findDataFile("WOWTYPE_NNLM", "wetype/nlrgpt2_nnlm.bin"); !wetype.empty()) {
+        what = "导入的微信输入法模型";
+        return wetype;
+    }
+    if (std::string own = findDataFile("WOWTYPE_NNLM", "nnlm.bin"); !own.empty()) {
+        what = own.starts_with(std::string(kSystemDataDir) + "/") ? "WowType 自带的整句增强模型"
+                                                                    : "用户目录里的 nnlm.bin";
+        return own;
+    }
+    what.clear();
+    return {};
+}
+
+/// 认模型文件换没换：路径 + 大小 + 修改时间；没有模型是空串。
+std::string nnlmStamp(const std::string &path) {
+    if (path.empty()) {
+        return {};
+    }
+    const auto [size, time] = fileStamp(path);
+    return path + ":" + std::to_string(size) + ":" + std::to_string(time);
+}
+
 /// 用这个词库建核心；语言模型坏了（版本不对、文件不完整）不该让输入法整个用不了，
 /// 不带它再试一次（这时 lm 清空）。
 WowtypeEngineHandle *openCore(const std::string &lexicon, std::string &lm) {
@@ -333,16 +364,19 @@ WowtypeLoaded loadCore(const std::string &userDict, std::string lexicon) {
             WLOG_I() << "WowType: 载入英文词 " << loaded << " 个";
         }
     }
-    // 微信输入法的字级神经语言模型（不随 WowType 分发，本机有才用）
-    if (const std::string nnlm = findDataFile("WOWTYPE_NNLM", "wetype/nlrgpt2_nnlm.bin");
-        !nnlm.empty()) {
+    // 整句增强模型：先用导入的微信输入法模型，没有再用安装包自带的 nnlm.bin（findNnlm）
+    std::string nnlmWhat;
+    if (const std::string nnlm = findNnlm(nnlmWhat); !nnlm.empty()) {
         const int loaded = wowtype_engine_load_nnlm(core, nnlm.c_str());
         if (loaded > 0) {
-            WLOG_I() << "WowType: 载入神经语言模型（" << loaded << " 字）";
+            WLOG_I() << "WowType: 载入整句增强模型：" << nnlmWhat << " " << nnlm << "（" << loaded << " 字）";
+            result.nnlmStamp = nnlmStamp(nnlm);
         } else {
-            WLOG_W() << "WowType: 神经语言模型载入失败 " << nnlm << "："
+            WLOG_W() << "WowType: 整句增强模型载入失败（" << nnlmWhat << "）" << nnlm << "："
                          << (wowtype_last_error() ? wowtype_last_error() : "unknown");
         }
+    } else {
+        WLOG_I() << "WowType: 没有整句增强模型（没导入微信输入法的，安装包里也没有 nnlm.bin）";
     }
     // 用户自己训的领域词级模型（可选），和 words.lm 混着用
     if (const std::string domain = findDataFile("WOWTYPE_DOMAIN_LM", "words.domain.lm");
@@ -939,21 +973,20 @@ void WowtypeEngine::reloadConfig() {
     applyConfig();
     wantedLexicon_ = resolveLexicon(*config_.lexicon);
     maybeSwitchLexicon();
-    // 设置界面刚导入了神经语言模型（导入完会让插件重新读设置）：文件变了就载入，不用重启 fcitx5。
+    // 设置界面刚导入（或删掉）了微信输入法的模型（导入、删除完会让插件重新读设置）：要用的那份变了就载入，
+    // 不用重启 fcitx5。删掉导入的以后换回安装包自带的 nnlm.bin；两份都没有时已经载入的留到下次重启。
     // 词库还在后台载入时不用管，载入那边会读到新文件
     if (core_) {
-        static std::string loadedStamp;
-        const std::string nnlm = findDataFile("WOWTYPE_NNLM", "wetype/nlrgpt2_nnlm.bin");
-        std::error_code ec;
-        std::string stamp;
-        if (!nnlm.empty()) {
-            stamp = nnlm + ":" + std::to_string(std::filesystem::file_size(nnlm, ec)) + ":" +
-                    std::to_string(std::filesystem::last_write_time(nnlm, ec).time_since_epoch().count());
-        }
-        if (!stamp.empty() && stamp != loadedStamp) {
+        std::string what;
+        const std::string nnlm = findNnlm(what);
+        const std::string stamp = nnlmStamp(nnlm);
+        if (!stamp.empty() && stamp != nnlmStamp_) {
             if (wowtype_engine_load_nnlm(core_, nnlm.c_str()) > 0) {
-                WLOG_I() << "WowType: 载入神经语言模型 " << nnlm;
-                loadedStamp = stamp;
+                WLOG_I() << "WowType: 换用整句增强模型：" << what << " " << nnlm;
+                nnlmStamp_ = stamp;
+            } else {
+                WLOG_W() << "WowType: 整句增强模型载入失败（" << what << "）" << nnlm << "："
+                             << (wowtype_last_error() ? wowtype_last_error() : "unknown");
             }
         }
     }
@@ -1293,6 +1326,7 @@ void WowtypeEngine::takeLoaded() {
     core_ = loaded.core;
     userDictUnread_ = loaded.userDictUnread;
     historyUnread_ = loaded.historyUnread;
+    nnlmStamp_ = loaded.nnlmStamp;
 }
 
 bool WowtypeEngine::coreReady() {
