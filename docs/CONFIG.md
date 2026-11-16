@@ -241,15 +241,28 @@ Lexicon=
 
 macOS 上的设置在 `~/Library/Application Support/WowType/wowtype.conf`，**键名、取值、默认值和上面一样**（只有 `EmojiKey` 的默认值不同，见下），Linux 上的文件拷过去就能用。
 点菜单栏里的 WowType 图标 →「WowType 设置…」打开设置窗口（页面和 Linux 的设置界面一样：常规、输入、表情、语音、翻译、自定义词，
-macOS 还没有的功能不列）。窗口只改它认识的键，文件里的注释、不认识的键（检查更新这些）、`[分组]` 原样留着，
+macOS 还没有的功能不列；Linux 单独一页的「更新」在「常规」页里）。窗口只改它认识的键，文件里的注释、不认识的键、`[分组]` 原样留着，
 改过的文件拿回 Linux 照样能用。也可以直接改文件：设置窗口的「文件」菜单 →「用文本编辑打开设置文件」，
-还没有文件时会写出一份全是默认值、带说明的。窗口开着时在别处改了文件，切回窗口会重新读，不会被窗口里的旧值盖掉。
+还没有文件时会写出一份带说明的，每项都是注释掉的默认值（`# PageSize=9`），去掉 `#` 再改值才生效。
+设置窗口只写和默认值不一样的项（就地换掉注释掉的那一行），以后默认值变了，没改过的项跟着变。
+窗口开着时在别处改了文件，切回窗口会重新读，不会被窗口里的旧值盖掉。
 改完下一次按键时生效，不用重启；换了 `Lexicon` 会在后台重新载入词库，载完之前照旧用原来的。
 
 现在认的项：`CandidateLayout`、`ArrowKeys`、`PageSize`、`PageKeys*`、`SelectKeys`、`PickChar`、`Fuzzy` 和 `Fuzzy*` 各组、`TypoCorrection`、`RareExtChars`、
 `InputScheme`、`ShuangpinScheme`、`ShuangpinShowKeys`、`WubiAutoCommit`、`WubiHint`、`ShiftToggle`、`Traditional`、`PunctuationStyle`、`DateTime`、`Calculator`、`EmojiSuggest`、
 `AutoSpace*`、`Lexicon`、`Toolbar`、`ClipboardHistory`、`EmojiKey`、`ToggleKey`、`TranslateModeKey`、`Voice`、`VoiceKey`、`VoiceCopy`、`Translate` 和 `Translate*` 各项，另外有一项只有 macOS 有的 `CandidateFontSize`（候选字号，10–40 磅，默认 17；Linux 上字号跟着 fcitx5 主题）。
-检查更新 macOS 还没做，对应的项写了也不起作用。
+`CheckUpdate`（默认 `True`）：输入法每天最多查一次 GitHub 上的最新正式版（后台，不挡打字），有新版时菜单栏的输入法菜单里多一项
+「有新版本 …，下载并安装…」，点它打开设置窗口「常规」页；设置窗口打开时也查。不弹系统通知（输入法没有开发者签名，通知要先授权，打字时弹框也打扰人）。
+「下载并安装」下载 `WowType-<版本>-macos.pkg` 和同一页的 `SHA256SUMS`，校验后交给系统的 `installer` 只装给当前用户（不要密码，和一键安装脚本一样），
+装的时候输入法和设置窗口会重启一下，装好后设置窗口自动重新打开；失败时写原因，给发布页链接。
+
+设置窗口「输入」页的**整句增强模型**：从微信输入法 macOS 版的安装包（`.zip`）、装好的 `WeType.app` 或 `nlrgpt2_nnlm.bin` 本身导入
+（见下面的[神经语言模型](#数据文件)），放到 `~/Library/Application Support/WowType/wetype/nlrgpt2_nnlm.bin`，几秒后生效，不用重新登录；能删。
+导入时只看核心解析得了，不核对版本号、MD5。没导入时用安装包里的 `nnlm.bin`（WowType 以后会随包附带自己训的，现在还没有）。
+
+「常规」页「帮助」里：「复制诊断信息」把版本、数据文件、设置文件（翻译服务只留主机名，像密钥的值打码）、各模型状态和 WowType 最近两小时的系统日志
+复制到剪贴板，贴到问题里；「卸载 WowType」关掉输入法、从系统里去掉、删掉程序，用户数据（`~/Library/Application Support/WowType`）留着，
+命令行是 `WowType --uninstall`。设置里 `Lexicon` 指的文件在、但读不出来时，输入法改用自带的雾凇词库（文件换过了再试）。
 
 [工具栏](#v--空格工具栏)和表情面板和 Linux 上一样用，不同的是：
 
@@ -287,8 +300,9 @@ macOS 还没有的功能不列）。窗口只改它认识的键，文件里的�
   - 模型和 Linux 是同一个：设置窗口「语音」页点「下载」，从腾讯的服务器下载微信输入法的离线语音包（约 103 MB），
     校验后解到数据目录的 `wtlocal/`（约 130 MB），断了再点会接着下。和这台电脑装没装微信输入法无关，WowType 不分发它。
     命令行：`WowType --install-voice-model`（也接受下载好的 `.apk`）、`--remove-voice-model`。
-  - 还没下载模型时按语音键只提示去设置里下载，不碰麦克风。第一次说话时系统会问要不要允许 WowType 使用麦克风
-    （下载完模型时设置窗口会先问一次）；WowType 更新后系统可能会再问一次。在本机识别，录音不上传。
+  - 还没下载模型时按语音键不碰麦克风，第一次会直接打开设置窗口的「语音」页去下载。第一次说话时系统会问要不要允许 WowType 使用麦克风
+    （下载完模型时设置窗口会先问一次）；WowType 更新后系统可能会再问一次。没允许时第一次按语音键会打开「语音」页，
+    那里的「麦克风」一行有按钮直接打开系统设置的麦克风权限。在本机识别，录音不上传。
   - `VoiceCopy=True` 时说的话上屏后也复制到剪贴板（密码框里不复制）。
 - 上面的环境变量 macOS 不认（输入法是系统启动的，拿不到你设的环境变量）。
 

@@ -154,8 +154,10 @@ curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/main/install.sh |
   还是没有就注销重新登录一次
 - 设置在菜单栏的输入法菜单里（切到 WowType 后点菜单栏的输入法图标），设置文件是
   `~/Library/Application Support/WowType/wowtype.conf`，见 [docs/CONFIG.md](docs/CONFIG.md#macos)
-- 卸载：菜单栏的输入法里先换成别的输入法，在访达里按 `⇧⌘G` 打开 `~/Library/Input Methods`，把 WowType 拖到废纸篓，
-  再到「系统设置 → 键盘 → 输入法」里把它移除
+- 升级：有新版本时输入法菜单里会多一项，点它打开设置窗口「常规」页，点「下载并安装」（不要密码）
+- 卸载：设置窗口「常规」页最下面的「卸载 WowType」（或者终端里
+  `"$HOME/Library/Input Methods/WowType.app/Contents/MacOS/WowType" --uninstall`）。自定义词、学到的词和设置留在
+  `~/Library/Application Support/WowType`，不要了自己删掉
 
 ### 手动安装
 
