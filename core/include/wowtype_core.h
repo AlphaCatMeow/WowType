@@ -173,6 +173,17 @@ int wowtype_engine_load_custom_words(WowtypeEngineHandle *engine, const char *pa
 int wowtype_engine_save_history(WowtypeEngineHandle *engine, const char *path);
 int wowtype_engine_load_history(WowtypeEngineHandle *engine, const char *path);
 
+/* 后台存盘（1.11）：上面两个 save 在调用的线程上写完才返回（先写临时文件、刷到盘上再改名，要等两次 fsync），
+ * 别在按键的线程上用。_async 只在锁里抄一份要写的数据就返回，引擎自己的一个线程去写（写法和同步的一样）；
+ * 同一个文件还没开始写时，后来的那份顶掉前面的（连着的几次合并成一次）。返回 0 交出去了，-1 参数不对。
+ * 同步的 save 会先等后台排着的写完，不会被后写的旧数据盖掉。 */
+int wowtype_engine_save_user_dict_async(WowtypeEngineHandle *engine, const char *path);
+int wowtype_engine_save_history_async(WowtypeEngineHandle *engine, const char *path);
+/* 等后台存盘写完（1.11）：timeout_ms 小于 0 一直等，否则最多等这么久（0 只看一眼）。返回 0 都写完了、
+ * 上次调用以后交的都写成了；1 还没写完；-1 上次调用以后有写失败的（原因在 wowtype_last_error，只报一次）。
+ * 进程退出、外壳析构、换词库（新引擎要读这些文件）前调一次 -1；wowtype_engine_free 也会先写完再释放。 */
+int wowtype_engine_save_wait(WowtypeEngineHandle *engine, int timeout_ms);
+
 /* 输入拼音串；失败返回 NULL。 */
 WowtypeCandidates *wowtype_engine_input(WowtypeEngineHandle *engine, const char *input);
 
@@ -463,6 +474,9 @@ typedef struct {
     int wubi_hint;       /* 1.10 起：五笔逐码提示的候选后面显示还要打的码（WowtypeCandidateInfo.comment），默认 1 */
     int translate_key;   /* 1.10 起：另设了进出「译」的快捷键（WOWTYPE_KEY_ACTION_TOGGLE_TRANSLATE），
                           * 单按 Shift 只在中 ↔ 英之间切，默认 0 */
+    int association;     /* 1.11 起：上屏以后的联想（选词、整句上屏以后给出一页常跟在后面的词，
+                          * frame->panel 是 WOWTYPE_PANEL_ASSOCIATION），默认 0：外壳要会画联想才开，
+                          * 设置里 Association 的默认值是开。五笔、「译」、密码框（KEY_HINT_NO_TRANSLATE）不出 */
 } WowtypeSessionConfig;
 
 /* 一次调用之后外壳要做的事。归会话所有，和里面的字符串一起在同一个会话的下一次调用前有效。
@@ -478,7 +492,9 @@ typedef struct {
                             * 选了五笔却没有码表），没有为 NULL。可以没有候选只有提示 */
     int panel;             /* WOWTYPE_PANEL_*：0 普通一页、1 展开面板（横排按下键，6 列，一屏 6 行）、
                             * 2 表情面板（1.10 起，同样的网格，preedit 是搜索词）、
-                            * 3 工具栏（1.10 起，竖排一列，一页 9 个）；面板的提示在 aux */
+                            * 3 工具栏（1.10 起，竖排一列，一页 9 个）；面板的提示在 aux；
+                            * 4 联想（1.11 起，没在打字，preedit 是空的；照普通候选框画，提示在 aux，
+                            * 按 Tab 进了联想行时 cand_cursor 是光标，没进是 -1，这时别画序号：数字不选联想） */
     size_t cand_count;     /* 候选框里显示几个（一页，或展开面板的一屏）；用 wowtype_session_candidate 取 */
     int cand_cursor;       /* 光标在显示的这些里的位置；-1 不在这一页上（翻页按钮翻走以后） */
     int has_prev, has_next; /* 前面 / 后面还有一页（展开面板是一屏） */
@@ -550,6 +566,7 @@ const WowtypeFrame *wowtype_session_commit_text(WowtypeSession *session, const c
 #define WOWTYPE_PANEL_EXPANDED 1
 #define WOWTYPE_PANEL_EMOJI 2
 #define WOWTYPE_PANEL_TOOL 3
+#define WOWTYPE_PANEL_ASSOCIATION 4 /* 1.11 起 */
 #define WOWTYPE_TOOL_NONE 0
 #define WOWTYPE_TOOL_MENU 1
 #define WOWTYPE_TOOL_CLIPBOARD 2
@@ -561,6 +578,10 @@ const WowtypeFrame *wowtype_session_toggle_emoji_panel(WowtypeSession *session);
 const WowtypeFrame *wowtype_session_open_tool(WowtypeSession *session, int tool);
 /* 开着的面板，WOWTYPE_TOOL_*。 */
 int wowtype_session_open_panel(const WowtypeSession *session);
+/* 联想开着（frame->panel 是 WOWTYPE_PANEL_ASSOCIATION）返回 1，没有是 0。不改会话，之前拿到的 frame 照样有效：
+ * 外壳没在打字时据此画联想行（候选用 _candidate_total / _candidate_info 或 _candidate 取，鼠标点了用
+ * _choose / _select）。（1.11） */
+int wowtype_session_association(const WowtypeSession *session);
 /* 最近用过的 emoji 存在这个文件（一行一个，进程内所有会话共用，最多 18 个）；NULL 或空串只记在内存里并清空。 */
 void wowtype_recent_emoji_path(const char *path);
 /* 最近用过的 emoji，最近的在前；用 wowtype_candidates_* 读取并释放。 */

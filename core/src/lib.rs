@@ -23,6 +23,7 @@ pub mod nnlm;
 pub mod preedit;
 pub mod rank;
 pub mod recent_emoji;
+pub mod saver;
 pub mod session;
 pub mod session_ffi;
 pub mod shuangpin;
@@ -40,7 +41,7 @@ pub mod wubi;
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -127,8 +128,19 @@ pub struct EngineConfig {
 /// （自然对数，和语言模型的分数同一个尺度）。见 [`Engine::word_lm_context_score`]。
 pub const MERGED_PAIR_SCORE: f64 = 1.5;
 
-/// 分几次选出来的词，多长以内用一次就学（人名、术语、成语大多在四个字以内）。
+/// 分几次选出来的词，多长以内当成用户造的词（人名、术语、成语大多在四个字以内）。
 pub const COMPOSED_WORD_MAX_CHARS: usize = 4;
+
+/// 能拿来联想的词：都是字母、数字、汉字（没有标点、符号、`</s>` 这类记号），不是单个英文字母。
+fn associable(word: &str) -> bool {
+    let n = word.chars().count();
+    n > 0 && word.chars().all(char::is_alphanumeric) && !(n == 1 && word.is_ascii())
+}
+
+/// 热度够不够收词：一会儿工夫连着选三次，热度会因为这几毫秒的衰减差一点点到 3，不能因此不收。
+fn reached(heat: f64, threshold: f64) -> bool {
+    heat + 0.01 >= threshold
+}
 
 impl Default for EngineConfig {
     fn default() -> Self {
@@ -155,9 +167,10 @@ impl Default for EngineConfig {
 }
 
 /// 用户历史里的一条记录。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HistoryEntry {
-    pub count: u32,
+    /// 热度：上次使用时的次数，已经按半衰期衰减过，可以带小数。到某个时刻的热度用 [`learn::decayed`] 算。
+    pub count: f64,
     /// 上次使用时间（epoch 毫秒）。
     pub last_used_ms: u64,
 }
@@ -201,6 +214,12 @@ pub struct Engine {
     nnlm: RwLock<Option<Arc<nnlm::Nnlm>>>,
     /// 五笔码表（选了五笔才载入，见 [`Engine::load_wubi`]）。
     wubi: RwLock<Option<Arc<wubi::WubiTable>>>,
+    /// 候选新词：分几次选出来拼成、第一次出现的词，第二次再拼出来才收进用户词库。
+    new_words: RwLock<HashMap<String, learn::NewWord>>,
+    /// 最近的学习改动（[`Engine::undo_learning`] 用）。
+    journal: Mutex<learn::Journal>,
+    /// 后台存盘（[`Engine::save_user_dict_async`]）。引擎释放时先写完。
+    saver: saver::Saver,
 }
 
 impl Engine {
@@ -222,6 +241,9 @@ impl Engine {
             english: RwLock::new(Arc::new(HashMap::new())),
             nnlm: RwLock::new(None),
             wubi: RwLock::new(None),
+            new_words: RwLock::new(HashMap::new()),
+            journal: Mutex::new(learn::Journal::default()),
+            saver: saver::Saver::default(),
         }
     }
 
@@ -278,24 +300,32 @@ impl Engine {
     ///
     /// pinyin 是这次上屏时输入的拼音（用于生成用户词条）。词库里已有的词也会被
     /// 加成用户词——这等价于「记住用户的偏好」，不会覆盖原词条。
+    /// 「选够次数」看的是衰减后的热度（[`learn::decayed`]），很久以前零零散散选过几次的不算。
+    /// 是候选新词（[`Engine::record_composed_word`] 第一次拼出来的）时，这是第二次用，也收进去。
     pub fn record_selection_with_pinyin(&self, word: &str, pinyin: Option<&str>) {
+        self.record_selection_with_pinyin_at(word, pinyin, now_ms());
+    }
+
+    /// 带时间戳的 [`Engine::record_selection_with_pinyin`]。
+    pub fn record_selection_with_pinyin_at(&self, word: &str, pinyin: Option<&str>, at_ms: u64) {
         let word = &self.lexicon_form(word);
-        self.record_selection(word);
+        let heat = self.record_selection_at(word, at_ms);
         if !self.config.auto_learn || word.is_empty() {
             return;
         }
         let Some(pinyin) = pinyin.filter(|p| !p.trim().is_empty()) else {
             return;
         };
-        let count = self.history_count(word);
-        if count < self.config.auto_learn_threshold.max(1) {
-            return;
+        let threshold = f64::from(self.config.auto_learn_threshold.max(1));
+        if reached(heat, threshold) {
+            self.add_learned_word(word, pinyin, heat);
+        } else if self.take_new_word(word, at_ms) {
+            self.add_learned_word(word, pinyin, heat.max(threshold));
         }
-        self.add_learned_word(word, pinyin, count);
     }
 
-    /// 学到的词收进用户词库。count 是选用次数，决定频次。
-    fn add_learned_word(&self, word: &str, pinyin: &str, count: u32) {
+    /// 学到的词收进用户词库。heat 是选用热度，决定频次。
+    fn add_learned_word(&self, word: &str, pinyin: &str, heat: f64) {
         // 候选带的拼音已经是全拼（双拼也翻好了）；以前的前端会传双拼键位串（如 "vsgo"），
         // 那样的要先展开，否则用户词会带着一串无效音节存进去，永远也打不出来。
         let pinyin = if self.config.shuangpin && !pinyin.trim().contains(' ') {
@@ -307,51 +337,113 @@ impl Engine {
             return;
         }
         // 频次随选用次数增长但有上限，避免用户词压过通用高频词
-        let freq = (1000.0 * f64::from(count)).min(50_000.0);
-        let _ = self.lexicon.add(&pinyin, word, freq);
+        let freq = (1000.0 * heat.round().max(1.0)).min(50_000.0);
+        let before = self.lexicon.entry(word);
+        if self.lexicon.add(&pinyin, word, freq).is_ok() {
+            self.journal(vec![learn::Change::UserWord {
+                word: word.to_string(),
+                before,
+                after: self.lexicon.entry(word),
+            }]);
+        }
     }
 
-    /// 用户分几次选出来、拼成的一个词（最多 [`COMPOSED_WORD_MAX_CHARS`] 个字）（「霜」「频」「阁」→ 霜频阁）：记一次选词，
-    /// 并且马上收进用户词库，不用等选够 [`EngineConfig::auto_learn_threshold`] 次。
+    /// 用户分几次选出来、拼成的一个词（最多 [`COMPOSED_WORD_MAX_CHARS`] 个字）（「霜」「频」「阁」→ 霜频阁）：
+    /// 记一次选词；第一次只记成「候选新词」，[`learn::NEW_WORD_TTL_MS`]（30 天）里再用一次（再这样拼出来，
+    /// 或者直接选了它）才收进用户词库，不用等选够 [`EngineConfig::auto_learn_threshold`] 次。
     ///
-    /// 用户特意一段一段挑出来的，就是想要这个词；主流输入法造词也是选一次就记住。
-    /// 一次就打出来的整句不走这里，还是按次数学，免得随手打的句子都进词库。
+    /// 用户特意一段一段挑出来的，多半就是想要这个词；可一次就收的话，挑错一个字（「你好事竣」）
+    /// 也成了用户词，所以要第二次确认。一次就打出来的整句不走这里，还是按次数学。
     /// 反馈见 https://x.com/so1v3/status/2120415675969896729
     pub fn record_composed_word(&self, word: &str, pinyin: &str) {
+        self.record_composed_word_at(word, pinyin, now_ms());
+    }
+
+    /// 带时间戳的 [`Engine::record_composed_word`]。
+    pub fn record_composed_word_at(&self, word: &str, pinyin: &str, at_ms: u64) {
         let word = &self.lexicon_form(word);
         // 超过四个字的多半是先选句首词、再选剩下的长句，不是要造的词：照常按次数学
         if word.chars().count() > COMPOSED_WORD_MAX_CHARS {
-            self.record_selection_with_pinyin(word, Some(pinyin));
+            self.record_selection_with_pinyin_at(word, Some(pinyin), at_ms);
             return;
         }
-        self.record_selection(word);
+        let heat = self.record_selection_at(word, at_ms);
         if !self.config.auto_learn || word.is_empty() || pinyin.trim().is_empty() {
             return;
         }
-        // 至少给到「选够次数」那一档的频次，下次一打就排前面
-        let count = self
-            .history_count(word)
-            .max(self.config.auto_learn_threshold.max(1));
-        self.add_learned_word(word, pinyin, count);
-    }
-
-    /// 带时间戳的选词记录（方便测试）。
-    ///
-    /// 记两样：这个词的热度，和它跟前后词的搭配（见 [`learn`]）。
-    pub fn record_selection_at(&self, word: &str, at_ms: u64) {
-        if word.is_empty() {
+        // 收的时候至少给到「选够次数」那一档的频次，下次一打就排前面
+        let threshold = f64::from(self.config.auto_learn_threshold.max(1));
+        if self.lexicon.entry(word).is_some()
+            || reached(heat, threshold)
+            || self.take_new_word(word, at_ms)
+        {
+            self.add_learned_word(word, pinyin, heat.max(threshold));
             return;
         }
+        let Ok(mut new_words) = self.new_words.write() else {
+            return;
+        };
+        let before = new_words.get(word.as_str()).cloned();
+        let after = learn::NewWord {
+            pinyin: pinyin.trim().to_string(),
+            at_ms,
+        };
+        new_words.insert(word.clone(), after.clone());
+        drop(new_words);
+        self.journal(vec![learn::Change::NewWord {
+            word: word.clone(),
+            before,
+            after: Some(after),
+        }]);
+    }
+
+    /// word 是候选新词：从候选新词里拿掉（第二次用了，要么收进用户词库，要么过期了重新算），
+    /// 没过期时返回 true。
+    fn take_new_word(&self, word: &str, at_ms: u64) -> bool {
+        let Ok(mut new_words) = self.new_words.write() else {
+            return false;
+        };
+        let Some(seen) = new_words.remove(word) else {
+            return false;
+        };
+        drop(new_words);
+        let fresh = at_ms.saturating_sub(seen.at_ms) <= learn::NEW_WORD_TTL_MS;
+        self.journal(vec![learn::Change::NewWord {
+            word: word.to_string(),
+            before: Some(seen),
+            after: None,
+        }]);
+        fresh
+    }
+
+    /// 是不是还在等第二次的候选新词。
+    pub fn is_new_word(&self, word: &str) -> bool {
+        let word = self.lexicon_form(word);
+        self.new_words.read().is_ok_and(|n| n.contains_key(&word))
+    }
+
+    /// 带时间戳的选词记录（方便测试），返回这次以后的热度。
+    ///
+    /// 记两样：这个词的热度，和它跟前后词的搭配（见 [`learn`]）。改了什么记进学习日志，
+    /// [`Engine::undo_learning`] 能退回去。
+    pub fn record_selection_at(&self, word: &str, at_ms: u64) -> f64 {
+        if word.is_empty() {
+            return 0.0;
+        }
         let word = &self.lexicon_form(word);
+        let mut changes = Vec::new();
+        let mut heat = 0.0;
         if let Ok(mut history) = self.history.write() {
-            let entry = history.entry(word.to_string()).or_insert(HistoryEntry {
-                count: 0,
-                last_used_ms: at_ms,
-            });
             // 先按时间衰减再加 1：很久以前用得多的词不会一直顶着
-            let kept = crate::learn::decayed(*entry, at_ms).round() as u32;
-            entry.count = kept.saturating_add(1);
-            entry.last_used_ms = at_ms;
+            let before = history.get(word.as_str()).copied();
+            let after = learn::bumped(before, at_ms);
+            heat = after.count;
+            history.insert(word.to_string(), after);
+            changes.push(learn::Change::Word {
+                word: word.to_string(),
+                before,
+                after: Some(after),
+            });
         }
         // 这个候选是哪几个词拼的（整句「我发给你」= 我 | 发给 | 你）
         let words: Vec<String> = self
@@ -364,16 +456,117 @@ impl Engine {
         let start = self.start_word();
         if let Ok(mut pairs) = self.pairs.write() {
             if let Some(prev) = &start {
-                pairs.learn(prev, &words[0], at_ms);
+                changes.extend(pairs.learn(prev, &words[0], at_ms));
             }
             for pair in words.windows(2) {
-                pairs.learn(&pair[0], &pair[1], at_ms);
+                changes.extend(pairs.learn(&pair[0], &pair[1], at_ms));
             }
         }
         if let (Ok(mut last), Some(tail)) = (self.last_word.write(), words.last()) {
-            last.clear();
-            last.push_str(tail);
+            if *last != *tail {
+                changes.push(learn::Change::LastWord {
+                    before: std::mem::replace(&mut *last, tail.clone()),
+                    after: tail.clone(),
+                });
+            }
         }
+        self.journal(changes);
+        heat
+    }
+
+    fn journal(&self, changes: Vec<learn::Change>) {
+        if let Ok(mut journal) = self.journal.lock() {
+            for change in changes {
+                journal.push(change);
+            }
+        }
+    }
+
+    /// 学习日志的位置：学习前后各取一次，[`Engine::undo_learning`] 拿这两个数退回中间学到的。
+    pub fn learn_mark(&self) -> u64 {
+        self.journal.lock().map(|j| j.mark()).unwrap_or(0)
+    }
+
+    /// 撤销 [start, end)（[`Engine::learn_mark`] 取的）之间学到的东西：选词热度、搭配、自动收进用户词库的词、
+    /// 候选新词都回到学之前。只改回后来没再被改过的（别的输入框接着学了同一个词，那份不动）。
+    /// 不重算：学的时候记下了改之前的值。start 已经挤出日志（隔了上千条改动）时什么也不做。
+    /// 返回是不是真的退了什么。
+    pub fn undo_learning(&self, start: u64, end: u64) -> bool {
+        let Some(changes) = self.journal.lock().ok().and_then(|mut j| j.take(start, end)) else {
+            return false;
+        };
+        let mut undone = false;
+        for change in changes {
+            undone |= self.revert(change);
+        }
+        undone
+    }
+
+    /// 把一条改动改回去（现在的值还是那次改成的才改）。
+    fn revert(&self, change: learn::Change) -> bool {
+        match change {
+            learn::Change::Word { word, before, after } => {
+                let Ok(mut history) = self.history.write() else {
+                    return false;
+                };
+                if history.get(&word).copied() != after {
+                    return false;
+                }
+                match before {
+                    Some(entry) => history.insert(word, entry),
+                    None => history.remove(&word),
+                };
+            }
+            learn::Change::Pair {
+                prev,
+                cur,
+                before,
+                after,
+            } => {
+                let Ok(mut pairs) = self.pairs.write() else {
+                    return false;
+                };
+                if pairs.get(&prev, &cur) != after {
+                    return false;
+                }
+                pairs.set(&prev, &cur, before);
+            }
+            learn::Change::LastWord { before, after } => {
+                let Ok(mut last) = self.last_word.write() else {
+                    return false;
+                };
+                if *last != after {
+                    return false;
+                }
+                *last = before;
+            }
+            learn::Change::UserWord { word, before, after } => {
+                if self.lexicon.entry(&word) != after {
+                    return false;
+                }
+                match before {
+                    Some((pinyin, freq)) => {
+                        let _ = self.lexicon.add(&pinyin, &word, freq);
+                    }
+                    None => {
+                        self.lexicon.remove(&word);
+                    }
+                }
+            }
+            learn::Change::NewWord { word, before, after } => {
+                let Ok(mut new_words) = self.new_words.write() else {
+                    return false;
+                };
+                if new_words.get(&word) != after.as_ref() {
+                    return false;
+                }
+                match before {
+                    Some(seen) => new_words.insert(word, seen),
+                    None => new_words.remove(&word),
+                };
+            }
+        }
+        true
     }
 
     /// 光标前的最后一个词：上一次选的词，而且光标前的文本正好以它结尾
@@ -416,17 +609,65 @@ impl Engine {
         self.pairs.read().map(|p| p.len()).unwrap_or(0)
     }
 
-    /// 把用户输入习惯（词的热度、词搭配）存到 TSV。
+    /// 把用户输入习惯（词的热度、词搭配、候选新词）存到 TSV。热度已经衰减得几乎没有的不写。
+    /// 在调用的线程上写完才返回（要等 fsync）；按键的线程上用 [`Engine::save_history_async`]。
     pub fn save_history<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
+        // 后台还排着、正在写的旧数据先写完，别等这次写好以后再盖上去
+        self.saver.flush();
+        let (history, pairs, new_words) = self.history_snapshot()?;
+        let text = crate::learn::history_text(&history, &pairs, &new_words, now_ms());
+        crate::fsutil::write_atomic(path.as_ref(), text.as_bytes())
+    }
+
+    /// 在后台存输入习惯：这里只在锁里抄一份，排成文字、写文件（两次 fsync）在存盘的线程上做。
+    /// 连着几次还没写的合并成一次。[`Engine::save_wait`] 等写完。
+    pub fn save_history_async<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
+        let (history, pairs, new_words) = self.history_snapshot()?;
+        let now = now_ms();
+        self.saver.submit(
+            path.as_ref().to_path_buf(),
+            Box::new(move || Ok(crate::learn::history_text(&history, &pairs, &new_words, now))),
+        );
+        Ok(())
+    }
+
+    /// 在后台存用户词库，见 [`Engine::save_history_async`]。
+    pub fn save_user_dict_async<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
+        let words = self.lexicon.words();
+        self.saver.submit(
+            path.as_ref().to_path_buf(),
+            Box::new(move || Ok(crate::lexicon::user_dict_text(&words))),
+        );
+        Ok(())
+    }
+
+    /// 等后台存盘写完：timeout 是 None 时一直等（进程退出、换词库前），Some(0) 只看一眼。
+    /// 写失败的原因只报一次。引擎释放时也会等写完。
+    pub fn save_wait(&self, timeout: Option<std::time::Duration>) -> saver::SaveStatus {
+        self.saver.wait(timeout)
+    }
+
+    /// 输入习惯的一份拷贝（在锁里抄，存盘用）。
+    #[allow(clippy::type_complexity)]
+    fn history_snapshot(
+        &self,
+    ) -> Result<(HashMap<String, HistoryEntry>, UserPairs, HashMap<String, learn::NewWord>)> {
         let history = self
             .history
             .read()
-            .map_err(|_| anyhow::anyhow!("history lock poisoned"))?;
+            .map_err(|_| anyhow::anyhow!("history lock poisoned"))?
+            .clone();
         let pairs = self
             .pairs
             .read()
-            .map_err(|_| anyhow::anyhow!("pairs lock poisoned"))?;
-        crate::learn::save_history(path, &history, &pairs)
+            .map_err(|_| anyhow::anyhow!("pairs lock poisoned"))?
+            .clone();
+        let new_words = self
+            .new_words
+            .read()
+            .map_err(|_| anyhow::anyhow!("new words lock poisoned"))?
+            .clone();
+        Ok((history, pairs, new_words))
     }
 
     /// 读回 [`Engine::save_history`] 存的输入习惯，返回条数。
@@ -439,15 +680,29 @@ impl Engine {
             .pairs
             .write()
             .map_err(|_| anyhow::anyhow!("pairs lock poisoned"))?;
-        crate::learn::load_history(path, &mut history, &mut pairs)
+        let mut new_words = self
+            .new_words
+            .write()
+            .map_err(|_| anyhow::anyhow!("new words lock poisoned"))?;
+        crate::learn::load_history(path, &mut history, &mut pairs, &mut new_words)
     }
 
+    /// 上次选这个词时的次数（衰减过、四舍五入），没选过是 0。
     pub fn history_count(&self, word: &str) -> u32 {
         self.history
             .read()
             .ok()
-            .and_then(|h| h.get(word).map(|e| e.count))
+            .and_then(|h| h.get(word).map(|e| e.count.round() as u32))
             .unwrap_or(0)
+    }
+
+    /// 这个词 at_ms 时的选词热度（衰减到那时），没选过是 0。
+    pub fn history_heat(&self, word: &str, at_ms: u64) -> f64 {
+        self.history
+            .read()
+            .ok()
+            .and_then(|h| h.get(word).map(|e| learn::decayed(*e, at_ms)))
+            .unwrap_or(0.0)
     }
 
     pub fn with_config(mut self, config: EngineConfig) -> Self {
@@ -677,6 +932,9 @@ impl Engine {
         if let Ok(mut history) = self.history.write() {
             forgot |= history.remove(word).is_some();
         }
+        if let Ok(mut new_words) = self.new_words.write() {
+            forgot |= new_words.remove(word).is_some();
+        }
         if let Ok(mut pairs) = self.pairs.write() {
             forgot |= pairs.remove_word(word) > 0;
         }
@@ -693,7 +951,9 @@ impl Engine {
         self.lexicon.words()
     }
 
+    /// 存用户词库（在调用的线程上写完才返回）；按键的线程上用 [`Engine::save_user_dict_async`]。
     pub fn save_user_dict<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
+        self.saver.flush();
         self.lexicon.save_tsv(path)
     }
 
@@ -714,12 +974,69 @@ impl Engine {
         &self.config
     }
 
-    /// 输入拼音串，返回候选；解析失败时返回空列表。
-    /// 基于上一词的候选预测（「预测词库」）。
+    /// 基于上一词的候选预测（「预测词库」）：先是用户学到的搭配（prev 后面选过的，热的在前，
+    /// 热度不到 [`learn::MIN_PICK_HEAT`] 的不算），再是词级语言模型里常跟在 prev 后面的词。
     ///
-    /// 返回 (词, 对数概率)，按概率降序。语言模型没接入预测能力时返回空。
+    /// 返回 (词, 分数)，按分数降序：模型的是对数概率（不大于 0），学到的搭配是 ln(1+热度)（大于 0，排在前面）。
+    /// 都是词库里的写法。语言模型没接入预测能力、也没学过时返回空。
     pub fn predict_next(&self, prev: &str, limit: usize) -> Vec<(String, f64)> {
-        self.lm.top_next(prev, limit)
+        let mut out: Vec<(String, f64)> = self
+            .pairs
+            .read()
+            .map(|pairs| pairs.next_words(prev, now_ms()))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, heat)| *heat >= learn::MIN_PICK_HEAT)
+            .map(|(word, heat)| (word, heat.ln_1p()))
+            .take(limit)
+            .collect();
+        for (word, score) in self.lm.top_next(prev, limit) {
+            if out.len() >= limit {
+                break;
+            }
+            if !out.iter().any(|(w, _)| *w == word) {
+                out.push((word, score));
+            }
+        }
+        out
+    }
+
+    /// 上屏以后的联想（会话用）：before 是光标前已上屏的字（末尾是刚上屏的 just），返回最多 limit 个
+    /// 常跟在后面的词（词库里的写法）。
+    ///
+    /// 按上文末尾的词查 [`Engine::predict_next`]：先试最近一次选的词（光标前正好以它结尾），再试末尾 4、3、2、1 个字，
+    /// 用第一个查得到的（短的字查出来的多半接不上，不拿来凑数）。去掉标点、符号、单个字母，和刚上屏的一样的。
+    pub fn associate(&self, before: &str, just: &str, limit: usize) -> Vec<String> {
+        let mut keys: Vec<String> = Vec::new();
+        if let Ok(last) = self.last_word.read() {
+            if !last.is_empty() && before.ends_with(&self.shown_text(&last)) {
+                keys.push(last.clone());
+            }
+        }
+        let chars: Vec<char> = before.chars().collect();
+        for n in (1..=chars.len().min(4)).rev() {
+            let tail: String = chars[chars.len() - n..].iter().collect();
+            if !keys.contains(&tail) {
+                keys.push(tail);
+            }
+        }
+        let just_plain = self.lexicon_form(just);
+        for key in &keys {
+            let mut out: Vec<String> = Vec::new();
+            for (word, _) in self.predict_next(key, limit.saturating_mul(2)) {
+                if out.len() >= limit {
+                    break;
+                }
+                if !associable(&word) || word == *key || word == just || word == just_plain || out.contains(&word) {
+                    continue;
+                }
+                out.push(word);
+            }
+            if !out.is_empty() {
+                return out;
+            }
+        }
+        Vec::new()
     }
 
     pub fn input(&self, raw: &str) -> Vec<Candidate> {
@@ -1670,7 +1987,7 @@ impl Engine {
                     (Some(a), _) => a,
                     (None, Some(b)) => b,
                     (None, None) => HistoryEntry {
-                        count: 0,
+                        count: 0.0,
                         last_used_ms: at_ms,
                     },
                 };
@@ -2043,9 +2360,11 @@ fn pin_single_initial(input: &str, candidates: &mut Vec<Candidate>) {
     }
 }
 
+/// 同一串输入上次选过的候选提前（词和整句放第一，单字放第二）。热度（`history_use_count`，
+/// 衰减过的）不到 [`learn::MIN_PICK_HEAT`] 的不算：误选一次的词一个月以后就不再一直顶在前面。
 fn promote_picked(candidates: &mut Vec<Candidate>) {
     let picked = |c: &Candidate| {
-        c.features.history_use_count > 0.0
+        f64::from(c.features.history_use_count) >= learn::MIN_PICK_HEAT
             && c.features.typo_count == 0.0
             && c.features.prefix_completion == 0.0
             && c.features.full_jianpin == 0.0
@@ -3096,6 +3415,42 @@ mod tests {
     }
 
     #[test]
+    fn async_save_writes_in_background() {
+        let e = engine("ni hao\t你好\t10\n");
+        e.add_user_word("wo te", "我特", 5000.0).unwrap();
+        e.record_selection("我特");
+        let dir = std::env::temp_dir().join(format!("wowtype-async-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (dict, history) = (dir.join("user.tsv"), dir.join("history.tsv"));
+        e.save_user_dict_async(&dict).unwrap();
+        e.save_history_async(&history).unwrap();
+        assert_eq!(e.save_wait(None), saver::SaveStatus::Done);
+        let again = engine("ni hao\t你好\t10\n");
+        assert_eq!(again.load_user_dict(&dict).unwrap(), 1);
+        assert!(again.load_history(&history).unwrap() >= 1);
+        assert_eq!(again.history_count("我特"), 1);
+
+        // 后台排着旧的、接着同步存新的：同步的先等旧的写完，文件里是新的
+        e.remove_user_word("我特");
+        e.save_user_dict_async(&dict).unwrap();
+        e.add_user_word("wo te", "沃特", 5000.0).unwrap();
+        e.save_user_dict(&dict).unwrap();
+        let text = std::fs::read_to_string(&dict).unwrap();
+        assert!(text.contains("沃特") && !text.contains("我特"), "{text}");
+
+        // 写不了的报一次错
+        e.save_history_async(dir.join("没有这个目录/history.tsv")).unwrap();
+        assert!(matches!(e.save_wait(None), saver::SaveStatus::Failed(_)));
+        assert_eq!(e.save_wait(Some(std::time::Duration::ZERO)), saver::SaveStatus::Done);
+
+        // 引擎释放时先写完
+        e.save_history_async(&history).unwrap();
+        drop(e);
+        assert!(std::fs::read_to_string(&history).unwrap().contains("我特"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn invalid_user_pinyin_rejected() {
         let e = engine("ni hao\t你好\t10\n");
         assert!(e.add_user_word("zzz", "坏词", 1.0).is_err());
@@ -3912,23 +4267,103 @@ mod tests {
         );
     }
 
-    #[test]
-    fn composed_word_is_learned_on_first_use() {
-        let lexicon: Arc<dyn Lexicon> = Arc::new(
-            MemoryLexicon::from_tsv_str(
-                "shuang\t双\t10000\nshuang\t霜\t500\npin\t拼\t8000\npin\t频\t500\n\
-                 ge\t个\t20000\nge\t阁\t300\nshuang pin\t双拼\t3000\n",
-            )
-            .unwrap(),
-        );
-        let lm: Arc<dyn LanguageModel> = Arc::new(BigramLm::default());
-        let e = Engine::new(lexicon, lm);
-        assert!(!e.input("shuangpinge").iter().any(|c| c.text == "霜频阁"));
+    fn shuangpinge_engine() -> Engine {
+        engine(
+            "shuang\t双\t10000\nshuang\t霜\t500\npin\t拼\t8000\npin\t频\t500\n\
+             ge\t个\t20000\nge\t阁\t300\nshuang pin\t双拼\t3000\n",
+        )
+    }
 
-        // 分三次选出来的词，用一次就记住、排第一
-        e.record_composed_word("霜频阁", "shuang pin ge");
-        assert_eq!(e.user_words().len(), 1);
+    #[test]
+    fn composed_word_is_learned_on_second_use() {
+        // 以前分几次选出来的词用一次就收进用户词库，挑错一个字（你好事竣）也成了用户词：
+        // 现在第一次只记成候选新词，30 天里第二次这样拼出来才收
+        let e = shuangpinge_engine();
+        assert!(!e.input("shuangpinge").iter().any(|c| c.text == "霜频阁"));
+        let day = 24 * 3600 * 1000;
+        e.record_composed_word_at("霜频阁", "shuang pin ge", day);
+        assert!(e.user_words().is_empty(), "第一次只是候选新词");
+        assert!(e.is_new_word("霜频阁"));
+        e.record_composed_word_at("霜频阁", "shuang pin ge", 20 * day);
+        assert_eq!(e.user_words().len(), 1, "30 天里第二次就收");
+        assert!(!e.is_new_word("霜频阁"));
         assert_eq!(e.input("shuangpinge")[0].text, "霜频阁");
+
+        // 第二次直接选了整个词（学到的搭配让它排上来了）也算
+        let e = shuangpinge_engine();
+        e.record_composed_word_at("霜频阁", "shuang pin ge", day);
+        e.record_selection_with_pinyin_at("霜频阁", Some("shuang pin ge"), 2 * day);
+        assert_eq!(e.user_words().len(), 1);
+
+        // 隔了 30 天以上：重新算第一次
+        let e = shuangpinge_engine();
+        e.record_composed_word_at("霜频阁", "shuang pin ge", day);
+        e.record_composed_word_at("霜频阁", "shuang pin ge", 40 * day);
+        assert!(e.user_words().is_empty());
+        assert!(e.is_new_word("霜频阁"));
+    }
+
+    #[test]
+    fn auto_learn_uses_decayed_heat() {
+        // 很久以前零零散散选过的不算数：每隔 60 天选一次，热度一直到不了 3
+        let e = engine("ni hao\t你好\t10000\n");
+        let day = 24 * 3600 * 1000;
+        for i in 0..5 {
+            e.record_selection_with_pinyin_at("我特", Some("wo te"), i * 60 * day);
+        }
+        assert!(e.user_words().is_empty(), "{:?}", e.user_words());
+        // 一天里选三次就够
+        for i in 0..3 {
+            e.record_selection_with_pinyin_at("沃特", Some("wo te"), 400 * day + i);
+        }
+        assert_eq!(e.user_words().len(), 1);
+    }
+
+    #[test]
+    fn one_old_pick_stops_promoting() {
+        // 误选一次的词以前会一直排第一（热度衰减没有下限）；热度掉到半次以下就不再提前。
+        // 频次差得远，排序特征里的热度本身翻不过来，排第一靠的是「上次选过的放第一」
+        let e = engine("shi jian\t时间\t9000\nshi jian\t事件\t800\n");
+        e.record_selection_at("事件", 0);
+        let day = 24 * 3600 * 1000;
+        assert_eq!(e.input_at("shijian", day)[0].text, "事件", "刚选过的提前");
+        assert_eq!(e.input_at("shijian", 29 * day)[0].text, "事件", "一个月以内还提前");
+        assert_eq!(e.input_at("shijian", 45 * day)[0].text, "时间", "一个半月以后回到原位");
+    }
+
+    #[test]
+    fn undo_learning_rolls_back_one_selection() {
+        let e = shuangpinge_engine();
+        e.add_user_word("wo te", "我特", 5000.0).unwrap();
+        e.record_selection("我特");
+        e.set_context("我特");
+        let start = e.learn_mark();
+        // 选够次数自动收词、学搭配、记候选新词
+        for _ in 0..3 {
+            e.record_selection_with_pinyin("双拼", Some("shuang pin"));
+        }
+        e.record_composed_word("霜频阁", "shuang pin ge");
+        let end = e.learn_mark();
+        assert!(e.user_words().iter().any(|(_, w, _)| w == "双拼"));
+        assert!(e.pair_count() >= 1);
+        assert!(e.is_new_word("霜频阁"));
+        assert!(e.undo_learning(start, end));
+        assert_eq!(e.history_count("双拼"), 0);
+        assert_eq!(e.history_count("霜频阁"), 0);
+        assert!(!e.is_new_word("霜频阁"));
+        assert_eq!(e.pair_count(), 0, "我特 -> 双拼 退掉");
+        let words: Vec<String> = e.user_words().into_iter().map(|(_, w, _)| w).collect();
+        assert_eq!(words, ["我特"], "自动收的退掉，原来的用户词不动");
+        assert_eq!(e.history_count("我特"), 1, "之前的学习不动");
+        assert!(!e.undo_learning(start, end), "撤销过的不再撤销");
+
+        // 撤销以后又被别处学过的不动
+        let start = e.learn_mark();
+        e.record_selection("双拼");
+        let end = e.learn_mark();
+        e.record_selection("双拼");
+        e.undo_learning(start, end);
+        assert_eq!(e.history_count("双拼"), 2, "后来又选的一次在，撤销不去碰");
     }
 
     #[test]

@@ -12,6 +12,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -578,6 +579,10 @@ public:
     uint64_t candGeneration_ = UINT64_MAX;
     /// 开着的工具栏 / 表情面板（WOWTYPE_TOOL_*），会话管。
     int panel() const { return wowtype_session_open_panel(session_); }
+    /// 会话开着上屏以后的联想（没在打字）。
+    bool associating() const { return wowtype_session_association(session_) != 0; }
+    /// 候选框上画着联想行：会话关掉了联想、键又交给了应用时要收起来。
+    bool associationShown_ = false;
 
     /// 全部原始输入（包括已经选过词的部分）。
     std::string input() const { return wowtype_session_input(session_); }
@@ -965,7 +970,8 @@ void WowtypeEngine::maybeSwitchLexicon() {
         takeLoaded();
     }
     if (core_) {
-        maybeSaveUserDict(true);
+        // 新引擎载入时要读这两个文件：等写完
+        maybeSaveUserDict(true, true);
     }
     // 候选、编辑区都是旧词库算出来的，先清掉
     instance_->inputContextManager().foreach([this](fcitx::InputContext *ic) {
@@ -1036,6 +1042,7 @@ void WowtypeEngine::applyConfig() {
                                             : WowtypeSelectKeys::Off;
     }
     pickChar_ = envOr("WOWTYPE_PICK_CHAR", *config_.pickChar);
+    association_ = envOr("WOWTYPE_ASSOCIATION", *config_.association);
     dateTime_ = envOr("WOWTYPE_DATETIME", *config_.dateTime);
     calculator_ = envOr("WOWTYPE_CALC", *config_.calculator);
     toolbar_ = envOr("WOWTYPE_TOOLBAR", *config_.toolbar);
@@ -1264,7 +1271,8 @@ WowtypeEngine::~WowtypeEngine() {
         return true;
     });
     if (core_) {
-        maybeSaveUserDict(true);
+        // 退出前等后台存盘写完（free 也会等，这里能把失败记进日志）
+        maybeSaveUserDict(true, true);
         wowtype_engine_free(core_);
         core_ = nullptr;
     }
@@ -1319,40 +1327,38 @@ std::string WowtypeEngine::userDictPath() const {
     return dir + "/user.tsv";
 }
 
-void WowtypeEngine::maybeSaveUserDict(bool force) {
-    if (!core_ || (!force && unsavedCommits_ < kSaveEvery) || unsavedCommits_ == 0) {
+void WowtypeEngine::maybeSaveUserDict(bool force, bool wait) {
+    if (!core_) {
         return;
+    }
+    // 存盘在核心的后台线程上（ABI 1.11）：这里只抄一份数据，不等两次 fsync。上次写失败了现在才知道：
+    // 记下来，这次接着存（写的都是整份，存成了就补上了）
+    if (wowtype_engine_save_wait(core_, 0) < 0) {
+        WLOG_W() << "WowType: 用户词库或输入习惯保存失败："
+                     << (wowtype_last_error() ? wowtype_last_error() : "unknown");
+        unsavedCommits_ = std::max(unsavedCommits_, kSaveEvery);
     }
     const std::string path = userDictPath();
-    if (path.empty()) {
-        return;
-    }
-    // 载入时没读出来的文件，第一次存之前先改名留着（只做一次；改不了名就先不存，下次再试）
-    if (userDictUnread_ && setAsideUnreadFile(path, "用户词库")) {
-        userDictUnread_ = false;
-    }
-    const std::string history = historyPathFor(path);
-    if (historyUnread_ && (history.empty() || setAsideUnreadFile(history, "输入习惯"))) {
-        historyUnread_ = false;
-    }
-    bool dictSaved = false;
-    if (!userDictUnread_) {
-        dictSaved = wowtype_engine_save_user_dict(core_, path.c_str()) == 0;
-        if (!dictSaved) {
-            WLOG_W() << "WowType: 用户词库保存失败 " << path << "："
-                         << (wowtype_last_error() ? wowtype_last_error() : "unknown");
+    if (!path.empty() && unsavedCommits_ > 0 && (force || unsavedCommits_ >= kSaveEvery)) {
+        // 载入时没读出来的文件，第一次存之前先改名留着（只做一次；改不了名就先不存那个文件，下次再试）
+        if (userDictUnread_ && setAsideUnreadFile(path, "用户词库")) {
+            userDictUnread_ = false;
+        }
+        const std::string history = historyPathFor(path);
+        if (historyUnread_ && (history.empty() || setAsideUnreadFile(history, "输入习惯"))) {
+            historyUnread_ = false;
+        }
+        const bool dictQueued =
+            !userDictUnread_ && wowtype_engine_save_user_dict_async(core_, path.c_str()) == 0;
+        const bool historyQueued = !historyUnread_ && !history.empty() &&
+                                   wowtype_engine_save_history_async(core_, history.c_str()) == 0;
+        if (dictQueued && historyQueued) {
+            unsavedCommits_ = 0;
         }
     }
-    bool historySaved = false;
-    if (!historyUnread_) {
-        historySaved = !history.empty() && wowtype_engine_save_history(core_, history.c_str()) == 0;
-        if (!historySaved) {
-            WLOG_W() << "WowType: 输入习惯保存失败 " << history << "："
-                         << (wowtype_last_error() ? wowtype_last_error() : "unknown");
-        }
-    }
-    if (dictSaved && historySaved) {
-        unsavedCommits_ = 0;
+    if (wait && wowtype_engine_save_wait(core_, -1) < 0) {
+        WLOG_W() << "WowType: 用户词库或输入习惯保存失败："
+                     << (wowtype_last_error() ? wowtype_last_error() : "unknown");
     }
 }
 
@@ -1426,6 +1432,7 @@ void WowtypeEngine::syncSession(WowtypeState *state) {
     config.wubi = wubi_ ? 1 : 0;
     config.wubi_auto_commit = *config_.wubiAutoCommit ? 1 : 0;
     config.wubi_hint = *config_.wubiHint ? 1 : 0;
+    config.association = association_ ? 1 : 0;
     wowtype_session_configure(state->session_, &config);
 }
 
@@ -1582,7 +1589,7 @@ void WowtypeEngine::refreshCandidates(WowtypeState *state) {
     state->panelPage_ = 0;
     state->panelCursor_ = 0;
     const bool panelOpen = state->panel() != WOWTYPE_TOOL_NONE;
-    if (!panelOpen && (state->remaining().empty() || !coreReady())) {
+    if (!panelOpen && !state->associating() && (state->remaining().empty() || !coreReady())) {
         return;
     }
     // 候选（引擎候选 + 计算器、emoji 推荐、数字按键 emoji、日期时间，或者开着的工具栏 / 表情面板的条目）由会话算，
@@ -1726,6 +1733,7 @@ void WowtypeEngine::updateInputPanel(fcitx::InputContext *ic,
                                      WowtypeState *state) {
     auto &panel = ic->inputPanel();
     panel.reset();
+    state->associationShown_ = false;
 
     if (const int open = state->panel(); open != WOWTYPE_TOOL_NONE) {
         // 工具栏 / 表情面板：条目、光标、提示、搜索词都是会话给的
@@ -1754,6 +1762,9 @@ void WowtypeEngine::updateInputPanel(fcitx::InputContext *ic,
     if (!state->composing()) {
         if (translate) {
             fillTranslateView(ic, state, panel);
+        } else if (state->associating()) {
+            fillAssociation(panel, state);
+            state->associationShown_ = true;
         }
         ic->updatePreedit();
         ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
@@ -1804,6 +1815,37 @@ void WowtypeEngine::updateInputPanel(fcitx::InputContext *ic,
 
     ic->updatePreedit();
     ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
+}
+
+/// 上屏以后的联想：会话给的一页，照普通候选框画，上方是会话给的提示。没按 Tab 进联想行时不画光标、
+/// 不画序号（数字不选联想，照常交给应用）；进了以后光标和 1–9 照常。鼠标点了和普通候选一样走 commitCandidate。
+void WowtypeEngine::fillAssociation(fcitx::InputPanel &panel, WowtypeState *state) {
+    syncView(state);
+    const WowtypeFrame *frame = wowtype_session_frame(state->session_);
+    if (frame && frame->aux) {
+        panel.setAuxUp(fcitx::Text(frame->aux));
+    }
+    const int cursor = frame ? frame->cand_cursor : -1;
+    const std::size_t n = state->candidates_.size();
+    if (n == 0) {
+        return;
+    }
+    auto list = std::make_unique<fcitx::CommonCandidateList>();
+    list->setLayoutHint(horizontal_ ? fcitx::CandidateLayoutHint::Horizontal
+                                    : fcitx::CandidateLayoutHint::Vertical);
+    list->setPageSize(static_cast<int>(n));
+    if (cursor >= 0) {
+        list->setSelectionKey(fcitx::Key::keyListFromString("1 2 3 4 5 6 7 8 9"));
+    } else {
+        list->setSelectionKey(fcitx::KeyList{});
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+        list->append<WowtypeCandidateWord>(this, state, i, shownCandidate(state->candidates_[i]));
+    }
+    if (cursor >= 0 && static_cast<std::size_t>(cursor) < n) {
+        list->setGlobalCursorIndex(cursor);
+    }
+    panel.setCandidateList(std::move(list));
 }
 
 /// 展开的候选面板：竖排列表的每一项是一行（kGridCols 个词），一屏 kGridRows 行。
@@ -1944,6 +1986,16 @@ void WowtypeEngine::keyEvent(const fcitx::InputMethodEntry & /*entry*/,
     auto *state = ic->propertyFor(&factory_);
     const fcitx::Key key = event.key();
     const auto sym = key.sym();
+    // 联想开着时按了别的键：会话关掉了联想、键交给了应用（没有 frame 要画）时，候选框上的联想也收起来。
+    // 放在最后（各条路都处理完、frame 用完以后）
+    struct AfterKey {
+        std::function<void()> done;
+        ~AfterKey() { done(); }
+    } afterKey{[this, ic, state] {
+        if (state->associationShown_ && !state->associating()) {
+            updateInputPanel(ic, state);
+        }
+    }};
 
     if (voice_ && handleVoiceKey(ic, state, event)) {
         return;

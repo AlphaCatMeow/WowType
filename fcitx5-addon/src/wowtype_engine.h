@@ -232,6 +232,8 @@ FCITX_CONFIGURATION(
         selectKeys{this, "SelectKeys", "分号、引号选词", WowtypeSelectKeys::Off};
     fcitx::Option<bool> pickChar{this, "PickChar",
                                  "以词定字：打拼音时 [ ] 上屏候选的第一个、最后一个字", true};
+    fcitx::Option<bool> association{this, "Association",
+                                    "联想：上屏以后给出常跟在后面的词（Tab 选，数字、空格照常）", true};
     fcitx::Option<bool> dateTime{this, "DateTime",
                                  "打 riqi、shijian、xingqi 时给出当前日期时间", true};
     fcitx::Option<bool> calculator{this, "Calculator", "v 开头算算式（v1+2*3；双拼、五笔时是大写 V）",
@@ -518,6 +520,8 @@ private:
     /// 会话的候选重算过才重新抄；返回 true 表示重抄了。页码、光标每次都抄。
     bool syncView(WowtypeState *state);
     void fillGridPanel(fcitx::InputContext *ic, WowtypeState *state);
+    /// 上屏以后的联想行（会话的 WOWTYPE_PANEL_ASSOCIATION）。
+    void fillAssociation(fcitx::InputPanel &panel, WowtypeState *state);
     std::string segmentedRemaining(WowtypeState *state);
     /// 会话上屏以后：上屏 frame->commit、清空外壳的状态；frame->learned 时攒着存用户词库。
     void finishCommit(fcitx::InputContext *ic, WowtypeState *state, const WowtypeFrame *frame);
@@ -528,7 +532,9 @@ private:
     void commitInput(fcitx::InputContext *ic, WowtypeState *state);
     /// 选中光标所在的候选；没有候选时上屏原始输入（交给会话按一次空格）。
     void commitCurrent(fcitx::InputContext *ic, WowtypeState *state);
-    void maybeSaveUserDict(bool force);
+    /// 攒够上屏次数（force 时不管次数）就在后台存用户词库和输入习惯（按键的线程上不等磁盘）。
+    /// wait：等后台写完再返回（析构、换词库前：新引擎要读这些文件）。
+    void maybeSaveUserDict(bool force, bool wait = false);
     std::string userDictPath() const;
 
     // 语音输入：按住（或点一下）热键说话，识别结果上屏
@@ -583,6 +589,7 @@ private:
     bool rareExt_ = false;
     WowtypeSelectKeys selectKeys_ = WowtypeSelectKeys::Off;
     bool pickChar_ = true;
+    bool association_ = true;
     bool dateTime_ = true;
     bool calculator_ = true;
     bool toolbar_ = true;

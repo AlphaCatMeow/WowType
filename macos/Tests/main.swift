@@ -420,18 +420,21 @@ do {
                                    charactersIgnoringModifiers: "\u{f728}", cocoaFlags: 1 << 18 | 1 << 23)
     check(ctrlFwd == .key(Keysym.delete, .control), "Fn+Control+Delete 是 Ctrl+向前删除")
 
-    // 分几次选出来的词（尼 + 号）用一次就学会；学错了光标停在它上面按 Control+Delete 忘掉
+    // 分几次选出来的词（尼 + 号）第二次这样拼出来就学会（第一次只记成候选新词）；
+    // 学错了光标停在它上面按 Control+Delete 忘掉
     let (c, client) = fresh()
     var forgets = 0
     c.onForget = { forgets += 1 }
-    type(c, "nihao")
-    if let ni = client.page?.texts.firstIndex(of: "尼") {
-        c.select(ni)
-        if let hao = client.page?.texts.firstIndex(of: "号") {
-            c.select(hao)
+    for _ in 0..<2 {
+        type(c, "nihao")
+        if let ni = client.page?.texts.firstIndex(of: "尼") {
+            c.select(ni)
+            if let hao = client.page?.texts.firstIndex(of: "号") {
+                c.select(hao)
+            }
         }
     }
-    check(client.committed == "尼号", "选 尼 再选 号 上屏 尼号", client.committed)
+    check(client.committed == "尼号尼号", "选 尼 再选 号 上屏 尼号（两次）", client.committed)
     client.committed = ""
     type(c, "nihao")
     let learned = client.page?.texts ?? []
@@ -2147,6 +2150,35 @@ if getenv("WOWTYPE_EXPECT_FULL_CHARS") != nil {
         c.commitComposition()  // 点到别处又回来
         check(firstMa() == afterBu, "光标前还是「不」时照样用它", "\(afterBu)")
     }
+}
+
+do {
+    // 上屏以后的联想（默认开；这个词库没有词级模型，只有学到的搭配）：你好、开心各上屏一次学到 你好 -> 开心，
+    // 再打你好就联想出开心。没进联想行不画序号、数字交给应用；Tab 进联想行再按空格上屏。
+    // 放在最后：引擎是大家共用的，学到的搭配会让后面的用例上屏你好以后也出联想
+    let (c, client) = fresh()
+    type(c, "nihao ")
+    type(c, "kaixin ")
+    check(client.committed == "你好开心", "你好、开心各上屏一次", client.committed)
+    type(c, "nihao ")
+    let page = client.page
+    check(client.committed == "你好开心你好" && !c.isComposing && page?.texts.contains("开心") == true
+              && page?.labels == false && page?.cursor == -1 && page?.aux?.hasPrefix("联想") == true,
+          "上屏以后出联想（学到的 你好 -> 开心），没进联想行不画序号、光标",
+          "\(page?.texts ?? []) \(String(describing: page?.aux))")
+    check(!c.handle(.char("1")) && client.page == nil, "联想开着按数字：交给应用，联想收起")
+    type(c, "nihao ")
+    check(c.handle(.key(Keysym.tab)) && client.page?.labels == true && client.page?.cursor == 0,
+          "Tab 进联想行：画序号和光标", "\(String(describing: client.page))")
+    if let at = client.page?.texts.firstIndex(of: "开心") {
+        for _ in 0..<at {
+            _ = c.handle(.key(Keysym.right))
+        }
+    }
+    _ = c.handle(.char(" "))
+    check(client.committed == "你好开心你好你好开心", "联想行里按空格上屏联想", client.committed)
+    check(c.handle(.key(Keysym.escape)) || client.page == nil, "Esc 关掉联想")
+    check(client.page == nil, "联想收起")
 }
 
 if failures > 0 {

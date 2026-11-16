@@ -131,6 +131,19 @@ int main(int argc, char **argv) {
     check(wowtype_engine_save_user_dict(e, "/tmp/wowtype_abi_user.tsv") == 0, "save_user_dict");
     check(wowtype_engine_remove_user_word(e, "我特") == 1, "remove_user_word");
     check(wowtype_engine_load_user_dict(e, "/tmp/wowtype_abi_user.tsv") >= 1, "load_user_dict");
+    /* 后台存盘（1.11）：交出去就返回，等写完以后读得回来；写不了的只报一次错 */
+    remove("/tmp/wowtype_abi_user_async.tsv");
+    check(wowtype_engine_save_user_dict_async(e, "/tmp/wowtype_abi_user_async.tsv") == 0,
+          "save_user_dict_async");
+    check(wowtype_engine_save_history_async(e, "/tmp/wowtype_abi_history_async.tsv") == 0,
+          "save_history_async");
+    check(wowtype_engine_save_wait(e, -1) == 0, "save_wait");
+    check(wowtype_engine_load_user_dict(e, "/tmp/wowtype_abi_user_async.tsv") >= 1,
+          "async user dict readable");
+    check(wowtype_engine_save_history_async(e, "/tmp/wowtype_abi_no_such_dir/h.tsv") == 0,
+          "save_history_async queues");
+    check(wowtype_engine_save_wait(e, -1) == -1, "save_wait reports a failed write");
+    check(wowtype_engine_save_wait(e, 0) == 0, "save_wait reports it once");
     {
         FILE *custom = fopen("/tmp/wowtype_abi_custom.tsv", "w");
         check(custom != NULL, "open custom.tsv");

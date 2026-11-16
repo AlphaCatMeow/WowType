@@ -204,7 +204,7 @@ struct CandidateLayout {
             let comment = page.comment(i)
             let width = contentWidth(label: label, text: text, comment: comment) + Self.cellPadding.width * 2
             cells.append(Cell(frame: NSRect(x: x, y: y, width: width, height: height), label: label, text: text,
-                              comment: comment, showLabel: true, current: i == page.cursor))
+                              comment: comment, showLabel: page.labels, current: i == page.cursor))
             x += width + Self.spacing
         }
         x -= Self.spacing
@@ -227,7 +227,7 @@ struct CandidateLayout {
         var y = top
         for (i, text) in page.texts.enumerated() {
             cells.append(Cell(frame: NSRect(x: Self.inset.width, y: y, width: width, height: height),
-                              label: "\(i + 1)", text: text, comment: page.comment(i), showLabel: true,
+                              label: "\(i + 1)", text: text, comment: page.comment(i), showLabel: page.labels,
                               current: i == page.cursor, leading: true))
             y += height + Self.spacing
         }

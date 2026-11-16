@@ -324,6 +324,10 @@ void runCases(Instance &instance) {
         check(took && preedit(ic.get()) == "ka" && ic->committed.empty() && ic->passed.empty() &&
                   !after.empty(),
               "Ctrl+Delete 吃掉，编辑区不动：" + preedit(ic.get()) + " / " + join(after));
+        // 存盘在核心的后台线程上（按键的线程不等磁盘）：等它写出来，最多 3 秒
+        for (int i = 0; dictPath && i < 300 && !std::filesystem::exists(dictPath, ec); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
         std::ifstream in(dictPath ? dictPath : "");
         const std::string dict((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         check(dictPath && in.is_open() && dict.find("\t" + word + "\t") == std::string::npos,
@@ -392,6 +396,110 @@ void runCases(Instance &instance) {
     check(!send(ic.get(), Key(FcitxKey_F5)) && !send(ic.get(), Key(FcitxKey_KP_Add)) &&
               !send(ic.get(), Key(FcitxKey_Insert)),
           "没在打字时这些键照常交给应用");
+    // 上屏后紧接着按退格：刚才那次上屏学到的退回去（选了第二个又删掉，下次还是原来的第一个）；
+    // 不删的话选过的就排到前面
+    fresh(ic.get());
+    type(ic.get(), "xian");
+    {
+        // 挑第一页里第二个以后的第一个多字词（单字选过只放到第二，看不出来）
+        const auto before = page(ic.get());
+        std::size_t pick = 1;
+        while (pick < before.size() && fcitx::utf8::length(before[pick]) < 2) {
+            ++pick;
+        }
+        const bool found = pick < before.size() && pick < 9;
+        const std::string word = found ? before[pick] : "";
+        const std::string digit = std::to_string(pick + 1);
+        bool ok = found;
+        for (int i = 0; i < 3 && ok; ++i) {
+            fresh(ic.get());
+            type(ic.get(), "xian" + digit + "<bs>");
+            ok = ic->committed == word;
+        }
+        fresh(ic.get());
+        type(ic.get(), "xian");
+        const auto after = page(ic.get());
+        check(ok && !after.empty() && after[0] == before[0],
+              "选了 " + word + " 又马上退格（三次）：xian 的第一个还是 " + (before.empty() ? "" : before[0]) +
+                  "，实际 " + join(after));
+        fresh(ic.get());
+        type(ic.get(), "xian" + digit);
+        fresh(ic.get());
+        type(ic.get(), "xian");
+        const auto kept = page(ic.get());
+        check(found && !kept.empty() && kept[0] == word,
+              "不退格就记着：xian 选过的 " + word + " 排第一，实际 " + join(kept));
+        // 收拾：忘掉（后面的用例不受影响）
+        send(ic.get(), Key(FcitxKey_Delete, KeyState::Ctrl));
+    }
+
+    // 上屏以后的联想（Association，默认开）：没有词级模型时只有学到的搭配。你好 -> 中国 上屏一次，
+    // 再打你好：候选框是联想（中国），上方提示「联想」，不画序号；数字、字母、空格照常，Tab 进联想行再选
+    fresh(ic.get());
+    type(ic.get(), "nihao<sp>zhongguo<sp>");
+    {
+        const auto associations = [&]() {
+            std::vector<std::string> out = page(ic.get());
+            const std::string aux = ic->inputPanel().auxUp().toString();
+            return aux.find("联想") != std::string::npos ? out : std::vector<std::string>{};
+        };
+        const auto hasZhongguo = [](const std::vector<std::string> &items) {
+            return std::find(items.begin(), items.end(), "中国") != items.end();
+        };
+        fresh(ic.get());
+        type(ic.get(), "nihao<sp>");
+        const auto shown = associations();
+        auto list = ic->inputPanel().candidateList();
+        check(ic->committed == "你好" && preedit(ic.get()).empty() && hasZhongguo(shown),
+              "上屏以后出联想（学到的 你好 -> 中国）：" + join(page(ic.get())) + " / " +
+                  ic->inputPanel().auxUp().toString());
+        check(list && list->size() > 0 && list->label(0).toString().empty() && list->cursorIndex() < 0,
+              "没进联想行：不画序号、不画光标");
+        type(ic.get(), "1");
+        check(ic->committed == "你好" && ic->passed == "1" && page(ic.get()).empty() &&
+                  ic->inputPanel().auxUp().toString().empty(),
+              "联想开着按数字：不选联想、交给应用，联想收起。上屏「" + ic->committed + "」交给应用「" + ic->passed +
+                  "」候选 " + join(page(ic.get())));
+
+        fresh(ic.get());
+        type(ic.get(), "nihao<sp>");
+        type(ic.get(), "<sp>");
+        check(ic->committed == "你好" && ic->passed == " " && page(ic.get()).empty(),
+              "联想开着按空格：交给应用，实际上屏「" + ic->committed + "」交给应用「" + ic->passed + "」");
+        fresh(ic.get());
+        type(ic.get(), "nihao<sp>shijie<sp>");
+        check(ic->committed == "你好世界", "联想开着接着打拼音：照常，实际 " + ic->committed);
+        fresh(ic.get());
+        type(ic.get(), "nihao<sp>,");
+        check(ic->committed == "你好，", "联想开着打标点：照常，实际 " + ic->committed);
+
+        fresh(ic.get());
+        type(ic.get(), "nihao<sp><tab>");
+        auto *focused = dynamic_cast<CommonCandidateList *>(ic->inputPanel().candidateList().get());
+        check(focused && focused->cursorIndex() == 0 && !focused->label(0).toString().empty() && ic->passed.empty(),
+              "Tab 进联想行：光标在第一个、画序号，Tab 不交给应用");
+        const auto row = associations();
+        const auto at = std::find(row.begin(), row.end(), "中国");
+        for (auto i = row.begin(); i != at && at != row.end(); ++i) {
+            type(ic.get(), "<right>");
+        }
+        type(ic.get(), "<sp>");
+        check(ic->committed == "你好中国", "进了联想行按空格上屏联想，实际 " + ic->committed);
+        fresh(ic.get());
+        type(ic.get(), "nihao<sp><tab><esc>");
+        check(ic->committed == "你好" && page(ic.get()).empty(), "联想行里 Esc 退出");
+
+        // 鼠标点联想（没按 Tab 也能点）
+        fresh(ic.get());
+        type(ic.get(), "nihao<sp>");
+        const auto items = associations();
+        const auto hit = std::find(items.begin(), items.end(), "中国");
+        if (auto clicked = ic->inputPanel().candidateList(); clicked && hit != items.end()) {
+            clicked->candidate(static_cast<int>(hit - items.begin())).select(ic.get());
+        }
+        check(ic->committed == "你好中国", "鼠标点联想上屏，实际 " + ic->committed);
+    }
+    fresh(ic.get());
     // 单音节不出拆开音节的句首词（dan -> 大）
     fresh(ic.get());
     type(ic.get(), "dan");
@@ -2158,6 +2266,13 @@ void runCases(Instance &instance) {
             ic->focusIn();
             const auto dictKept = backups(userDict);
             const auto historyKept = backups(historyFile);
+            // 存盘在核心的后台线程上：等新文件写出来，最多 3 秒
+            for (int i = 0; i < 300 && !(std::filesystem::is_regular_file(userDict) &&
+                                         std::filesystem::is_regular_file(historyFile) &&
+                                         slurp(historyFile).find("更新了") != std::string::npos);
+                 ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
             const std::string dictNow = slurp(userDict);
             const std::string historyNow = slurp(historyFile);
             check(dictKept.size() == 1 && keptInside(dictKept[0]) && historyKept.size() == 1 &&

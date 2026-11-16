@@ -62,10 +62,11 @@ func windowsOnScreen() -> [String] {
 
 private var configStampSeconds = Date().timeIntervalSince1970.rounded(.down) - 10_000
 
-/// 写 wowtype.conf（语音、剪贴板历史总是关着：不碰麦克风、不读系统剪贴板）。
+/// 写 wowtype.conf（语音、剪贴板历史总是关着：不碰麦克风、不读系统剪贴板；联想默认也关着：
+/// 资源目录里有 words.lm 时上屏以后会出联想，这里的用例都是按「上屏以后候选框收起」写的，要测联想的自己打开）。
 /// 修改时间每次往后挪一秒，输入法的 checkForChanges 一定看得出变了。
 func writeConfig(_ values: [String: String]) {
-    var all = ["Voice": "False", "ClipboardHistory": "False"]
+    var all = ["Voice": "False", "ClipboardHistory": "False", "Association": "False"]
     all.merge(values) { $1 }
     let text = all.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\n") + "\n"
     try? FileManager.default.createDirectory(at: state.supportDir, withIntermediateDirectories: true)

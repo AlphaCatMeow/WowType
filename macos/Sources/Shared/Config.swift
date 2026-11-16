@@ -110,6 +110,8 @@ public struct WowtypeConfig: Equatable {
     public var halfwidthPunct = false
     public var selectKeys = SelectKeys.off
     public var pickChar = true
+    /// 联想：上屏以后给出常跟在后面的词（Tab 进联想行再选；数字、空格照常）
+    public var association = true
     public var dateTime = true
     public var calculator = true
     public var emojiSuggest = true
@@ -263,6 +265,7 @@ public struct WowtypeConfig: Equatable {
     public static let keys = [
         "CandidateLayout", "ArrowKeys", "PageSize", "CandidateFontSize",
         "PageKeysMinusEqual", "PageKeysBracket", "PageKeysCommaPeriod", "PageKeysTab", "SelectKeys", "PickChar",
+        "Association",
         "Fuzzy", "FuzzyZh", "FuzzyCh", "FuzzySh", "FuzzyNL", "FuzzyFH", "FuzzyRL",
         "FuzzyAn", "FuzzyEn", "FuzzyIn", "FuzzyIan", "FuzzyUan", "FuzzyUn",
         "FuzzyAnAi", "FuzzyHuangWang", "FuzzyUnIong", "FuzzyEngOng",
@@ -287,7 +290,7 @@ public struct WowtypeConfig: Equatable {
         "FuzzyUnIong": \.fuzzyUnIong, "FuzzyEngOng": \.fuzzyEngOng,
         "TypoCorrection": \.typoCorrection, "RareExtChars": \.rareExtChars,
         "ShuangpinShowKeys": \.shuangpinShowKeys, "WubiAutoCommit": \.wubiAutoCommit, "WubiHint": \.wubiHint,
-        "Traditional": \.traditional, "PickChar": \.pickChar,
+        "Traditional": \.traditional, "PickChar": \.pickChar, "Association": \.association,
         "DateTime": \.dateTime, "Calculator": \.calculator, "EmojiSuggest": \.emojiSuggest,
         "AutoSpace": \.autoSpace, "AutoSpaceLetters": \.autoSpaceLetters, "AutoSpaceDigits": \.autoSpaceDigits,
         "Toolbar": \.toolbar, "ClipboardHistory": \.clipboardHistory, "Voice": \.voice, "VoiceCopy": \.voiceCopy,
@@ -534,6 +537,8 @@ public struct WowtypeConfig: Equatable {
         SelectKeys=Off
         # 以词定字：打拼音时 [ 上屏候选的第一个字、] 最后一个字
         PickChar=\(b(d.pickChar))
+        # 联想：上屏以后给出常跟在后面的词，按 Tab 进联想行再用空格、数字选（不按 Tab 时数字、空格照常）
+        Association=\(b(d.association))
 
         # 模糊音总开关，打开后下面各组分别生效
         Fuzzy=\(b(d.fuzzy))

@@ -129,6 +129,8 @@ pub const WOWTYPE_PANEL_NORMAL: c_int = 0;
 pub const WOWTYPE_PANEL_EXPANDED: c_int = 1;
 pub const WOWTYPE_PANEL_EMOJI: c_int = 2;
 pub const WOWTYPE_PANEL_TOOL: c_int = 3;
+/// 1.11 起：上屏以后的联想（`WowtypeSessionConfig.association` 开着时才有）。
+pub const WOWTYPE_PANEL_ASSOCIATION: c_int = 4;
 
 pub const WOWTYPE_TOOL_NONE: c_int = 0;
 pub const WOWTYPE_TOOL_MENU: c_int = 1;
@@ -235,6 +237,8 @@ pub struct WowtypeSessionConfig {
     pub wubi_hint: c_int,
     /// 1.10 起：另设了进出「译」的快捷键，单按 Shift 只在中 ↔ 英之间切，默认 0。
     pub translate_key: c_int,
+    /// 1.11 起：上屏以后的联想，默认 0（旧外壳不认识联想、画不出来；设置里的默认值是开，外壳照设置填）。
+    pub association: c_int,
 }
 
 impl Default for WowtypeSessionConfig {
@@ -275,6 +279,7 @@ impl Default for WowtypeSessionConfig {
             wubi_auto_commit: c_int::from(config.wubi_auto_commit),
             wubi_hint: c_int::from(config.wubi_hint),
             translate_key: c_int::from(config.translate_key),
+            association: c_int::from(config.association),
         }
     }
 }
@@ -328,6 +333,7 @@ impl WowtypeSessionConfig {
             wubi_auto_commit: self.wubi_auto_commit != 0,
             wubi_hint: self.wubi_hint != 0,
             translate_key: self.translate_key != 0,
+            association: self.association != 0,
         }
     }
 }
@@ -542,6 +548,7 @@ impl WowtypeSession {
                 Panel::Expanded => WOWTYPE_PANEL_EXPANDED,
                 Panel::Emoji => WOWTYPE_PANEL_EMOJI,
                 Panel::Tool => WOWTYPE_PANEL_TOOL,
+                Panel::Association => WOWTYPE_PANEL_ASSOCIATION,
             },
             cand_count: frame.cand_count,
             cand_cursor: frame
@@ -943,6 +950,13 @@ pub unsafe extern "C" fn wowtype_session_open_panel(session: *const WowtypeSessi
         Some(Tool::Emoji { symbols: true }) => WOWTYPE_TOOL_SYMBOLS,
         Some(Tool::Emoji { symbols: false }) => WOWTYPE_TOOL_EMOJI,
     }
+}
+
+/// 联想开着（上屏以后的联想行，`WOWTYPE_PANEL_ASSOCIATION`）返回 1，没有是 0。不改会话，
+/// 之前拿到的 frame 照样有效。（1.11 起）
+#[no_mangle]
+pub unsafe extern "C" fn wowtype_session_association(session: *const WowtypeSession) -> c_int {
+    unsafe { session.as_ref() }.map_or(0, |handle| c_int::from(handle.session.association_open()))
 }
 
 /// 最近用过的 emoji 存在这个文件（一行一个，进程内所有会话共用；读进已有的）。

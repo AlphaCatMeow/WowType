@@ -281,7 +281,7 @@ if arguments.count > 1 {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
-        AppState.shared.save()
+        AppState.shared.save(wait: true)
         AppState.shared.shutdownTranslator()
     }
 }
@@ -291,7 +291,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 signal(SIGTERM, SIG_IGN)
 let terminationSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 terminationSource.setEventHandler {
-    AppState.shared.save()
+    // exit 不等引擎释放：等后台存盘写完再退
+    AppState.shared.save(wait: true)
     AppState.shared.shutdownTranslator()
     exit(0)
 }
