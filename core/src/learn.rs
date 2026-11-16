@@ -173,16 +173,18 @@ pub fn save_history<P: AsRef<Path>>(
     crate::fsutil::write_atomic(path, out.as_bytes())
 }
 
-/// 读回 [`save_history`] 写的文件，返回读到的条数。坏行跳过。
+/// 读回 [`save_history`] 写的文件，返回读到的条数。坏行（列数不对、数字解析不了、
+/// 不是合法 UTF-8）跳过，别的行照常，见 [`crate::fsutil::read_lines_lossy`]。
 pub fn load_history<P: AsRef<Path>>(
     path: P,
     words: &mut HashMap<String, HistoryEntry>,
     pairs: &mut UserPairs,
 ) -> Result<usize> {
     let path = path.as_ref();
-    let text = std::fs::read_to_string(path).with_context(|| format!("读取 {}", path.display()))?;
+    let (lines, _bad) = crate::fsutil::read_lines_lossy(path)
+        .with_context(|| format!("读取 {}", path.display()))?;
     let mut loaded = 0usize;
-    for line in text.lines() {
+    for line in &lines {
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
         }
@@ -267,5 +269,29 @@ mod tests {
         assert_eq!(w2["种地"].count, 3);
         assert_eq!(p2.get("发", "给").unwrap().count, 1);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn one_bad_byte_does_not_lose_the_history() {
+        // 以前 read_to_string 整份失败，外壳照常存盘，文件被这次会话的内容盖掉
+        let dir = std::env::temp_dir().join(format!("wowtype-learn-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.tsv");
+        let mut body = "# wowtype 用户输入习惯 v1\nw\t种地\t3\t42\n"
+            .as_bytes()
+            .to_vec();
+        body.extend_from_slice(b"w\t\xe7\xa7\xff\t9\t50\n");
+        body.extend_from_slice("w\t不是数字\tx\t1\np\t发\t给\t2\t7\n".as_bytes());
+        std::fs::write(&path, body).unwrap();
+
+        let mut words = HashMap::new();
+        let mut pairs = UserPairs::default();
+        assert_eq!(load_history(&path, &mut words, &mut pairs).unwrap(), 2);
+        assert_eq!(words.len(), 1);
+        assert_eq!(words["种地"].count, 3);
+        assert_eq!(pairs.get("发", "给").unwrap().count, 2);
+        std::fs::remove_dir_all(&dir).ok();
+        // 文件不存在还是报错
+        assert!(load_history(&path, &mut words, &mut pairs).is_err());
     }
 }

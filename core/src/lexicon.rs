@@ -1002,12 +1002,15 @@ impl UserLexicon {
     ///
     /// 全部读完才建一次词典：以前一行调一次 [`UserLexicon::add`]、每次都整份重建，
     /// 3000 个词要 7 秒、6000 个 27 秒。
+    ///
+    /// 坏行（不是合法 UTF-8、拼音解析不了）跳过，别的行照常载入，见
+    /// [`crate::fsutil::read_lines_lossy`]。
     pub fn load_tsv<P: AsRef<Path>>(&self, path: P) -> Result<usize> {
-        let data = fs::read_to_string(path.as_ref())
+        let (lines, _bad) = crate::fsutil::read_lines_lossy(path.as_ref())
             .with_context(|| format!("读取用户词库失败: {}", path.as_ref().display()))?;
         // 解析、校验拼音不用拿锁；拿到锁以后只是记下来、建一次词典
         let mut words = Vec::new();
-        for line in data.lines() {
+        for line in &lines {
             if line.trim().is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -1101,11 +1104,11 @@ impl UserLexicon {
         self.phrases.read().map(|p| p.clone()).unwrap_or_default()
     }
 
-    /// 从文件读自定义词（整体替换）；文件不存在就清空。
+    /// 从文件读自定义词（整体替换）；文件不存在就清空。不是合法 UTF-8 的行跳过。
     pub fn load_custom<P: AsRef<Path>>(&self, path: P) -> Result<usize> {
         let path = path.as_ref();
-        match fs::read_to_string(path) {
-            Ok(data) => Ok(self.set_custom_tsv(&data)),
+        match crate::fsutil::read_lines_lossy(path) {
+            Ok((lines, _bad)) => Ok(self.set_custom_tsv(&lines.join("\n"))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(self.set_custom_tsv("")),
             Err(e) => Err(e).with_context(|| format!("读取自定义词失败: {}", path.display())),
         }
@@ -1922,5 +1925,53 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].word, "你好");
         assert_eq!(user.words().len(), 2);
+    }
+
+    /// 三行，中间那行夹了一个不是 UTF-8 的字节。
+    fn with_bad_line(first: &str, bad: &[u8], last: &str) -> Vec<u8> {
+        let mut body = first.as_bytes().to_vec();
+        body.extend_from_slice(bad);
+        body.extend_from_slice(last.as_bytes());
+        body
+    }
+
+    #[test]
+    fn one_bad_byte_does_not_lose_the_user_dict() {
+        // 以前 read_to_string 整份失败，外壳照常存盘，文件被这次会话的内容盖掉
+        let path = temp_lexicon("user_badbyte", "");
+        let body = with_bad_line(
+            "# 用户词库\nni hao\t你好\t3000\n",
+            b"zhong \xff\t\xe4\xb8\t2000\n",
+            "shi jie\t世界\t1000\n",
+        );
+        std::fs::write(&path, body).unwrap();
+        let user = user_lexicon();
+        assert_eq!(user.load_tsv(&path).unwrap(), 2, "坏行跳过，别的行照常");
+        cleanup(&path);
+        assert_eq!(freq_of(&user, "ni hao", "你好"), Some(3000.0));
+        assert_eq!(freq_of(&user, "shi jie", "世界"), Some(1000.0));
+        assert_eq!(user.words().len(), 2);
+        // 文件不存在还是报错（外壳靠它知道是第一次用）
+        assert!(user.load_tsv(&path).is_err());
+    }
+
+    #[test]
+    fn one_bad_byte_does_not_lose_custom_words() {
+        let path = temp_lexicon("custom_badbyte", "");
+        let body = with_bad_line(
+            "ni hao\t妮好\n",
+            b"wo de\t\xff\xfe\n",
+            "mail\tme@example.com\n",
+        );
+        std::fs::write(&path, body).unwrap();
+        let user = user_lexicon();
+        assert_eq!(user.load_custom(&path).unwrap(), 2);
+        cleanup(&path);
+        assert!(user.is_custom("妮好"));
+        assert_eq!(user.custom_code_words("mail"), ["me@example.com"]);
+        assert_eq!(user.custom_phrases().len(), 2);
+        // 文件不存在是清空，不是出错
+        assert_eq!(user.load_custom(&path).unwrap(), 0);
+        assert!(!user.is_custom("妮好"));
     }
 }
