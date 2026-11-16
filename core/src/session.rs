@@ -2768,7 +2768,7 @@ impl<'e> Session<'e> {
         true
     }
 
-    /// 上屏已选的词 + 还没选的原始输入，原始输入也记一次选词（和回车、`reset(true)` 一样）。
+    /// 上屏已选的词 + 还没选的原始输入（和回车、`reset(true)` 一样）。原始字母串不记选词。
     pub fn commit_input(&mut self) -> Frame {
         self.last_choice = None;
         self.commit_input_now();
@@ -2783,9 +2783,14 @@ impl<'e> Session<'e> {
     /// 已选的词 + tail 上屏，记选词，清空。
     fn commit_with(&mut self, tail: &str, tail_pinyin: &str) {
         let text = self.selected_text() + tail;
-        if self.engine.is_some() && !text.is_empty() && !self.wubi() && !self.sensitive() {
+        // 回车、打字途中按标点上屏的原始字母串（没有拼音）不记：排序用不上它（原始串和英文候选的位置
+        // 不看选词记录，没有拼音也收不进用户词库），记下来只是在 history.tsv 里留一份明文——
+        // 终端里的 sudo 提示没有密码框标记，中文模式下打密码再回车，密码就这样进了输入习惯
+        let raw_tail = tail_pinyin.is_empty() && tail.is_ascii();
+        let learns = !self.selections.is_empty() || (!tail.is_empty() && !raw_tail);
+        if self.engine.is_some() && learns && !self.wubi() && !self.sensitive() {
             self.learned = true;
-            if !tail.is_empty() {
+            if !tail.is_empty() && !raw_tail {
                 // 带上拼音：选够次数后引擎会自动把这个词收进用户词库
                 self.learn(tail, tail_pinyin);
             }

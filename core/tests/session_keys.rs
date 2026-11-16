@@ -2920,11 +2920,31 @@ fn password_fields_learn_nothing() {
     let word = frame.commit.expect("空格上屏第一个候选");
     assert!(!frame.learned);
     assert_eq!(engine.history_count(&word), 0, "密码框里选的词被记下来了");
-    // 普通输入框照常学
+    // 普通输入框照常学选的词
     let mut session = with(engine);
-    let frame = type_keys(&mut session, "shuang<cr>");
+    let frame = type_keys(&mut session, "shuang<sp>");
     assert!(frame.learned);
-    assert_eq!(engine.history_count("shuang"), 1);
+    assert_eq!(engine.history_count(&frame.commit.expect("空格上屏")), 1);
+}
+
+/// 回车上屏的原始字母串哪里都不记（终端里的密码提示没有密码框标记）；
+/// 已选的词照常上屏，选它的时候已经记过了。
+#[test]
+fn raw_letters_committed_with_enter_are_not_learned() {
+    let engine = forget_engine();
+    let mut session = with(engine);
+    let frame = type_keys(&mut session, "pinge<cr>");
+    assert_eq!(frame.commit.as_deref(), Some("pinge"));
+    assert!(!frame.learned);
+    assert_eq!(engine.history_count("pinge"), 0);
+    // 先选一个句首词再回车：词照常上屏，剩下的字母不记
+    let mut session = with(engine);
+    type_keys(&mut session, "pinge");
+    choose_text(&mut session, "拼");
+    let frame = type_keys(&mut session, "<cr>");
+    assert_eq!(frame.commit.as_deref(), Some("拼ge"));
+    assert_eq!(engine.history_count("ge"), 0);
+    assert!(engine.history_count("拼") >= 1);
 }
 
 /// 还没选词的部分有长度上限：超出的键吃掉，不进编辑区，也不漏给应用。

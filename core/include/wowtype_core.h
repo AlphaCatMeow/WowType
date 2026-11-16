@@ -506,7 +506,7 @@ const WowtypeFrame *wowtype_session_frame(WowtypeSession *session);
 /* 处理一次按键（按下和松开都给）。session 或 key 为 NULL 时返回 NULL。 */
 const WowtypeFrame *wowtype_session_key(WowtypeSession *session, const WowtypeKey *key);
 /* 清空编辑区；commit_pending 非 0 时，已选的词 + 原始输入放进 frame->commit（切换输入法、
- * 打字途中切英文时，和回车一样），原始输入也记一次选词。commit_pending 为 0 是放弃（失去焦点、
+ * 打字途中切英文时，和回车一样），原始字母串不记选词。commit_pending 为 0 是放弃（失去焦点、
  * 应用重置了输入框）：打到一半的丢掉，会话记的上文也作废（1.10 起），开着的工具栏、表情面板也收起来。 */
 const WowtypeFrame *wowtype_session_reset(WowtypeSession *session, int commit_pending);
 /* 切换输入模式（1.10 起，WOWTYPE_MODE_*）：外部命令、设置里的默认模式、外壳全局的模式用。
