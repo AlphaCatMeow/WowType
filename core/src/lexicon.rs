@@ -569,7 +569,7 @@ impl MemoryLexicon {
                     _ => unreachable!(),
                 })
                 .collect();
-            return self
+            let mut found: Vec<LexEntry> = self
                 .full_index
                 .get(&key)
                 .map(|idxs| {
@@ -579,6 +579,19 @@ impl MemoryLexicon {
                         .collect()
                 })
                 .unwrap_or_default();
+            // 儿化（wanr、yidianr）：词库里儿化词都写成带 er 音节的（wan er 玩儿），
+            // 没有 `wan r` 这种写法，所以带儿化标记的音节再按「音节 + er」查一遍
+            if let Some(spelled) = erhua_spelled_out(&key) {
+                if let Some(idxs) = self.full_index.get(&spelled) {
+                    found.extend(
+                        self.without_rare(idxs, skip_rare)
+                            .iter()
+                            .map(take)
+                            .filter(|e| e.word.contains('儿')),
+                    );
+                }
+            }
+            return found;
         }
 
         if all_jianpin && !query.iter().any(needs_initial_check) {
@@ -639,12 +652,21 @@ impl Lexicon for MemoryLexicon {
             return self.initial_prefixes.contains(&hash);
         }
         let mut hash = KEY_HASH_SEED;
+        let mut key = Vec::with_capacity(query.len());
         for q in query {
             if let SyllableQuery::Full { id, erhua } = q {
                 hash = key_hash_step(hash, SyllableKey::new(*id, *erhua));
+                key.push(SyllableKey::new(*id, *erhua));
             }
         }
-        self.full_prefixes.contains(&hash)
+        if self.full_prefixes.contains(&hash) {
+            return true;
+        }
+        // 儿化在词中间的（wanrming -> 玩儿命）：按「音节 + er」的写法再看一次
+        erhua_spelled_out(&key).is_some_and(|spelled| {
+            let hash = spelled.iter().fold(KEY_HASH_SEED, |h, k| key_hash_step(h, *k));
+            self.full_prefixes.contains(&hash)
+        })
     }
 
     fn prepare_fuzzy(&self) {
@@ -1265,6 +1287,22 @@ fn toneless(c: char) -> Option<char> {
     })
 }
 
+/// 把带儿化标记的音节展开成「音节 + er」（wan(儿化) -> wan er）；没有儿化标记时返回 None。
+fn erhua_spelled_out(keys: &[SyllableKey]) -> Option<Vec<SyllableKey>> {
+    if !keys.iter().any(|k| k.erhua) {
+        return None;
+    }
+    let er = Syllable::from_text("er")?.id;
+    let mut out = Vec::with_capacity(keys.len() + 1);
+    for key in keys {
+        out.push(SyllableKey::new(key.id, false));
+        if key.erhua {
+            out.push(SyllableKey::new(er, false));
+        }
+    }
+    Some(out)
+}
+
 pub fn parse_pinyin_keys(pinyin: &str) -> Result<Vec<SyllableKey>> {
     let pinyin = pinyin.trim();
     if pinyin.is_empty() {
@@ -1393,6 +1431,27 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].word, "花儿");
         assert!(lex.lookup(&[hua.query(false)]).is_empty());
+    }
+
+    #[test]
+    fn erhua_matches_words_spelled_with_er() {
+        let lex = MemoryLexicon::from_tsv_str(concat!(
+            "wan er\t玩儿\t75000\n",
+            "wan er\t万二\t10\n",
+            "yi dian er\t一点儿\t30000\n",
+            "wan er ming\t玩儿命\t2000\n",
+        ))
+        .unwrap();
+        let q = |s: &str, erhua: bool| Syllable::from_text(s).unwrap().query(erhua);
+        let words = |query: &[SyllableQuery]| -> Vec<String> {
+            lex.lookup(query).into_iter().map(|e| e.word).collect()
+        };
+        // wanr：只要带「儿」的，同音的「万二」不算儿化
+        assert_eq!(words(&[q("wan", true)]), ["玩儿"]);
+        assert_eq!(words(&[q("yi", false), q("dian", true)]), ["一点儿"]);
+        assert!(lex.has_longer(&[q("wan", true)]), "玩儿命 要能接着往后查");
+        assert_eq!(words(&[q("wan", true), q("ming", false)]), ["玩儿命"]);
+        assert!(words(&[q("wan", false)]).is_empty());
     }
 
     #[test]
