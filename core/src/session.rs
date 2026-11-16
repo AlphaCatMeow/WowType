@@ -14,6 +14,8 @@
 //! - 空格、回车、数字、分号引号选词、计算器和双拼分号进编辑区，翻页、移光标和
 //!   横排下键展开的候选面板（页和光标照 fcitx5 的候选列表：各管各的，光标可以不在这一页上）。
 //!
+//! - 上屏以后的联想（[`Config::association`]）：一页常跟在后面的词，Tab 进去选（见 [`Session::key`]）。
+//!
 //! 还没挪的键 [`Session::key`] 返回 `handled = false`，外壳接着用自己的旧逻辑处理
 //! （打字途中的标点、其他可见字符、吃掉的光标键）。鼠标点候选按全局序号调
 //! [`Session::choose`]，表情面板往编辑区加搜索词用 [`Session::append`]，这些过渡用法挪完以后会删掉。
@@ -372,6 +374,9 @@ pub enum Panel {
     Emoji,
     /// v + 空格的工具栏（菜单、剪贴板、常用语）：竖排一列，一页 [`TOOL_PAGE`] 个。
     Tool,
+    /// 上屏以后的联想（没在打字）：一页常跟在后面的词，照普通候选框画（横排 / 竖排照设置），
+    /// 提示在 [`Frame::aux`]。按 Tab 进了联想行时 [`Frame::cand_cursor`] 是光标，没进是 None（不画光标、不画序号）。
+    Association,
 }
 
 /// 工具栏一页几个。
@@ -400,6 +405,22 @@ struct ToolState {
     /// 表情面板的搜索词（打拼音或英文）
     query: String,
 }
+
+/// 上屏以后的联想。
+#[derive(Clone, Debug)]
+struct Association {
+    /// 显示的词（开着繁体时是转换过的）。
+    items: Vec<Candidate>,
+    /// 词库里的写法，选了以后拿它学。
+    plain: Vec<String>,
+    /// 按 Tab 进了联想行：空格、回车、数字选，方向键、Tab 移光标，Esc 退出。没进时这些键照原来的规则处理。
+    focused: bool,
+    cursor: usize,
+}
+
+/// 联想行上方的提示。
+const ASSOCIATION_HINT: &str = "联想：Tab 选词";
+const ASSOCIATION_FOCUSED_HINT: &str = "联想：空格或数字上屏，Esc 退出";
 
 /// 展开面板一行几个候选。
 pub const GRID_COLS: usize = 6;
@@ -501,6 +522,9 @@ pub struct Config {
     pub wubi_auto_commit: bool,
     /// 五笔的逐码提示（以打的码开头的更长的码的词）后面显示还要打的码。
     pub wubi_hint: bool,
+    /// 上屏以后的联想：选词上屏、整句上屏以后给出一页常跟在后面的词（[`Engine::associate`]）。
+    /// 设置里默认开；这里默认关（外壳不认识联想就画不出来，C 接口里旧外壳没给这一项时也是关）。
+    pub association: bool,
 }
 
 impl Default for Config {
@@ -527,6 +551,7 @@ impl Default for Config {
             wubi: false,
             wubi_auto_commit: true,
             wubi_hint: true,
+            association: false,
         }
     }
 }
@@ -645,6 +670,10 @@ pub struct Session<'e> {
     undo_commit: Option<std::ops::Range<u64>>,
     /// 这次上屏开始学习前的学习日志位置（没有已选的词时，上屏的学习从这里算）。
     commit_start: Option<u64>,
+    /// 上屏以后的联想，没有是 None。
+    association: Option<Association>,
+    /// 这次调用选词上屏了（后面没再上屏标点之类）：调用结束时出联想。
+    association_due: bool,
 }
 
 impl Default for Session<'_> {
@@ -682,6 +711,8 @@ impl Default for Session<'_> {
             now_ms: 0,
             undo_commit: None,
             commit_start: None,
+            association: None,
+            association_due: false,
         }
     }
 }
@@ -734,6 +765,9 @@ impl<'e> Session<'e> {
             }
             self.config = config;
             self.fresh = false;
+            if !self.config.association {
+                self.close_association();
+            }
         }
     }
 
@@ -784,7 +818,10 @@ impl<'e> Session<'e> {
         if surrounding {
             self.check_context(key.prev_char);
         }
-        let handled = self.handle_key(key);
+        let handled = match self.association_key(key) {
+            Some(handled) => handled,
+            None => self.handle_key(key),
+        };
         if !handled && key.keysym != 0 && !is_modifier_keysym(key.keysym) {
             // 这个键交给了应用（退格、Delete、方向键、回车、快捷键、英文和半角的字……），
             // 应用里的字或光标可能变了：会话记的光标前的字、上文都不算数了。
@@ -796,7 +833,151 @@ impl<'e> Session<'e> {
                 self.set_context("");
             }
         }
+        self.settle_association();
         self.frame(handled)
+    }
+
+    /// 联想开着时的键。Some：联想处理完了；None：联想关了（或者是单按的修饰键，联想留着），照原来的规则处理。
+    ///
+    /// 联想出来以后最常做的是接着打拼音、数字、标点，按空格、回车交给应用，这些都不能被联想抢走：
+    /// 没进联想行时只有 Tab（进联想行）和 Esc（关掉，吃掉）是联想的，别的键先关掉联想再照常处理——
+    /// 数字也是（中文后面接着打数字很常见，见 AutoSpaceDigits），所以数字不选联想。
+    /// 进联想行用 Tab 不用下键：没在打字时方向键是挪应用里的光标（上屏后发现前面打错了，正要挪过去改），
+    /// 下键在打字途中还管展开面板、竖排时挪候选，Tab 在中文后面几乎不会紧接着用。
+    /// 进了联想行：空格、回车、数字选，左右（上下）键、Tab、Shift+Tab 移光标，Esc 退出；别的键退出联想再照常处理。
+    fn association_key(&mut self, key: &Key) -> Option<bool> {
+        let state = self.association.as_ref()?;
+        if is_modifier_keysym(key.keysym) {
+            return None;
+        }
+        let mods = key.modifiers & !(modifier::CAPS | modifier::NUMLOCK);
+        let plain = mods & (modifier::CTRL | modifier::ALT | modifier::SUPER) == 0 && key.action == KeyAction::None;
+        let n = state.items.len();
+        if state.focused && plain {
+            let cursor = state.cursor.min(n.saturating_sub(1));
+            let shift = mods & modifier::SHIFT != 0;
+            let moved = match key.keysym {
+                keysym::SPACE | keysym::RETURN | keysym::KP_ENTER => {
+                    self.choose_association(cursor);
+                    return Some(true);
+                }
+                keysym::ESCAPE => {
+                    self.close_association();
+                    return Some(true);
+                }
+                keysym::LEFT | keysym::UP | keysym::ISO_LEFT_TAB => Some(cursor.saturating_sub(1)),
+                keysym::TAB if shift => Some(cursor.saturating_sub(1)),
+                keysym::RIGHT | keysym::DOWN | keysym::TAB => Some((cursor + 1).min(n.saturating_sub(1))),
+                _ => None,
+            };
+            if let Some(cursor) = moved {
+                if let Some(state) = self.association.as_mut() {
+                    state.cursor = cursor;
+                }
+                return Some(true);
+            }
+            if let Some(digit) = key.digit() {
+                if (1..=n).contains(&digit) {
+                    self.choose_association(digit - 1);
+                }
+                return Some(true);
+            }
+        } else if plain && mods == 0 {
+            match key.keysym {
+                keysym::TAB => {
+                    if let Some(state) = self.association.as_mut() {
+                        state.focused = true;
+                        state.cursor = 0;
+                    }
+                    return Some(true);
+                }
+                keysym::ESCAPE => {
+                    self.close_association();
+                    return Some(true);
+                }
+                _ => {}
+            }
+        }
+        self.close_association();
+        None
+    }
+
+    /// 关掉联想。
+    fn close_association(&mut self) {
+        if self.association.take().is_some() {
+            self.generation += 1;
+        }
+    }
+
+    /// 联想开着（外壳画联想行、鼠标点了按 [`Session::choose`] 选）。
+    pub fn association_open(&self) -> bool {
+        self.association.is_some()
+    }
+
+    /// 能不能出联想：设置开着、有引擎、中文模式、没在打字、没开面板；五笔、「译」、密码框（不能翻译的输入框）不出。
+    fn association_allowed(&self) -> bool {
+        self.config.association
+            && self.engine.is_some()
+            && self.mode == Mode::Chinese
+            && !self.config.wubi
+            && !self.composing()
+            && self.tool.is_none()
+            && self.hints & key_hints::NO_TRANSLATE == 0
+            && self.translation.source.is_empty()
+    }
+
+    /// 一次调用结束：这次选词上屏了（后面没再上屏别的）就按上文出联想。
+    fn settle_association(&mut self) {
+        if !std::mem::take(&mut self.association_due) || !self.association_allowed() {
+            return;
+        }
+        let Some(engine) = self.engine else {
+            return;
+        };
+        let just = self.last_choice.as_ref().map(|c| c.text.clone()).unwrap_or_default();
+        let plain = engine.associate(&self.context, &just, self.page_size().min(9));
+        if plain.is_empty() {
+            return;
+        }
+        let items = plain
+            .iter()
+            .map(|word| {
+                let text = engine.shown_text(word);
+                Candidate {
+                    commit: text.clone(),
+                    text,
+                    kind: CandidateKind::Word,
+                    ..Candidate::default()
+                }
+            })
+            .collect();
+        self.association = Some(Association {
+            items,
+            plain,
+            focused: false,
+            cursor: 0,
+        });
+        self.generation += 1;
+    }
+
+    /// 选第 index 个联想：上屏，和普通选词一样记一次选词（学搭配），接着出下一轮联想。
+    fn choose_association(&mut self, index: usize) -> bool {
+        let Some(state) = self.association.take() else {
+            return false;
+        };
+        self.generation += 1;
+        let (Some(item), Some(plain)) = (state.items.get(index), state.plain.get(index)) else {
+            return false;
+        };
+        self.commit_start = Some(self.learn_mark());
+        if self.engine.is_some() {
+            self.learn(plain, "");
+            self.learned = true;
+        }
+        self.finish(item.commit.clone());
+        self.last_choice = Some(item.clone());
+        self.association_due = true;
+        true
     }
 
     /// 这个键是上屏后紧接着的退格：不带修饰键（CapsLock、NumLock 不算），没在打字、没开面板，
@@ -1163,6 +1344,7 @@ impl<'e> Session<'e> {
     }
 
     fn open_tool_now(&mut self, tool: Tool, query: String) {
+        self.close_association();
         if self.composing() {
             self.clear();
         }
@@ -1489,6 +1671,9 @@ impl<'e> Session<'e> {
         if self.tool.is_some() {
             return self.tool.as_ref().map_or(&[], |t| t.items.as_slice());
         }
+        if self.association.is_some() {
+            return self.association.as_ref().map_or(&[], |a| a.items.as_slice());
+        }
         self.candidates()
     }
 
@@ -1517,6 +1702,7 @@ impl<'e> Session<'e> {
         if mode == self.mode {
             return;
         }
+        self.close_association();
         if self.mode == Mode::Translate {
             // 离开「译」：攒着的原文原样上屏，正在打的拼音留着接着打
             self.commit_source();
@@ -1695,8 +1881,10 @@ impl<'e> Session<'e> {
         let Some(first) = text.chars().next() else {
             return;
         };
-        // 后面又上屏了别的（标点、空格）：退格删的是它，不是刚才学的词
+        // 后面又上屏了别的（标点、空格）：退格删的是它，不是刚才学的词；联想也不出了
         self.undo_commit = None;
+        self.association_due = false;
+        self.close_association();
         if self.translating() {
             // 互译：上屏的字攒成原文，过一会儿（句末标点立刻）发请求
             self.translation.source.push_str(text);
@@ -1728,6 +1916,8 @@ impl<'e> Session<'e> {
             return;
         }
         self.undo_commit = None;
+        self.association_due = false;
+        self.close_association();
         self.pending.get_or_insert_with(String::new).push_str(text);
         self.remember(text);
     }
@@ -2154,6 +2344,7 @@ impl<'e> Session<'e> {
         } else {
             let text = self.selected_text() + &pick.to_string();
             self.finish(text);
+            self.association_due = true;
         }
         true
     }
@@ -2254,6 +2445,7 @@ impl<'e> Session<'e> {
     /// 上文也不算数了（回来时光标可能在别处）。互译攒着的原文不动，要丢掉用 [`Session::clear_translation`]。
     pub fn reset(&mut self, commit_pending: bool) -> Frame {
         self.last_choice = None;
+        self.close_association();
         if commit_pending && self.composing() {
             self.commit_input_now();
         } else {
@@ -2294,6 +2486,13 @@ impl<'e> Session<'e> {
         };
         if self.tool.is_some() {
             self.tool_frame(&mut frame);
+            return frame;
+        }
+        if let Some(state) = &self.association {
+            frame.panel = Panel::Association;
+            frame.cand_count = state.items.len();
+            frame.cand_cursor = state.focused.then_some(state.cursor.min(state.items.len().saturating_sub(1)));
+            frame.aux = if state.focused { ASSOCIATION_FOCUSED_HINT } else { ASSOCIATION_HINT }.to_owned();
             return frame;
         }
         if let Some((view, wake)) = self.translate_view() {
@@ -2346,6 +2545,14 @@ impl<'e> Session<'e> {
                 cursor: state.cursor,
                 expanded: emoji,
                 grid_cursor: state.cursor,
+            };
+        }
+        if let Some(state) = &self.association {
+            return View {
+                page: 0,
+                cursor: if state.focused { state.cursor } else { 0 },
+                expanded: false,
+                grid_cursor: 0,
             };
         }
         self.candidates();
@@ -2755,7 +2962,14 @@ impl<'e> Session<'e> {
             }
             return self.frame(ok);
         }
+        if self.association.is_some() {
+            // 联想行：鼠标点了一个（序号就是显示的第几个）
+            let handled = self.choose_association(index);
+            self.settle_association();
+            return self.frame(handled);
+        }
         let handled = self.choose_now(index);
+        self.settle_association();
         self.frame(handled)
     }
 
@@ -2771,7 +2985,13 @@ impl<'e> Session<'e> {
         self.forgot = shown.forgot;
         self.learned = shown.learned;
         self.mode_changed = shown.mode_changed;
+        if self.association.is_some() {
+            let handled = self.choose_association(index);
+            self.settle_association();
+            return self.frame(handled);
+        }
         let handled = index < shown.cand_count && self.choose_now(shown.cand_start + index);
+        self.settle_association();
         self.frame(handled)
     }
 
@@ -2808,6 +3028,8 @@ impl<'e> Session<'e> {
             }
             _ => {
                 self.commit_with(&chosen.text, &chosen.pinyin);
+                // 选了引擎的词上屏（不是原样上屏的字母、英文）：出联想
+                self.association_due = !chosen.pinyin.is_empty();
                 self.last_choice = Some(chosen);
             }
         }

@@ -232,6 +232,8 @@ FCITX_CONFIGURATION(
         selectKeys{this, "SelectKeys", "分号、引号选词", WowtypeSelectKeys::Off};
     fcitx::Option<bool> pickChar{this, "PickChar",
                                  "以词定字：打拼音时 [ ] 上屏候选的第一个、最后一个字", true};
+    fcitx::Option<bool> association{this, "Association",
+                                    "联想：上屏以后给出常跟在后面的词（Tab 选，数字、空格照常）", true};
     fcitx::Option<bool> dateTime{this, "DateTime",
                                  "打 riqi、shijian、xingqi 时给出当前日期时间", true};
     fcitx::Option<bool> calculator{this, "Calculator", "v 开头算算式（v1+2*3；双拼、五笔时是大写 V）",
@@ -502,6 +504,8 @@ private:
     /// 会话的候选重算过才重新抄；返回 true 表示重抄了。页码、光标每次都抄。
     bool syncView(WowtypeState *state);
     void fillGridPanel(fcitx::InputPanel &panel, WowtypeState *state);
+    /// 上屏以后的联想行（会话的 WOWTYPE_PANEL_ASSOCIATION）。
+    void fillAssociation(fcitx::InputPanel &panel, WowtypeState *state);
     std::string segmentedRemaining(WowtypeState *state);
     /// 会话上屏以后：上屏 frame->commit、清空外壳的状态；frame->learned 时攒着存用户词库。
     void finishCommit(fcitx::InputContext *ic, WowtypeState *state, const WowtypeFrame *frame);
@@ -560,6 +564,7 @@ private:
     bool rareExt_ = false;
     WowtypeSelectKeys selectKeys_ = WowtypeSelectKeys::Off;
     bool pickChar_ = true;
+    bool association_ = true;
     bool dateTime_ = true;
     bool calculator_ = true;
     bool toolbar_ = true;

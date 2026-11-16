@@ -136,6 +136,8 @@ public struct CandidatePage: Equatable {
     public var aux: String? = nil
     /// 竖排：一行一个（设置里 CandidateLayout=Vertical、工具栏）
     public var vertical = false
+    /// 候选前面画序号。上屏以后的联想没按 Tab 进联想行时不画：这时数字不选联想，照常交给应用
+    public var labels = true
     /// 互译时候选上下多出来的两行；不在互译时 nil。互译时没有候选（只攒着原文）也画框
     public var translate: TranslatePanel? = nil
     public static let columns = 6
@@ -239,6 +241,8 @@ public final class Composer {
     }
     /// 现在画的是哪个结果（signature），结果变了才重画
     private var translateDrawn = ""
+    /// 候选框上画着上屏以后的联想：会话关掉了联想、键又交给了应用时要收起来
+    private var associationShown = false
     /// 原文变了、在等译文：外壳开始每 50 毫秒调一次 pollTranslation（已经在调就不用管）。
     public var onTranslatePoll: (() -> Void)?
     /// 单调时钟（秒），测试里换成假的。
@@ -519,6 +523,7 @@ public final class Composer {
         config.wubi = settings.wubi ? 1 : 0
         config.wubi_auto_commit = settings.wubiAutoCommit ? 1 : 0
         config.wubi_hint = settings.wubiHint ? 1 : 0
+        config.association = settings.association ? 1 : 0
         wowtype_session_configure(session, &config)
         if isComposing {
             refresh()
@@ -594,6 +599,9 @@ public final class Composer {
         let handled = frame.pointee.handled != 0
         if handled {
             apply(frame)
+        } else if associationShown {
+            // 联想开着时按了打字以外的键（空格、回车、数字、方向键……）：会话关掉了联想、键交给应用
+            refresh()
         }
         return handled
     }
@@ -637,7 +645,10 @@ public final class Composer {
             refreshTranslate(all)
             return
         }
-        let frame = isComposing ? wowtype_session_frame(session) : nil
+        // 没在打字时也可能有上屏以后的联想（会话给的一页，照普通候选框画）
+        let associating = !isComposing && wowtype_session_association(session) != 0
+        associationShown = associating
+        let frame = isComposing || associating ? wowtype_session_frame(session) : nil
         guard let frame else {
             client?.setMarkedText("", cursor: 0)
             client?.showCandidates(nil)
@@ -667,6 +678,7 @@ public final class Composer {
         guard !texts.isEmpty || aux != nil else { return nil }
         var page = CandidatePage(texts: texts, cursor: Int(f.cand_cursor), hasPrev: f.has_prev != 0,
                                  hasNext: f.has_next != 0, expanded: f.panel == 1, aux: aux, vertical: !config.horizontal)
+        page.labels = !(f.panel == WOWTYPE_PANEL_ASSOCIATION && f.cand_cursor < 0)
         page.comments = comments
         return page
     }

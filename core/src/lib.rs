@@ -129,6 +129,12 @@ pub const MERGED_PAIR_SCORE: f64 = 1.5;
 /// 分几次选出来的词，多长以内当成用户造的词（人名、术语、成语大多在四个字以内）。
 pub const COMPOSED_WORD_MAX_CHARS: usize = 4;
 
+/// 能拿来联想的词：都是字母、数字、汉字（没有标点、符号、`</s>` 这类记号），不是单个英文字母。
+fn associable(word: &str) -> bool {
+    let n = word.chars().count();
+    n > 0 && word.chars().all(char::is_alphanumeric) && !(n == 1 && word.is_ascii())
+}
+
 /// 热度够不够收词：一会儿工夫连着选三次，热度会因为这几毫秒的衰减差一点点到 3，不能因此不收。
 fn reached(heat: f64, threshold: f64) -> bool {
     heat + 0.01 >= threshold
@@ -923,12 +929,69 @@ impl Engine {
         &self.config
     }
 
-    /// 输入拼音串，返回候选；解析失败时返回空列表。
-    /// 基于上一词的候选预测（「预测词库」）。
+    /// 基于上一词的候选预测（「预测词库」）：先是用户学到的搭配（prev 后面选过的，热的在前，
+    /// 热度不到 [`learn::MIN_PICK_HEAT`] 的不算），再是词级语言模型里常跟在 prev 后面的词。
     ///
-    /// 返回 (词, 对数概率)，按概率降序。语言模型没接入预测能力时返回空。
+    /// 返回 (词, 分数)，按分数降序：模型的是对数概率（不大于 0），学到的搭配是 ln(1+热度)（大于 0，排在前面）。
+    /// 都是词库里的写法。语言模型没接入预测能力、也没学过时返回空。
     pub fn predict_next(&self, prev: &str, limit: usize) -> Vec<(String, f64)> {
-        self.lm.top_next(prev, limit)
+        let mut out: Vec<(String, f64)> = self
+            .pairs
+            .read()
+            .map(|pairs| pairs.next_words(prev, now_ms()))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, heat)| *heat >= learn::MIN_PICK_HEAT)
+            .map(|(word, heat)| (word, heat.ln_1p()))
+            .take(limit)
+            .collect();
+        for (word, score) in self.lm.top_next(prev, limit) {
+            if out.len() >= limit {
+                break;
+            }
+            if !out.iter().any(|(w, _)| *w == word) {
+                out.push((word, score));
+            }
+        }
+        out
+    }
+
+    /// 上屏以后的联想（会话用）：before 是光标前已上屏的字（末尾是刚上屏的 just），返回最多 limit 个
+    /// 常跟在后面的词（词库里的写法）。
+    ///
+    /// 按上文末尾的词查 [`Engine::predict_next`]：先试最近一次选的词（光标前正好以它结尾），再试末尾 4、3、2、1 个字，
+    /// 用第一个查得到的（短的字查出来的多半接不上，不拿来凑数）。去掉标点、符号、单个字母，和刚上屏的一样的。
+    pub fn associate(&self, before: &str, just: &str, limit: usize) -> Vec<String> {
+        let mut keys: Vec<String> = Vec::new();
+        if let Ok(last) = self.last_word.read() {
+            if !last.is_empty() && before.ends_with(&self.shown_text(&last)) {
+                keys.push(last.clone());
+            }
+        }
+        let chars: Vec<char> = before.chars().collect();
+        for n in (1..=chars.len().min(4)).rev() {
+            let tail: String = chars[chars.len() - n..].iter().collect();
+            if !keys.contains(&tail) {
+                keys.push(tail);
+            }
+        }
+        let just_plain = self.lexicon_form(just);
+        for key in &keys {
+            let mut out: Vec<String> = Vec::new();
+            for (word, _) in self.predict_next(key, limit.saturating_mul(2)) {
+                if out.len() >= limit {
+                    break;
+                }
+                if !associable(&word) || word == *key || word == just || word == just_plain || out.contains(&word) {
+                    continue;
+                }
+                out.push(word);
+            }
+            if !out.is_empty() {
+                return out;
+            }
+        }
+        Vec::new()
     }
 
     pub fn input(&self, raw: &str) -> Vec<Candidate> {

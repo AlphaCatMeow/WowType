@@ -11,6 +11,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -498,6 +499,10 @@ public:
     uint64_t candGeneration_ = UINT64_MAX;
     /// 开着的工具栏 / 表情面板（WOWTYPE_TOOL_*），会话管。
     int panel() const { return wowtype_session_open_panel(session_); }
+    /// 会话开着上屏以后的联想（没在打字）。
+    bool associating() const { return wowtype_session_association(session_) != 0; }
+    /// 候选框上画着联想行：会话关掉了联想、键又交给了应用时要收起来。
+    bool associationShown_ = false;
 
     /// 全部原始输入（包括已经选过词的部分）。
     std::string input() const { return wowtype_session_input(session_); }
@@ -877,6 +882,7 @@ void WowtypeEngine::applyConfig() {
                                             : WowtypeSelectKeys::Off;
     }
     pickChar_ = envOr("WOWTYPE_PICK_CHAR", *config_.pickChar);
+    association_ = envOr("WOWTYPE_ASSOCIATION", *config_.association);
     dateTime_ = envOr("WOWTYPE_DATETIME", *config_.dateTime);
     calculator_ = envOr("WOWTYPE_CALC", *config_.calculator);
     toolbar_ = envOr("WOWTYPE_TOOLBAR", *config_.toolbar);
@@ -1239,6 +1245,7 @@ void WowtypeEngine::syncSession(WowtypeState *state) {
     config.wubi = wubi_ ? 1 : 0;
     config.wubi_auto_commit = *config_.wubiAutoCommit ? 1 : 0;
     config.wubi_hint = *config_.wubiHint ? 1 : 0;
+    config.association = association_ ? 1 : 0;
     wowtype_session_configure(state->session_, &config);
 }
 
@@ -1385,7 +1392,7 @@ void WowtypeEngine::refreshCandidates(WowtypeState *state) {
     state->panelPage_ = 0;
     state->panelCursor_ = 0;
     const bool panelOpen = state->panel() != WOWTYPE_TOOL_NONE;
-    if (!panelOpen && (state->remaining().empty() || !coreReady())) {
+    if (!panelOpen && !state->associating() && (state->remaining().empty() || !coreReady())) {
         return;
     }
     // 候选（引擎候选 + 计算器、emoji 推荐、数字按键 emoji、日期时间，或者开着的工具栏 / 表情面板的条目）由会话算，
@@ -1511,6 +1518,7 @@ void WowtypeEngine::updateInputPanel(fcitx::InputContext *ic,
                                      WowtypeState *state) {
     auto &panel = ic->inputPanel();
     panel.reset();
+    state->associationShown_ = false;
 
     if (const int open = state->panel(); open != WOWTYPE_TOOL_NONE) {
         // 工具栏 / 表情面板：条目、光标、提示、搜索词都是会话给的
@@ -1539,6 +1547,9 @@ void WowtypeEngine::updateInputPanel(fcitx::InputContext *ic,
     if (!state->composing()) {
         if (translate) {
             fillTranslateView(ic, state, panel);
+        } else if (state->associating()) {
+            fillAssociation(panel, state);
+            state->associationShown_ = true;
         }
         ic->updatePreedit();
         ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
@@ -1589,6 +1600,37 @@ void WowtypeEngine::updateInputPanel(fcitx::InputContext *ic,
 
     ic->updatePreedit();
     ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
+}
+
+/// 上屏以后的联想：会话给的一页，照普通候选框画，上方是会话给的提示。没按 Tab 进联想行时不画光标、
+/// 不画序号（数字不选联想，照常交给应用）；进了以后光标和 1–9 照常。鼠标点了和普通候选一样走 commitCandidate。
+void WowtypeEngine::fillAssociation(fcitx::InputPanel &panel, WowtypeState *state) {
+    syncView(state);
+    const WowtypeFrame *frame = wowtype_session_frame(state->session_);
+    if (frame && frame->aux) {
+        panel.setAuxUp(fcitx::Text(frame->aux));
+    }
+    const int cursor = frame ? frame->cand_cursor : -1;
+    const std::size_t n = state->candidates_.size();
+    if (n == 0) {
+        return;
+    }
+    auto list = std::make_unique<fcitx::CommonCandidateList>();
+    list->setLayoutHint(horizontal_ ? fcitx::CandidateLayoutHint::Horizontal
+                                    : fcitx::CandidateLayoutHint::Vertical);
+    list->setPageSize(static_cast<int>(n));
+    if (cursor >= 0) {
+        list->setSelectionKey(fcitx::Key::keyListFromString("1 2 3 4 5 6 7 8 9"));
+    } else {
+        list->setSelectionKey(fcitx::KeyList{});
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+        list->append<WowtypeCandidateWord>(this, state, i, shownCandidate(state->candidates_[i]));
+    }
+    if (cursor >= 0 && static_cast<std::size_t>(cursor) < n) {
+        list->setGlobalCursorIndex(cursor);
+    }
+    panel.setCandidateList(std::move(list));
 }
 
 /// 展开的候选面板：竖排列表的每一项是一行（kGridCols 个词），一屏 kGridRows 行。
@@ -1725,6 +1767,16 @@ void WowtypeEngine::keyEvent(const fcitx::InputMethodEntry & /*entry*/,
     auto *state = ic->propertyFor(&factory_);
     const fcitx::Key key = event.key();
     const auto sym = key.sym();
+    // 联想开着时按了别的键：会话关掉了联想、键交给了应用（没有 frame 要画）时，候选框上的联想也收起来。
+    // 放在最后（各条路都处理完、frame 用完以后）
+    struct AfterKey {
+        std::function<void()> done;
+        ~AfterKey() { done(); }
+    } afterKey{[this, ic, state] {
+        if (state->associationShown_ && !state->associating()) {
+            updateInputPanel(ic, state);
+        }
+    }};
 
     if (voice_ && handleVoiceKey(ic, state, event)) {
         return;
