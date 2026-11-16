@@ -344,10 +344,10 @@ jobs:
     steps:
       - name: 系统依赖
         # rust 包自带 cargo；fcitx5 包含 CMake 配置和按键测试用的 testim 插件。
-        # 设置界面也在安装后测试，故装好 GTK / PyGObject（包本身把它们列为可选依赖）。
+        # makepkg 不替我们装依赖：包的 depends（fcitx5-gtk、fcitx5-qt、python-gobject、gtk4、libadwaita）这里都要装上。
         run: |
           pacman -Syu --noconfirm --needed base-devel cmake extra-cmake-modules \
-            fcitx5 alsa-lib rust pkgconf python git ca-certificates util-linux \
+            fcitx5 fcitx5-gtk fcitx5-qt alsa-lib rust pkgconf python git ca-certificates util-linux \
             python-gobject gtk4 libadwaita curl
           useradd --create-home builder
       - uses: actions/checkout@v4

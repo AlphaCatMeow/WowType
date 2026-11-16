@@ -2226,8 +2226,17 @@ void runCases(Instance &instance) {
             return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         };
         const auto unreadable = [&](const std::filesystem::path &path) {
-            std::filesystem::remove_all(path);
-            std::filesystem::create_directories(path);
+            // 存盘在后台线程上：上面失去焦点时排的那次可能正好在这时写完，又把文件放回来了。
+            // 不抛异常，没换成目录就等一下再来（以前偶尔 create_directories 抛「Not a directory」，整个测试中止）
+            for (int i = 0; i < 300; ++i) {
+                std::error_code ec;
+                std::filesystem::remove_all(path, ec);
+                std::filesystem::create_directories(path, ec);
+                if (std::filesystem::is_directory(path, ec)) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
             std::ofstream(path / "kept", std::ios::binary) << garbage;
         };
         const auto keptInside = [&](const std::filesystem::path &dir) {
