@@ -845,6 +845,15 @@ impl UserLexicon {
         self.words.read().map(|w| w.clone()).unwrap_or_default()
     }
 
+    /// 用户词 word 的（拼音, 频次），不是用户词是 None。
+    pub fn entry(&self, word: &str) -> Option<(String, f64)> {
+        let words = self.words.read().ok()?;
+        words
+            .iter()
+            .find(|(_, w, _)| w == word)
+            .map(|(pinyin, _, freq)| (pinyin.clone(), *freq))
+    }
+
     pub fn clear(&self) {
         if let Ok(mut words) = self.words.write() {
             words.clear();

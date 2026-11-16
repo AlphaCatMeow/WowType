@@ -318,6 +318,9 @@ pub struct Selection {
     pub pinyin: String,
     /// 用掉的原始输入字节数。
     pub bytes: usize,
+    /// 选它时引擎学到的东西在学习日志里的区间（[`Engine::learn_mark`]）：退格把它退回编辑区、
+    /// Esc 放弃时按这个撤销（[`Engine::undo_learning`]）。没学（以词定字、五笔）是空的。
+    pub learn: std::ops::Range<u64>,
 }
 
 /// 一次调用之后外壳要做的事。
@@ -637,6 +640,11 @@ pub struct Session<'e> {
     tool: Option<ToolState>,
     /// 最近一次按键或 tick 的时刻（毫秒）。
     now_ms: u64,
+    /// 上一次上屏学到的东西（学习日志的区间，含选句首词时学的）：上屏后紧接着按退格时撤销。
+    /// 之后按了别的键、又上屏了别的字（标点、空格）、放弃时清掉。
+    undo_commit: Option<std::ops::Range<u64>>,
+    /// 这次上屏开始学习前的学习日志位置（没有已选的词时，上屏的学习从这里算）。
+    commit_start: Option<u64>,
 }
 
 impl Default for Session<'_> {
@@ -672,6 +680,8 @@ impl Default for Session<'_> {
             translation: Translation::default(),
             tool: None,
             now_ms: 0,
+            undo_commit: None,
+            commit_start: None,
         }
     }
 }
@@ -759,6 +769,14 @@ impl<'e> Session<'e> {
         }
         self.prev_char = key.prev_char;
         self.hints = key.hints;
+        if !is_modifier_keysym(key.keysym) {
+            // 上屏后紧接着按退格（编辑区空着，退格要交给应用删字）：刚才那次上屏是打错了，
+            // 学到的东西退回去。按了别的键就不算了（只修最近一次、只在紧接着时）
+            let undo = self.undo_commit.take();
+            if let Some(span) = undo.filter(|_| self.backspace_undoes(key)) {
+                self.unlearn(&span);
+            }
+        }
         let surrounding = key.hints & key_hints::SURROUNDING != 0;
         if key.prev_char.is_some() || surrounding {
             self.last_char = key.prev_char;
@@ -779,6 +797,29 @@ impl<'e> Session<'e> {
             }
         }
         self.frame(handled)
+    }
+
+    /// 这个键是上屏后紧接着的退格：不带修饰键（CapsLock、NumLock 不算），没在打字、没开面板，
+    /// 也没在「译」里攒原文（那时退格删的是原文）。
+    fn backspace_undoes(&self, key: &Key) -> bool {
+        key.keysym == keysym::BACKSPACE
+            && key.action == KeyAction::None
+            && key.modifiers & !(modifier::CAPS | modifier::NUMLOCK) == 0
+            && !self.composing()
+            && self.tool.is_none()
+            && self.translation.source.is_empty()
+    }
+
+    /// 学习日志现在的位置；没有引擎是 0。
+    fn learn_mark(&self) -> u64 {
+        self.engine.map_or(0, Engine::learn_mark)
+    }
+
+    /// 撤销学习日志 span 里学到的东西。
+    fn unlearn(&self, span: &std::ops::Range<u64>) {
+        if let Some(engine) = self.engine.filter(|_| !span.is_empty()) {
+            engine.undo_learning(span.start, span.end);
+        }
     }
 
     /// 应用告诉了光标前的字（读得到周围文字）、没在打字：会话记的上文要和它对得上。
@@ -1654,6 +1695,8 @@ impl<'e> Session<'e> {
         let Some(first) = text.chars().next() else {
             return;
         };
+        // 后面又上屏了别的（标点、空格）：退格删的是它，不是刚才学的词
+        self.undo_commit = None;
         if self.translating() {
             // 互译：上屏的字攒成原文，过一会儿（句末标点立刻）发请求
             self.translation.source.push_str(text);
@@ -1684,6 +1727,7 @@ impl<'e> Session<'e> {
         if text.is_empty() {
             return;
         }
+        self.undo_commit = None;
         self.pending.get_or_insert_with(String::new).push_str(text);
         self.remember(text);
     }
@@ -1713,9 +1757,9 @@ impl<'e> Session<'e> {
                         self.input.replace_range(at - prev..at, "");
                         self.caret = Some(at - prev);
                     } else {
-                        self.selections.pop();
+                        self.pop_selection();
                     }
-                } else if self.selections.pop().is_none() {
+                } else if !self.pop_selection() {
                     self.input.pop();
                 }
                 self.fresh = false;
@@ -2099,11 +2143,13 @@ impl<'e> Session<'e> {
         };
         self.last_choice = None;
         if chosen.consumed < self.remaining().len() {
+            let mark = self.learn_mark();
             self.push_selection(Selection {
                 text: pick.to_string(),
                 plain,
                 pinyin,
                 bytes: chosen.consumed,
+                learn: mark..mark,
             });
         } else {
             let text = self.selected_text() + &pick.to_string();
@@ -2217,6 +2263,7 @@ impl<'e> Session<'e> {
             self.set_context("");
             self.prev_char = None;
             self.last_char = None;
+            self.undo_commit = None;
         }
         if commit_pending && !self.translation.source.is_empty() {
             self.commit_source();
@@ -2327,11 +2374,22 @@ impl<'e> Session<'e> {
         self.last_choice.as_ref()
     }
 
+    /// 放弃编辑区（Esc、删光、失去焦点）：已选的句首词学到的东西也退回去（选错了才会放弃）。
     fn clear(&mut self) {
+        while self.pop_selection() {}
         self.input.clear();
-        self.selections.clear();
         self.caret = None;
         self.fresh = false;
+    }
+
+    /// 退回最后一个已选的词（退格、放弃），撤销选它时学到的。没有已选的词返回 false。
+    fn pop_selection(&mut self) -> bool {
+        let Some(selection) = self.selections.pop() else {
+            return false;
+        };
+        self.unlearn(&selection.learn);
+        self.fresh = false;
+        true
     }
 
     /// 还没选词的那段在 input 里从哪个字节开始。
@@ -2736,13 +2794,16 @@ impl<'e> Session<'e> {
                 self.last_choice = Some(chosen);
             }
             _ if chosen.consumed < remaining => {
-                // 句首词：先放进已选栈，剩下的拼音继续选
+                // 句首词：先放进已选栈，剩下的拼音继续选。学到的记下区间：退格退回、Esc 放弃时撤销
+                let start = self.learn_mark();
                 self.learn(&chosen.text, &chosen.pinyin);
+                let end = self.learn_mark();
                 self.push_selection(Selection {
                     plain: self.plain_of(&chosen.text),
                     text: chosen.text,
                     pinyin: chosen.pinyin,
                     bytes: chosen.consumed,
+                    learn: start..end,
                 });
             }
             _ => {
@@ -2768,6 +2829,7 @@ impl<'e> Session<'e> {
     /// 已选的词 + tail 上屏，记选词，清空。
     fn commit_with(&mut self, tail: &str, tail_pinyin: &str) {
         let text = self.selected_text() + tail;
+        self.commit_start = Some(self.learn_mark());
         if self.engine.is_some() && !text.is_empty() && !self.wubi() {
             self.learned = true;
             if !tail.is_empty() {
@@ -2781,7 +2843,7 @@ impl<'e> Session<'e> {
                 && self.selections.iter().all(|s| !s.pinyin.is_empty())
             {
                 // 分几次选出来的也记一次，下次能一次打出来。四个字以内的当成用户造的词，
-                // 用一次就收进用户词库（「霜」「频」「阁」→ 霜频阁）；更长的是整句，照常按次数学。
+                // 第二次这样拼出来就收进用户词库（「霜」「频」「阁」→ 霜频阁）；更长的是整句，照常按次数学。
                 let mut pinyin = String::new();
                 for selection in &self.selections {
                     pinyin.push_str(&selection.pinyin);
@@ -2827,10 +2889,23 @@ impl<'e> Session<'e> {
         engine.record_composed_word(word, pinyin);
     }
 
-    /// 上屏 text（空的不上屏，frame 取走），清空编辑区。
+    /// 上屏 text（空的不上屏，frame 取走），清空编辑区。已选的词连同这次学到的都算这次上屏的，
+    /// 上屏后紧接着按退格时一起撤销。
     fn finish(&mut self, text: String) {
+        let end = self.learn_mark();
+        let start = self
+            .selections
+            .first()
+            .map(|s| s.learn.start)
+            .or(self.commit_start)
+            .unwrap_or(end);
+        self.commit_start = None;
+        self.selections.clear();
         self.clear();
         self.emit(&text);
+        if !text.is_empty() {
+            self.undo_commit = (start < end).then_some(start..end);
+        }
     }
 
     /// 选了句首词，压进已选栈（测试里不带引擎时用）。

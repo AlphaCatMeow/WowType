@@ -585,8 +585,8 @@ fn traditional_learns_the_lexicon_form() {
         texts(&mut session)
     };
     assert_eq!(shown(&engine)[0], "晚理");
-    {
-        // 一个字一个字选出来（萬、裏），拼成的词马上收进用户词库
+    for _ in 0..2 {
+        // 一个字一个字选出来（萬、裏），第二次这样拼出来就收进用户词库
         let mut session = with_engine_ref(&engine);
         type_keys(&mut session, "wanli");
         choose_text(&mut session, "萬");
@@ -1261,9 +1261,10 @@ fn shuangpin_semicolon_is_a_key_on_odd_count() {
     assert!(!session.composing());
 }
 
-/// 分几次选出来的词，用一次就记住（https://x.com/so1v3/status/2120415675969896729）。
+/// 分几次选出来的词，第二次这样拼出来就记住（https://x.com/so1v3/status/2120415675969896729）。
+/// 以前用一次就收，挑错一个字拼出来的（你好事竣）也成了用户词，所以第一次只记成候选新词。
 #[test]
-fn composed_word_is_learned_after_one_use() {
+fn composed_word_is_learned_on_second_use() {
     let lexicon: Arc<dyn Lexicon> = Arc::new(
         MemoryLexicon::from_tsv_str(concat!(
             "shuang\t双\t9000\n",
@@ -1284,16 +1285,28 @@ fn composed_word_is_learned_after_one_use() {
     let engine: &'static Engine =
         Box::leak(Box::new(Engine::new(lexicon, Arc::new(BigramLm::default()))));
 
+    let compose = |engine: &'static Engine| {
+        let mut session = with(engine);
+        type_keys(&mut session, "shuangpinge");
+        choose_text(&mut session, "霜");
+        choose_text(&mut session, "频");
+        let frame = choose_text(&mut session, "阁");
+        assert_eq!(frame.commit.as_deref(), Some("霜频阁"));
+    };
     let mut session = with(engine);
     type_keys(&mut session, "shuangpinge");
     assert_ne!(texts(&mut session).first().map(String::as_str), Some("霜频阁"));
-    choose_text(&mut session, "霜");
-    choose_text(&mut session, "频");
-    let frame = choose_text(&mut session, "阁");
-    assert_eq!(frame.commit.as_deref(), Some("霜频阁"));
+    compose(engine);
+    assert!(
+        !engine.user_words().iter().any(|(_, w, _)| w == "霜频阁"),
+        "第一次只是候选新词：{:?}",
+        engine.user_words()
+    );
+    assert!(engine.is_new_word("霜频阁"));
+    compose(engine);
     assert!(
         engine.user_words().iter().any(|(_, w, _)| w == "霜频阁"),
-        "选一次就进用户词库：{:?}",
+        "第二次进用户词库：{:?}",
         engine.user_words()
     );
 
@@ -1347,11 +1360,13 @@ fn ctrl(keysym: u32) -> Key {
 #[test]
 fn ctrl_delete_forgets_learned_word() {
     let engine = forget_engine();
-    let mut session = with(engine);
-    type_keys(&mut session, "shuangpinge");
-    choose_text(&mut session, "霜");
-    choose_text(&mut session, "频");
-    choose_text(&mut session, "阁");
+    for _ in 0..2 {
+        let mut session = with(engine);
+        type_keys(&mut session, "shuangpinge");
+        choose_text(&mut session, "霜");
+        choose_text(&mut session, "频");
+        choose_text(&mut session, "阁");
+    }
     assert!(engine.user_words().iter().any(|(_, w, _)| w == "霜频阁"));
 
     let mut again = with(engine);
@@ -2879,4 +2894,130 @@ fn abandoning_never_commits() {
     session.clear_translation();
     assert_eq!(session.translate_source(), "");
     assert_eq!(session.reset(false).commit, None);
+}
+
+// ---- 撤销学习 ----
+
+/// 选句首词就记了一次选词；以前退格把它退回编辑区、Esc 放弃都不回退，选三次再撤销也成了用户词。
+#[test]
+fn undoing_a_head_word_unlearns_it() {
+    let engine = engine();
+    for round in 0..3 {
+        let mut session = with(engine);
+        type_keys(&mut session, "nihaozhongguo");
+        choose_text(&mut session, "你好");
+        assert_eq!(engine.history_count("你好"), 1, "第 {round} 次：选了先记着");
+        let frame = type_keys(&mut session, "<bs>");
+        assert_eq!(frame.preedit, "ni'hao'zhong'guo");
+        assert_eq!(engine.history_count("你好"), 0, "第 {round} 次：退回编辑区就不算");
+    }
+    assert!(engine.user_words().is_empty(), "{:?}", engine.user_words());
+
+    // Esc 放弃、失去焦点（reset(false)）、删光拼音：选过的句首词都退回去
+    let mut session = with(engine);
+    type_keys(&mut session, "nihaozhongguo");
+    choose_text(&mut session, "你好");
+    type_keys(&mut session, "<esc>");
+    assert_eq!(engine.history_count("你好"), 0, "Esc");
+    type_keys(&mut session, "nihaozhongguo");
+    choose_text(&mut session, "你好");
+    session.reset(false);
+    assert_eq!(engine.history_count("你好"), 0, "失去焦点");
+    // 退回来再选：退掉的那次不算，重选的、上屏的算
+    let many = many_engine();
+    let mut other = with(many);
+    type_keys(&mut other, "nihao");
+    choose_text(&mut other, "你");
+    type_keys(&mut other, "<bs>");
+    choose_text(&mut other, "你");
+    assert_eq!(choose_text(&mut other, "好").commit.as_deref(), Some("你好"));
+    assert_eq!(many.history_count("你"), 1);
+
+    // 上屏了就算数：已选的词、整句都记
+    type_keys(&mut session, "nihaozhongguo");
+    choose_text(&mut session, "你好");
+    assert_eq!(choose_text(&mut session, "中国").commit.as_deref(), Some("你好中国"));
+    assert_eq!(engine.history_count("你好"), 1);
+    assert_eq!(engine.history_count("中国"), 1);
+}
+
+/// 上屏后紧接着按退格（编辑区空着，退格交给应用删字）：刚才那次上屏学到的退回去，
+/// 句首词、整句、拼成的词一起。只退最近一次，按过别的键、又上屏了别的就不退。
+#[test]
+fn backspace_right_after_commit_unlearns_it() {
+    let engine = engine();
+    let mut session = with(engine);
+    type_keys(&mut session, "nihaozhongguo");
+    choose_text(&mut session, "你好");
+    let frame = choose_text(&mut session, "中国");
+    assert_eq!(frame.commit.as_deref(), Some("你好中国"));
+    assert!(frame.learned);
+    assert_eq!(engine.history_count("你好中国"), 1);
+    let frame = type_keys(&mut session, "<bs>");
+    assert!(!frame.handled, "退格照样交给应用删字");
+    assert_eq!(engine.history_count("你好"), 0);
+    assert_eq!(engine.history_count("中国"), 0);
+    assert_eq!(engine.history_count("你好中国"), 0);
+    // 只退最近一次，之前的不动
+    type_keys(&mut session, "kaixin<sp>");
+    type_keys(&mut session, "kaixin<sp>");
+    assert_eq!(engine.history_count("开心"), 2);
+    type_keys(&mut session, "<bs><bs>");
+    assert_eq!(engine.history_count("开心"), 1, "只退最后那一次");
+
+    // 上屏以后按了别的键：不退
+    type_keys(&mut session, "kaixin<sp>");
+    assert_eq!(engine.history_count("开心"), 2);
+    session.key(&Key::press(keysym::LEFT));
+    type_keys(&mut session, "<bs>");
+    assert_eq!(engine.history_count("开心"), 2, "方向键以后的退格不算");
+    // 单按修饰键不算别的键（松开也不算，type_keys 每个键都松开）
+    type_keys(&mut session, "kaixin<sp>");
+    assert_eq!(engine.history_count("开心"), 3);
+    session.key(&Key::press(0xffe3)); // Control_L 按下
+    type_keys(&mut session, "<bs>");
+    assert_eq!(engine.history_count("开心"), 2);
+
+    // 后面又上屏了标点：退格删的是标点
+    type_keys(&mut session, "kaixin,");
+    assert_eq!(engine.history_count("开心"), 3);
+    type_keys(&mut session, "<bs>");
+    assert_eq!(engine.history_count("开心"), 3);
+
+    // Ctrl+退格（删一个词）不算
+    type_keys(&mut session, "kaixin<sp>");
+    session.key(&Key {
+        modifiers: modifier::CTRL,
+        ..Key::press(keysym::BACKSPACE)
+    });
+    assert_eq!(engine.history_count("开心"), 4);
+
+    // 原样上屏的字母（回车）也一样
+    type_keys(&mut session, "kaixin<cr>");
+    assert_eq!(engine.history_count("kaixin"), 1);
+    type_keys(&mut session, "<bs>");
+    assert_eq!(engine.history_count("kaixin"), 0);
+}
+
+/// 分几次拼出来的词第二次本来要收进用户词库：紧接着退格，收的词、候选新词都回到之前。
+#[test]
+fn backspace_after_composing_twice_unlearns_the_new_word() {
+    let engine = forget_engine();
+    let compose = |session: &mut Session<'static>| {
+        type_keys(session, "shuangpinge");
+        choose_text(session, "霜");
+        choose_text(session, "频");
+        choose_text(session, "阁").commit
+    };
+    let mut session = with(engine);
+    assert_eq!(compose(&mut session).as_deref(), Some("霜频阁"));
+    assert!(engine.is_new_word("霜频阁"));
+    type_keys(&mut session, "<bs>");
+    assert!(!engine.is_new_word("霜频阁"), "第一次也退掉");
+    compose(&mut session);
+    compose(&mut session);
+    assert!(engine.user_words().iter().any(|(_, w, _)| w == "霜频阁"));
+    type_keys(&mut session, "<bs>");
+    assert!(engine.user_words().is_empty(), "{:?}", engine.user_words());
+    assert!(engine.is_new_word("霜频阁"), "回到第一次以后的样子");
 }
