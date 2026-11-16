@@ -114,10 +114,11 @@ curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/main/install.sh |
 1. 下载和你系统对应的最新安装包（词库已经在包里，约 29 MB），按 `SHA256SUMS` 校验
 2. 用系统的包管理器（`apt-get`、`pacman`、`dnf`）装上，顺带装好 fcitx5 和设置界面要用的 GTK 4 / libadwaita。Arch 不会替你整机升级，提示依赖不满足时先 `sudo pacman -Syu`
 3. 输入法框架还不是 fcitx5（Ubuntu 默认是 IBus）时，问你要不要用 `im-config` 切过去（deepin 默认就是 fcitx5，不动）
-4. 把 WowType 加进 fcitx5 的输入法列表；fcitx5 正在运行的话会先重启它一次
+4. 把 WowType 加进 fcitx5 的输入法列表；fcitx5 正在运行的话会先重启它一次（3、4 两步是 `wowtype-config --setup` 做的，直接装包的话在「WowType 设置」第一页点「一键设置」一样）
+5. GNOME 上软件源里有 Input Method Panel 扩展（Debian 13、Fedora 45 起）时，问你要不要装上并启用
 
 装完按提示做：切换了输入法框架的话**注销并重新登录**，然后按 `Ctrl+Space` 切到 WowType，打 `nihao` 试试。
-以后再跑一遍同样的命令就是升级（设置界面里也会提醒有新版本）。
+以后再跑一遍同样的命令就是升级（设置界面里也会提醒有新版本；升级以后还没重启输入法的话，会发通知提醒重启）。
 
 > 想先看看脚本做了什么：[install.sh](install.sh)，或者 `bash install.sh --print-plan` 只看会装哪个包、不动系统。
 > 不想让它改输入法框架或重启 fcitx5，可以加环境变量，例如 `curl -fsSL … | WOWTYPE_NO_IM_CONFIG=1 WOWTYPE_NO_RESTART=1 bash`。
@@ -330,7 +331,7 @@ WowType 在会话总线上登记了 `org.wowtype.Input`，外部命令可以直�
 busctl --user call org.wowtype.Input /org/wowtype/Input org.wowtype.Input1 SetMode s en
 ```
 
-模式可以是 `zh`、`en`、`translate`（配置了互译时）、`toggle`（中英之间切），返回切完以后的模式；查现在的模式用 `Mode`。
+模式可以是 `zh`、`en`、`translate`（配置了互译时）、`toggle`（中英之间切），返回切完以后的模式；查现在的模式用 `Mode`；`Version` 返回正在跑的插件版本（升级后设置界面拿它判断要不要提醒重启输入法）。
 neovim 里退出插入模式切英文、回到插入模式切回原来的模式：
 
 ```lua
