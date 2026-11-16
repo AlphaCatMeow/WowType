@@ -7,6 +7,7 @@
 // 样子也照 Linux：薄荷绿渐变侧栏、绿色选中块、白色圆角卡片。
 
 import AppKit
+import AVFoundation
 import SwiftUI
 
 // MARK: 颜色
@@ -550,6 +551,8 @@ private struct VoicePage: View {
                 }
             }
             .rowPadding()
+            RowDivider()
+            MicrophoneRow()
         }
     }
 
@@ -561,6 +564,52 @@ private struct VoicePage: View {
         let label = current.isEmpty ? "不用语音键"
             : VoiceKey(name: current) == nil ? "\(current)（Mac 上没有这个键）" : "其他（\(current)）"
         return options + [(label, current)]
+    }
+}
+
+/// 系统设置「隐私与安全性 → 麦克风」（只打开，不改系统设置）
+private let microphoneSettingsURL =
+    URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
+
+/// 麦克风权限：设置窗口和输入法是同一个程序，这里允许了输入法也能用。被拒了给按钮打开系统设置；
+/// 从系统设置切回来时重新看一眼。
+private struct MicrophoneRow: View {
+    @State private var status = AVCaptureDevice.authorizationStatus(for: .audio)
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        HStack(spacing: 10) {
+            RowLabel(title: "麦克风", subtitle: subtitle, subtitleColor: denied ? palette.warning : nil)
+            if status == .notDetermined {
+                Button("允许使用…") {
+                    AVCaptureDevice.requestAccess(for: .audio) { _ in
+                        DispatchQueue.main.async { refresh() }
+                    }
+                }
+            } else if denied {
+                Button("打开系统设置") { NSWorkspace.shared.open(microphoneSettingsURL) }
+            }
+        }
+        .rowPadding()
+        .onAppear { refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refresh()
+        }
+    }
+
+    private func refresh() {
+        status = AVCaptureDevice.authorizationStatus(for: .audio)
+    }
+
+    private var denied: Bool { status == .denied || status == .restricted }
+
+    private var subtitle: String {
+        switch status {
+        case .authorized: return "已允许"
+        case .notDetermined: return "还没问过：第一次说话时系统会问"
+        case .restricted: return "被系统限制了（家长控制或描述文件），WowType 用不了麦克风"
+        default: return "没允许：在「系统设置 → 隐私与安全性 → 麦克风」里打开 WowType"
+        }
     }
 }
 
