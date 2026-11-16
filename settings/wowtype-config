@@ -2275,6 +2275,10 @@ def background_check():
         return 0
     state["checked"] = time.time()
     write_update_state(state)
+    try:
+        auto_update_lexicon(values, release, state)
+    except Exception as e:  # noqa: BLE001  词库没更新好也别耽误提醒新版本
+        log(f"万象词库自动更新出错：{e!r}")
     if not is_newer(release) or state.get("notified") == release["tag"]:
         return 0
     # NixOS、Manjaro、源码安装等没法一键装，通知里别说「一键安装」
@@ -2395,6 +2399,55 @@ def remove_lexicon_pack(folder=WANXIANG_DIR):
     size = dir_size(folder) if os.path.isdir(folder) else 0
     shutil.rmtree(folder, ignore_errors=True)
     return size
+
+
+# 后台更新万象词库失败（下不全、包不对）后，同一版本隔这么久再试，免得每小时都下一遍
+LEXICON_RETRY = 24 * 3600
+
+
+def lexicon_update_plan(values, installed, release, failed=None, now=None):
+    """后台要不要更新万象词库：要就返回发布里的 (文件名, 地址, 版本)，不要是 None。
+
+    只更新装了、正在用的万象（装了没在用的，打开设置「输入 → 词库」时再手动更新）；
+    发布页上的包比装好的新才更新（装好的没写版本也算旧）。failed 是上次失败的 {version, at}。"""
+    if not installed or active_lexicon(values)[0] != "wanxiang":
+        return None
+    asset = find_lexicon_asset(release)
+    if not asset or parse_version(asset[2]) <= parse_version(installed):
+        return None
+    now = time.time() if now is None else now
+    if failed and failed.get("version") == asset[2] and now - failed.get("at", 0) < LEXICON_RETRY:
+        return None
+    return asset
+
+
+def auto_update_lexicon(values, release, state):
+    """--startup 的后台检查顺带做：万象词库有新版就在后台下载、按 SHA256SUMS 校验、换进去
+    （install_lexicon_pack：先解到旁边，检查好了再整个换），再让插件重新读（换词库几秒后生效），不打扰用户。
+    state 是 update-check.json 的内容，失败时记下版本，隔一天再试。"""
+    folder = WANXIANG_DIR
+    installed = lexicon_pack_version(folder)
+    asset = lexicon_update_plan(values, installed, release, state.get("lexicon_failed"))
+    if not asset:
+        return None
+    name, url, version = asset
+    log(f"万象词库 {installed} 有新版 {version}，在后台更新")
+    try:
+        path = download_updates(release, [(name, url)], lambda _done, _total: None)[0]
+        try:
+            version = install_lexicon_pack(path, folder)
+        finally:
+            os.unlink(path)
+    except Exception as e:  # noqa: BLE001  网络错误各式各样；包不对时 install_lexicon_pack 什么都不动
+        state["lexicon_failed"] = {"version": version, "at": time.time()}
+        write_update_state(state)
+        log(f"万象词库 {version} 没更新好：{e}")
+        return None
+    state.pop("lexicon_failed", None)
+    write_update_state(state)
+    running = fcitx_call_sync("ReloadAddonConfig", GLib.Variant("(s)", ("wowtype",))) is not None
+    log(f"万象词库更新到 {version}" + ("，插件在后台换词库" if running else "，fcitx5 下次启动时生效"))
+    return version
 
 
 def install_lexicon_cli(args):
@@ -2905,6 +2958,78 @@ def restart_self_test():
     assert not restart_needed(None, "0.4.1")  # 插件没在跑、总线连不上：说不清，不提醒
     assert not restart_needed("0.4.0", "@VERSION@") and not restart_needed("", "@VERSION@")  # 源码直接跑
     assert restart_needed("0.4.1~git1.a", "0.4.1~git2.b")
+
+
+def lexicon_update_self_test():
+    """后台更新万象词库：什么时候更新，更新的整个过程（假的下载，不连 fcitx5）。"""
+    global WANXIANG_DIR, WANXIANG_LEXICON, UPDATE_STATE, LOG_FILE, download_updates, fcitx_call_sync
+    import io
+    import tarfile
+    import tempfile
+    release = {"tag": "v9.9.9", "assets": {"wowtype-data-wanxiang-2026.11.10.0.tar.gz": "u1", "SHA256SUMS": "s"}}
+    saved = (WANXIANG_DIR, WANXIANG_LEXICON, UPDATE_STATE, LOG_FILE, download_updates, fcitx_call_sync)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            WANXIANG_DIR = os.path.join(tmp, "dicts", "wanxiang")
+            WANXIANG_LEXICON = os.path.join(WANXIANG_DIR, "lexicon.tsv")
+            UPDATE_STATE = os.path.join(tmp, "update-check.json")
+            LOG_FILE = "0"
+            using = {**DEFAULTS, "Lexicon": WANXIANG_LEXICON}
+            asset = ("wowtype-data-wanxiang-2026.11.10.0.tar.gz", "u1", "2026.11.10.0")
+            # 没装、装了没在用：不更新（active_lexicon 要文件在）
+            assert lexicon_update_plan(using, None, release) is None
+            os.makedirs(WANXIANG_DIR)
+            with open(WANXIANG_LEXICON, "w", encoding="utf-8") as f:
+                f.write("ni hao\t你好\t1\n")
+            assert lexicon_update_plan(DEFAULTS, "2026.11.1.0", release) is None
+            assert lexicon_update_plan(using, "2026.11.1.0", release) == asset
+            assert lexicon_update_plan(using, "?", release) == asset  # 没写版本的算旧
+            assert lexicon_update_plan(using, "2026.11.10.0", release) is None
+            assert lexicon_update_plan(using, "2026.12.1.0", release) is None
+            assert lexicon_update_plan(using, "2026.11.1.0", {"assets": {}}) is None
+            failed = {"version": "2026.11.10.0", "at": 1000}
+            assert lexicon_update_plan(using, "2026.11.1.0", release, failed, now=1000 + 3600) is None
+            assert lexicon_update_plan(using, "2026.11.1.0", release, failed, now=1000 + LEXICON_RETRY) == asset
+            assert lexicon_update_plan(using, "2026.11.1.0", release, {"version": "2026.11.9.0", "at": 1000},
+                                       now=1001) == asset
+            # 整个过程：下载（假的）、换进去、让插件重读
+            calls = []
+
+            def fake_call(method, params=None, reply=None):
+                calls.append((method, params.unpack() if params is not None else None))
+                return GLib.Variant("()", ())
+            fcitx_call_sync = fake_call
+            with open(os.path.join(WANXIANG_DIR, "VERSION"), "w", encoding="utf-8") as f:
+                f.write("2026.11.1.0\n")
+
+            def fake_download(_release, files, _progress, text=None):
+                path = os.path.join(tmp, files[0][0])
+                lexicon = text if text is not None else "".join(
+                    f"ce shi\t测试{i}\t{i}\n" for i in range(LEXICON_PACK_MIN))
+                with tarfile.open(path, "w:gz") as tar:
+                    for name, data in (("lexicon.tsv", lexicon), ("VERSION", "2026.11.10.0\n"),
+                                       ("LICENSE", "x"), ("SOURCE.txt", "x")):
+                        info = tarfile.TarInfo(name)
+                        info.size = len(data.encode())
+                        tar.addfile(info, io.BytesIO(data.encode()))
+                return [path]
+            # 坏包：原来的留着，记下失败，不让插件重读；隔一天之内不再试
+            download_updates = lambda r, f, p: fake_download(r, f, p, "ni hao\t你好\t1\n")  # noqa: E731
+            state = {}
+            assert auto_update_lexicon(using, release, state) is None
+            assert lexicon_pack_version(WANXIANG_DIR) == "2026.11.1.0" and calls == []
+            assert state["lexicon_failed"]["version"] == "2026.11.10.0"
+            assert json.load(open(UPDATE_STATE))["lexicon_failed"]["version"] == "2026.11.10.0"
+            assert auto_update_lexicon(using, release, state) is None
+            state["lexicon_failed"]["at"] -= LEXICON_RETRY
+            download_updates = fake_download
+            assert auto_update_lexicon(using, release, state) == "2026.11.10.0"
+            assert lexicon_pack_version(WANXIANG_DIR) == "2026.11.10.0" and "lexicon_failed" not in state
+            assert calls == [("ReloadAddonConfig", ("wowtype",))]
+            assert not [n for n in os.listdir(tmp) if n.endswith(".tar.gz")]  # 下载的包删掉了
+            assert auto_update_lexicon(using, release, state) is None  # 已经是最新
+    finally:
+        WANXIANG_DIR, WANXIANG_LEXICON, UPDATE_STATE, LOG_FILE, download_updates, fcitx_call_sync = saved
 
 
 def setup_self_test():
@@ -6038,6 +6163,7 @@ if __name__ == "__main__":
         config_write_self_test()
         restart_self_test()
         setup_self_test()
+        lexicon_update_self_test()
         voice_model_self_test()
         lexicon_self_test()
         # fcitx5 默认配置：左 Shift 是「临时切换输入法」
