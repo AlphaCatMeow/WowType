@@ -2076,6 +2076,10 @@ def collect_diagnostics():
     label = {"rime-ice": "雾凇（默认）", "wanxiang": "万象", "custom": "自己指定"}[kind]
     add(f"  词库：{label}" + (f"，{path}" if path else ""))
     add(f"  万象词库包：{lexicon_pack_version() or '没装'}")
+    nnlm_kind, nnlm_path = active_nnlm()
+    nnlm_label = {"env": "环境变量 WOWTYPE_NNLM 指定的", "imported": "导入的微信输入法模型",
+                  "bundled": "WowType 自带的 nnlm.bin", None: "没有"}[nnlm_kind]
+    add(f"  整句增强模型：{nnlm_label}" + (f"，{nnlm_path}" if nnlm_path else ""))
     data_files = {os.path.join(folder, name) for folder in (DATA_DIR, SYSTEM_DATA_DIR)
                   for name in DATA_FILES} | {WANXIANG_LEXICON}
     for path in [*LEXICON_CANDIDATES, WANXIANG_LEXICON, WANXIANG_LEXICON + ".wcache",
@@ -2711,12 +2715,47 @@ def install_lexicon_cli(args):
 
 
 # ---------------------------------------------------------------- 神经语言模型
-# 微信输入法自带的字级神经语言模型（16 MB），有它整句候选更准。模型是腾讯的，WowType 不分发：
-# 用户自己下载微信输入法的 macOS 安装包（.zip），在设置里点「导入」，这里从包里取出来、试着解析后放好。
-# 不看版本号：腾讯出了小版本，只要结构没变照样能用；解析不了才不装（核心的读取代码说了算）。
-# 和命令行的 tools/install_wetype_nnlm.py 做的一样。
+# 整句增强模型（字级神经语言模型），有它长句的第一候选更准。安装包自带 WowType 自己训的 nnlm.bin
+# （系统数据目录，CC BY-SA 4.0）。也可以导入微信输入法自带的那个（16 MB，效果相近）：模型是腾讯的，
+# WowType 不分发，用户自己下载微信输入法的 macOS 安装包（.zip），在设置里点「导入」，这里从包里取出来、
+# 试着解析后放好。不看版本号：腾讯出了小版本，只要结构没变照样能用；解析不了才不装（核心的读取代码说了算）。
+# 和命令行的 tools/install_wetype_nnlm.py 做的一样。插件先用导入的，没有再用自带的（wowtype_engine.cpp 的 findNnlm）。
 NNLM_NAME = "nlrgpt2_nnlm.bin"
 NNLM_FILE = os.environ.get("WOWTYPE_NNLM") or os.path.join(DATA_DIR, "wetype", NNLM_NAME)
+BUNDLED_NNLM_NAME = "nnlm.bin"
+
+
+def bundled_nnlm():
+    """没导入微信输入法的模型时插件用的 nnlm.bin：用户目录里自己放的（不是安装包那份的旧副本）> 系统目录里
+    安装包自带的；都没有返回 None。"""
+    mine = os.path.join(DATA_DIR, BUNDLED_NNLM_NAME)
+    system = os.path.join(SYSTEM_DATA_DIR, BUNDLED_NNLM_NAME)
+    if os.path.isfile(mine) and not stale_bundled_copy(mine, system):
+        return mine
+    return system if os.path.isfile(system) else None
+
+
+def active_nnlm():
+    """插件会用哪一份整句增强模型：(种类, 路径)，种类是 "env"（环境变量 WOWTYPE_NNLM 指定）、
+    "imported"（导入的微信输入法模型）、"bundled"（WowType 自带的 nnlm.bin），都没有是 (None, None)。"""
+    if os.environ.get("WOWTYPE_NNLM"):
+        return "env", os.environ["WOWTYPE_NNLM"]
+    if os.path.isfile(NNLM_FILE):
+        return "imported", NNLM_FILE
+    bundled = bundled_nnlm()
+    return ("bundled", bundled) if bundled else (None, None)
+
+
+def nnlm_subtitle(kind):
+    """设置界面「整句增强模型」那行的说明。"""
+    if kind == "env":
+        return "用的是环境变量 WOWTYPE_NNLM 指定的模型"
+    if kind == "imported":
+        return "用的是导入的微信输入法模型，长句的第一候选更准"
+    if kind == "bundled":
+        return "已自带 WowType 的整句增强模型，长句的第一候选更准；也可以导入微信输入法的（效果相近）"
+    return ("可选。微信输入法自带的小模型（16 MB），长句的第一候选更准。"
+            "它是腾讯的，WowType 不带：先到微信输入法官网下载 macOS 版安装包（.zip），再点「导入」")
 NNLM_MAX_BYTES = 200 << 20
 # 和设置界面装在一起的自检工具：用核心的读取代码试解析模型
 CHECK_TOOL = shutil.which("wowtype-check") or os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -2833,6 +2872,45 @@ def nnlm_self_test():
             raise AssertionError("没有 wowtype-check 时不该算通过")
         finally:
             CHECK_TOOL = saved
+
+
+def nnlm_choice_self_test():
+    """整句增强模型用哪一份：环境变量 > 导入的微信输入法模型 > 用户目录自己放的 nnlm.bin > 安装包自带的。"""
+    import tempfile
+    global DATA_DIR, SYSTEM_DATA_DIR, NNLM_FILE
+    saved =DATA_DIR, SYSTEM_DATA_DIR, NNLM_FILE, os.environ.pop("WOWTYPE_NNLM", None)
+    with tempfile.TemporaryDirectory() as root:
+        DATA_DIR = os.path.join(root, "user")
+        SYSTEM_DATA_DIR = os.path.join(root, "system")
+        NNLM_FILE = os.path.join(DATA_DIR, "wetype", NNLM_NAME)
+        try:
+            os.makedirs(os.path.join(DATA_DIR, "wetype"))
+            os.makedirs(SYSTEM_DATA_DIR)
+            assert active_nnlm() == (None, None)
+            assert "WowType 不带" in nnlm_subtitle(None)
+            system = os.path.join(SYSTEM_DATA_DIR, "nnlm.bin")
+            with open(system, "wb") as f:
+                f.write(b"WTNN\x01\0\0\0wowtype-data: nnlm.bin 2026.11.17.0 x\0")
+            assert active_nnlm() == ("bundled", system)
+            assert nnlm_subtitle("bundled").startswith("已自带 WowType 的整句增强模型")
+            mine = os.path.join(DATA_DIR, "nnlm.bin")
+            with open(mine, "wb") as f:
+                f.write(b"WTNN\x01\0\0\0wowtype-data: nnlm.bin 2026.11.17.0 x\0")
+            assert active_nnlm() == ("bundled", system), "用户目录里同一版的旧副本让给系统目录"
+            with open(mine, "wb") as f:
+                f.write(b"WTNN\x01\0\0\0wowtype-data: nnlm.bin 2026.12.01.0 x\0")
+            assert active_nnlm() == ("bundled", mine), "用户目录里更新的 nnlm.bin 先用"
+            with open(NNLM_FILE, "wb") as f:
+                f.write(b"fake")
+            assert active_nnlm() == ("imported", NNLM_FILE), "导入的微信输入法模型最先用"
+            assert nnlm_subtitle("imported").startswith("用的是导入的微信输入法模型")
+            os.environ["WOWTYPE_NNLM"] = os.path.join(root, "x.bin")
+            assert active_nnlm() == ("env", os.path.join(root, "x.bin"))
+        finally:
+            DATA_DIR, SYSTEM_DATA_DIR, NNLM_FILE, env = saved
+            os.environ.pop("WOWTYPE_NNLM", None)
+            if env is not None:
+                os.environ["WOWTYPE_NNLM"] = env
 
 
 def stale_copy_self_test():
@@ -4660,14 +4738,15 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.custom_lexicon_row.set_activatable_widget(self.custom_lexicon_check)
         group.add(self.custom_lexicon_row)
 
-        # 神经语言模型：腾讯的模型，不随 WowType 分发，用户下载微信输入法的安装包后在这里导入
+        # 整句增强模型：安装包自带 WowType 的 nnlm.bin；微信输入法的（腾讯的，不随 WowType 分发）
+        # 用户下载微信输入法的安装包后在这里导入，导入了就先用它。删除按钮只删导入的那份
         self.nnlm_row = Adw.ActionRow(title="整句增强模型")
         self.nnlm_import = Gtk.Button(label="导入…", valign=Gtk.Align.CENTER,
                                       tooltip_text="选下载好的微信输入法 macOS 版安装包（.zip）")
         self.nnlm_import.connect("clicked", self.on_nnlm_import)
         self.nnlm_row.add_suffix(self.nnlm_import)
         self.nnlm_delete = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER,
-                                      tooltip_text="删除整句增强模型")
+                                      tooltip_text="删除导入的微信输入法模型")
         self.nnlm_delete.add_css_class("flat")
         self.nnlm_delete.connect("clicked", self.on_nnlm_delete)
         self.nnlm_row.add_suffix(self.nnlm_delete)
@@ -4790,11 +4869,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         dialog.open(self, None, chosen)
 
     def refresh_nnlm(self):
-        have = os.path.isfile(NNLM_FILE)
-        self.nnlm_row.set_subtitle(
-            "已导入，长句的第一候选更准" if have else
-            "可选。微信输入法自带的小模型（16 MB），长句的第一候选更准。"
-            "它是腾讯的，WowType 不带：先到微信输入法官网下载 macOS 版安装包（.zip），再点「导入」")
+        have = os.path.isfile(NNLM_FILE)  # 导入的那份（删除按钮只删它）
+        self.nnlm_row.set_subtitle(nnlm_subtitle(active_nnlm()[0]))
         self.nnlm_import.set_label("重新导入…" if have else "导入…")
         self.nnlm_delete.set_visible(have)
 
@@ -4829,8 +4905,12 @@ class SettingsWindow(Adw.ApplicationWindow):
             os.remove(NNLM_FILE)
         except OSError:
             pass
-        log("删掉了整句增强模型")
-        self.toast("已删除，重启输入法后不再使用")
+        log("删掉了导入的整句增强模型")
+        if active_nnlm()[0] == "bundled":
+            self.fcitx.reload()  # 插件重新读设置时换回自带的 nnlm.bin，不用重启
+            self.toast("已删除，换回 WowType 自带的整句增强模型")
+        else:
+            self.toast("已删除，重启输入法后不再使用")
         self.refresh_nnlm()
 
     def on_lexicon_delete(self, _button):
@@ -6696,6 +6776,7 @@ if __name__ == "__main__":
         lexicon_self_test()
         stale_copy_self_test()
         nnlm_self_test()
+        nnlm_choice_self_test()
         # fcitx5 默认配置：左 Shift 是「临时切换输入法」
         hotkey = {"TriggerKeys": {"0": "Control+space", "1": "Zenkaku_Hankaku"},
                   "AltTriggerKeys": {"0": "Shift_L"}}
