@@ -16,7 +16,7 @@
  * 删函数或改参数含义时升主版本。外壳启动时用 wowtype_abi_version() 比对主版本。
  * 规则见 docs/ABI.md。 */
 #define WOWTYPE_ABI_VERSION_MAJOR 1
-#define WOWTYPE_ABI_VERSION_MINOR 10
+#define WOWTYPE_ABI_VERSION_MINOR 11
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,6 +55,10 @@ int wowtype_engine_load_english(WowtypeEngineHandle *engine, const char *path);
 /* 载入微信输入法的字级神经语言模型（nlrgpt2_nnlm.bin，不随 WowType 分发），
  * 用来给整句候选重排。返回字表大小，失败返回 -1。 */
 int wowtype_engine_load_nnlm(WowtypeEngineHandle *engine, const char *path);
+
+/* 只试着解析 nlrgpt2_nnlm.bin（不进引擎），设置界面导入前检查用。返回字表大小，
+ * 读不了、解析不了返回 -1（原因见 wowtype_last_error）。（1.11） */
+int wowtype_nnlm_check(const char *path);
 
 /* 混上用户自己训的领域词级模型（wowtype-lmbuild 生成，和 words.lm 同格式），path 为 NULL/空串时去掉；
  * 再调一次是换掉上一个，不会叠着混。返回 0 成功，-1 失败（原来的不动）。（1.10） */

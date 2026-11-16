@@ -25,6 +25,7 @@
 | 1.8 | 0.3.11 | 以词定字：`WowtypeSessionConfig` 末尾加 `pick_char`（默认 1），打拼音途中 `[` `]` 上屏光标处候选的第一个、最后一个字（`page_keys` 带 `[ ]` 时让给翻页） |
 | 1.9 | 0.3.11 | 加 `wowtype_engine_set_rare_ext_chars`：是否出 CJK 扩展 B 区及以后的单字（通用规范汉字表里的除外），默认不出（以前总是出） |
 | 1.10 | 下一版 | 输入会话接管标点、自动空格、上文、中 / 英 / 译和单按 Shift、互译、工具栏和表情面板：`WowtypeKey` 加 `hints`、`code`、`repeat`、`time_ms`（`KEY_HINT_*`、`KEY_ACTION_OBSERVE`、`KEY_ACTION_TOGGLE_MODE`、`KEY_ACTION_TOGGLE_TRANSLATE`；`KEY_HINT_SURROUNDING`：读得到周围文字时拿 `prev_char` 核对会话记的上文），`WowtypeSessionConfig` 加 `punct_style`、`auto_space`、`shift_toggle`、`shift_tap_ms`、`translate_mode`、`toolbar`、`clipboard_history`，`WowtypeFrame` 加 `learned`、`mode`、`mode_changed`、`translating`、`translate_*`（`aux`、`wake_after_ms` 开始用，`panel` 加 2 表情面板、3 工具栏）；加 `wowtype_session_set_mode`、`_mode`、`_set_translator`、`_set_translate_backend`、`_tick`、`_commit_text`、`_translate_clear`、`_translate_source`、`_toggle_emoji_panel`、`_open_tool`、`_open_panel`、`wowtype_recent_emoji_path`、`_list`、`wowtype_custom_code`、`wowtype_guess_pinyin`（自定义词的编码整理、猜拼音，macOS 设置不再自己抄音节表），`wowtype_engine_set_domain_lm`（混上用户自己训的领域词级模型），`WowtypeSessionConfig` 加 `shuangpin_keys`（双拼编辑区显示打的键）；五笔：加 `wowtype_engine_load_wubi`，`WowtypeSessionConfig` 加 `wubi`、`wubi_auto_commit`、`wubi_hint`，`translate_key`（另设了进出「译」的键，单按 Shift 只切中 / 英），`WowtypeCandidateInfo` 加 `comment`、加 `wowtype_session_candidate_comment`（候选后面的小字）；删掉会话的过渡函数 `_append`、`_set_context`、`_last_choice` |
+| 1.11 | 下一版 | 加 `wowtype_nnlm_check`：只试着解析字级神经语言模型（`nlrgpt2_nnlm.bin`），返回字表大小或 -1，设置界面导入前检查用 |
 
 ## 所有权和生命周期
 
