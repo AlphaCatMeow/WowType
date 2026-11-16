@@ -190,6 +190,15 @@ fn kept_for_save<K: Ord>(
 ///
 /// 只用过一次、[`STALE_ONCE_MS`] 没再用的不存；超过 [`MAX_WORDS`] / [`MAX_PAIRS`] 的不存最冷的。
 /// 内存里的不动（这次会话里排序不变），下次启动读回来的就是淘汰过的。
+/// 没有一个非 ASCII 字符的词（回车上屏的原始字母串、英文词）：不存也不载入。
+///
+/// 选词记录只在给束搜索出来的中文候选打分时用，原始串和英文候选的位置从来不看它；以前回车上屏的原始字母串
+/// 也记一次选词，终端里中文模式下打的密码就这样明文留在了 history.tsv 里。现在会话不再记它们，
+/// 载入时也跳过旧文件里的这些行，下次存盘就从文件里清掉了。
+fn plain_ascii(text: &str) -> bool {
+    text.is_ascii()
+}
+
 pub fn save_history<P: AsRef<Path>>(
     path: P,
     words: &HashMap<String, HistoryEntry>,
@@ -197,7 +206,7 @@ pub fn save_history<P: AsRef<Path>>(
 ) -> Result<()> {
     let path = path.as_ref();
     let mut out = String::from("# wowtype 用户输入习惯 v1\n");
-    let clean = |s: &str| !s.contains(['\t', '\n', '\r']);
+    let clean = |s: &str| !s.contains(['\t', '\n', '\r']) && !plain_ascii(s);
     // 「现在」取系统时间和数据里最后一次使用的时间里早的那个：系统时钟被调到将来时，
     // 不会把只用过一次的一下全当成过期的丢掉（带时间戳回放的测试也一样）
     let newest = words
@@ -260,13 +269,15 @@ pub fn load_history<P: AsRef<Path>>(
             })
         };
         match parts.as_slice() {
-            ["w", word, count, last] if !word.is_empty() => {
+            ["w", word, count, last] if !word.is_empty() && !plain_ascii(word) => {
                 if let Some(e) = entry(count, last) {
                     words.insert((*word).to_string(), e);
                     loaded += 1;
                 }
             }
-            ["p", prev, cur, count, last] if !prev.is_empty() && !cur.is_empty() => {
+            ["p", prev, cur, count, last]
+                if !prev.is_empty() && !cur.is_empty() && !plain_ascii(prev) && !plain_ascii(cur) =>
+            {
                 if let Some(e) = entry(count, last) {
                     pairs.insert((*prev).to_string(), (*cur).to_string(), e);
                     loaded += 1;
@@ -282,6 +293,30 @@ pub fn load_history<P: AsRef<Path>>(
 mod tests {
     use super::*;
     use crate::lm::BigramLm;
+
+    /// 旧文件里纯 ASCII 的词和搭配（回车上屏的原始字母串）载入时跳过，存盘后文件里也没有了。
+    #[test]
+    fn plain_ascii_entries_are_dropped() {
+        let dir = std::env::temp_dir().join(format!("wowtype_ascii_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.tsv");
+        std::fs::write(
+            &path,
+            "# wowtype 用户输入习惯 v1\nw\thunter2pass\t3\t1000\nw\t你好\t2\t1000\n\
+             p\t你好\tsecret\t1\t1000\np\tsecret\t世界\t1\t1000\np\t你好\t世界\t1\t1000\n",
+        )
+        .unwrap();
+        let mut words = HashMap::new();
+        let mut pairs = UserPairs::default();
+        assert_eq!(load_history(&path, &mut words, &mut pairs).unwrap(), 2);
+        assert!(words.contains_key("你好"));
+        assert!(!words.contains_key("hunter2pass"));
+        save_history(&path, &words, &pairs).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("hunter2pass") && !text.contains("secret"), "{text}");
+        assert!(text.contains("你好\t世界"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn heat_decays_with_half_life() {
