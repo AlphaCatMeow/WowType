@@ -246,8 +246,9 @@ int main(int argc, char **argv) {
         }
         WowtypeKey enter = {sizeof(WowtypeKey), 0xff0d, 0, 0, 0};
         f = wowtype_session_key(s, &enter);
-        check(f && f->commit && strcmp(f->commit, "nihaozh") == 0 && f->learned,
-              "session: return commits raw letters (learned)");
+        /* 回车上屏的原始字母串不记选词（终端里的密码提示没有密码框标记） */
+        check(f && f->commit && strcmp(f->commit, "nihaozh") == 0 && !f->learned,
+              "session: return commits raw letters (not learned)");
         /* ABI 1.6：显示的这一页、点候选、上屏的是哪个候选、候选框状态 */
         for (const char *k = "nihao"; *k; ++k) {
             WowtypeKey key = {sizeof(WowtypeKey), (uint32_t)*k, 0, 0, 0};
