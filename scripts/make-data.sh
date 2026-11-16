@@ -113,6 +113,23 @@ if [[ -n "$corpus_counts" ]]; then
   mv "$tmp/lexicon.corpus.tsv" "$OUT/lexicon.rime.tsv"
 fi
 
+# 只有占位词频（100）的词（rime-ice 的 ext / tencent 词表，三十多万个）换上语料里数出来的词频：
+# data/placeholder-freq.tsv 是 LCCC + 维基（约 10 亿字）里这些词的次数，至少 5 次的才换，其余照旧在加载时估。
+# 占位词频低，切分时常被拆成几段，数出来的次数偏少，换算系数再乘 1.4（扫过 1 / 1.4 / 2 / 3 / 5：1 时没有收益，
+# 3 起简拼掉 1 个点以上，5 时回归集挂一条）。评测（scripts/eval.sh）：日常整句 +1.4、上文 +0.2，
+# 冷门词 -0.4、简拼 -0.2，其余持平。WOWTYPE_NO_PLACEHOLDER_FREQ=1 不换。
+PLACEHOLDER_NOTE=""
+if [[ "${WOWTYPE_NO_PLACEHOLDER_FREQ:-}" != "1" && -f data/placeholder-freq.tsv ]]; then
+  python3 tools/placeholder-freq.py "$OUT/lexicon.rime.tsv" data/placeholder-freq.tsv "$tmp/lexicon.ph.tsv" \
+    --min-count 5 --boost 1.4
+  mv "$tmp/lexicon.ph.tsv" "$OUT/lexicon.rime.tsv"
+  PLACEHOLDER_NOTE="
+占位词频：rime-ice 里只有占位频次 100 的词，在 data/placeholder-freq.tsv 里出现至少 5 次的，换成了语料词频
+（tools/placeholder-freq.py）。那张表是 LCCC（thu-coai，MIT）和中文维基百科（CC BY-SA 4.0）里这些词的次数，
+不含语料本身。
+"
+fi
+
 # 合进 WowType 自己整理的热词（AI、工作、网络用语），见 data/hotwords.tsv；
 # 再按 data/rime-ice-freq.tsv 修正几个常用词的词频，去掉 data/blocklist.tsv 里的错条目（去次）
 python3 tools/add_hotwords.py "$OUT/lexicon.rime.tsv" data/hotwords.tsv > "$OUT/lexicon.hot.tsv"
@@ -155,7 +172,8 @@ DATE=$(git -C "$RIME" log -1 --format=%cs 2>/dev/null || date +%F)
 # 否则同版本号的包 apt 不会更新、插件也分不出新旧。rime-ice 换新日期时 REV 归 0。
 # 5：默认融进 Tatoeba 语料词频（data/tatoeba-freq.tsv）；数据压缩包里加上五笔码表。
 # 6：数据文件带版本标记（wowtype-data），多了 DATA-MANIFEST；VERSION 全用点分隔（2026.11.14.6）。
-REV=6
+# 7：占位词频换成语料词频（data/placeholder-freq.tsv）。
+REV=7
 VERSION="${DATE//-/.}.$REV"
 echo "$VERSION" > "$OUT/VERSION"
 # 版本标记：插在第一行注释后面（插件和设置界面按它认用户目录里的旧副本，见 docs/DATA.md）
@@ -170,7 +188,7 @@ lexicon.tsv 由 WowType 的 tools/rime2tsv.py 转换自 rime_ice.dict.yaml 及�
 再用 tools/add_hotwords.py 合进 WowType 的热词表 data/hotwords.tsv、按 data/rime-ice-freq.tsv 修正几个常用词的词频、
 去掉 data/blocklist.tsv 里的错条目；
 english.txt 是 en_dicts/en.dict.yaml 与 en_dicts/en_ext.dict.yaml 原样拼接。
-${CORPUS_NOTE}
+${CORPUS_NOTE}${PLACEHOLDER_NOTE}
 words.lm 是 WowType 的词级语言模型，由 wowtype-lmbuild 从下列语料统计生成，许可证 CC BY-SA 4.0：
   LCCC（https://huggingface.co/datasets/thu-coai/lccc，清华大学 CoAI 组，MIT）
   中文维基百科（https://zh.wikipedia.org/，CC BY-SA 4.0）
