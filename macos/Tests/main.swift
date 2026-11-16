@@ -1942,6 +1942,15 @@ do {
     let custom = LocalModel.plan(modelExists: false, serverFound: false, customServer: true, asset: arm)
     check(custom.wantModel && !custom.wantLlama && custom.llamaUnavailable && custom.bytes == LocalModel.size,
           "自己写了 llama-server 的位置：不替它下载", "\(custom)")
+    // 以前下载的 llama-server 不是现在钉的构建：重新下载；下载不了时照旧用它
+    let stale = LocalModel.plan(modelExists: true, serverFound: true, customServer: false, asset: arm, serverOutdated: true)
+    check(stale.wantLlama && stale.llamaOutdated && !stale.ready && !stale.llamaUnavailable && stale.bytes == 16_650_691,
+          "下载的 llama-server 构建旧了：重新下载", "\(stale)")
+    let staleNoAsset = LocalModel.plan(modelExists: true, serverFound: true, customServer: false, asset: nil, serverOutdated: true)
+    check(staleNoAsset.ready && !staleNoAsset.canDownload && !staleNoAsset.llamaOutdated,
+          "构建旧了但这台 Mac 下载不了新的：照旧用", "\(staleNoAsset)")
+    check(!LocalModel.plan(modelExists: true, serverFound: true, customServer: true, asset: arm, serverOutdated: true).wantLlama,
+          "自己写了 llama-server 的位置：不管构建号")
 
     // 和 Linux 设置的 human_size 一样：f"{n / 1e9:.2f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB"
     check(LocalModel.sizeText(LocalModel.size + 16_650_691) == "1.15 GB", "大小写成 1.15 GB（和 Linux 一样）",

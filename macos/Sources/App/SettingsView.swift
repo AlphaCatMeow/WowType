@@ -721,7 +721,8 @@ private struct LocalModelRow: View {
                 Label("已就绪", systemImage: "checkmark.circle.fill")
                     .foregroundColor(Palette.green)
             } else if plan.canDownload {
-                Text("要下载 \(LocalModel.sizeText(plan.bytes))")
+                Text((plan.llamaOutdated && !plan.wantModel ? "llama-server 要更新，" : "要下载 ")
+                     + LocalModel.sizeText(plan.bytes))
                     .foregroundColor(.secondary)
                 Button("下载") { model.downloadLocalModel() }
             }
