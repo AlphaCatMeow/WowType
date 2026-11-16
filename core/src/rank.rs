@@ -137,13 +137,14 @@ impl Default for FeatureWeights {
             // 语料里被并成一个词的搭配分数偏低，得靠放大才压得过偶然见过的「我腰」；现在这些搭配
             // 有保底分（MERGED_PAIR_SCORE），放大反而让低频偶然搭配（不 + 咬）压过字频。
             // 实测逐词带上文 top1：2.0 → 86.1%，1.0 → 88.6%，0.5 → 88.4%
-            context_bigram_score: 1.0,
+            // （tools/tune_weights.py 在评测集上自动调的，2026-11-17，见 docs/ENGINE.md「排序参数」）：原来是 1.0
+            context_bigram_score: 1.5,
             user_word_rollback_score: 0.8,
             // 这一项已经计入 path.score，再叠加就是重复计权
             lm_score_with_previous_txt: 0.0,
-            // 0.5：扫过 0.3 / 0.5 / 0.7 / 1.0，0.5 时日常整句最高；1.0 比 0.5 低 1.4 个点，单独打词的几组也掉得更多
-            // （scripts/eval.sh，WowType 自己的 nnlm.bin，2026-11-17）
-            head_word_nnlm: 0.5,
+            // （tools/tune_weights.py 在评测集上自动调的，2026-11-17，见 docs/ENGINE.md「排序参数」）。单独调它时（别的参数是原来的值）0.5 最好；
+            // 和上面几个一起调以后 1.5 最好（语言模型权重降到 0.85，字级模型要补上这部分）
+            head_word_nnlm: 1.5,
             hot_val_conf: 0.3,
             with_context: 0.1,
             user_tail_conf: 0.3,
