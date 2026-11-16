@@ -1985,13 +1985,9 @@ fn prefix_on_syllable_boundaries(
     }
     let exact = top.features.typo_count == 0.0;
     let mut other_splits = Vec::new();
-    // consumed 此时还是字母数（隔音符也算一个字符）
+    // consumed 此时是字母数（音节图里的位置，不含隔音符）
     prefix.retain(|p| {
-        let used = normalized
-            .chars()
-            .take(p.consumed)
-            .filter(|c| c.is_ascii_alphabetic())
-            .count();
+        let used = p.consumed;
         if exact && p.features.typo_count > 0.0 {
             return false;
         }
@@ -2131,7 +2127,7 @@ fn sentence_cap(syllables: usize) -> usize {
 ///
 /// 整句只是最后一个词错了时，选它再选最后一个词，比翻页找整句快。
 /// 只给精确全拼的整句，开头至少两个音节（一个音节的开头本来就在句首词里）。
-/// consumed 先存「用掉的字符数」（隔音符算一个），由调用方换算成字节。
+/// consumed 先存「用掉的字母数」（不含隔音符），由调用方换算成字节。
 fn sentence_head(result: &[Candidate], normalized: &str) -> Option<Candidate> {
     let top = result.iter().find(|c| !is_raw_candidate(c))?;
     if !is_sentence(top)
@@ -2158,17 +2154,6 @@ fn sentence_head(result: &[Candidate], normalized: &str) -> Option<Candidate> {
     if !letters.starts_with(&joined) {
         return None;
     }
-    let mut seen = 0usize;
-    let mut consumed = 0usize;
-    for (i, ch) in normalized.chars().enumerate() {
-        if ch.is_ascii_alphabetic() {
-            seen += 1;
-        }
-        if seen == joined.len() {
-            consumed = i + 1;
-            break;
-        }
-    }
     // 用分词（词库里的写法）拼出前半截，不按字数切整句：繁体词组转换可能改变字数
     // （计算机 -> 電腦）。开着繁体时由调用方再转一次
     Some(Candidate {
@@ -2177,7 +2162,10 @@ fn sentence_head(result: &[Candidate], normalized: &str) -> Option<Candidate> {
         score: top.score,
         features: Feature::default(),
         words: head_words.to_vec(),
-        consumed,
+        // 字母数，不含隔音符：调用方用 letters_to_bytes 换算，那边只数字母。
+        // 以前这里存的是带隔音符的字符数，换算时每个隔音符多吃掉后面一个字母
+        // （xi'an'shi'ji'chang 选「西安市」后只剩 chang；双拼解码后音节间都有隔音符，长句都会中）
+        consumed: joined.len(),
     })
 }
 
@@ -3511,6 +3499,53 @@ mod tests {
             long.iter().map(|c| &c.text).collect::<Vec<_>>()
         );
         assert!(long.len() <= e.config.max_candidates.max(1));
+    }
+
+    /// 句首候选用掉的输入必须正好是它自己的拼音：带隔音符、双拼都一样。
+    #[test]
+    fn head_candidates_consume_exactly_their_own_pinyin() {
+        let tsv = concat!(
+            "xi an\t西安\t500000\n",
+            "shi\t市\t900000\n",
+            "ji chang\t机场\t500000\n",
+            "xi\t西\t400\n",
+            "an\t安\t300\n",
+            "ji\t机\t300\n",
+            "chang\t场\t300\n",
+            "wo men\t我们\t900000\n",
+            "de\t的\t900000\n",
+            "wo\t我\t900000\n",
+            "xi huan\t喜欢\t500000\n",
+        );
+        let mut e = engine(tsv);
+        e.set_max_candidates(60);
+        for input in ["xianshijichang", "xi'an'shi'ji'chang", "xi'anshi'jichang"] {
+            let list = e.input(input);
+            let heads: Vec<&Candidate> = list.iter().filter(|c| c.consumed < input.len()).collect();
+            assert!(heads.iter().any(|c| c.text == "西安市"), "{input}: 缺句首候选 西安市");
+            assert!(heads.iter().any(|c| c.text == "西安"), "{input}: 缺句首词 西安");
+            for c in heads {
+                let used = input[..c.consumed].replace('\'', "");
+                assert_eq!(used, c.pinyin.replace(' ', ""), "{input}: {} 用掉了 {used}", c.text);
+            }
+        }
+        // 小鹤双拼：每个音节两个键，解码出来的全拼音节之间都有隔音符
+        e.set_shuangpin(true);
+        e.set_shuangpin_scheme(crate::shuangpin::Scheme::Xiaohe);
+        let input = "womfdewoxihr";
+        let list = e.input(input);
+        assert_eq!(list[0].text, "我们的我喜欢");
+        let heads: Vec<&Candidate> = list.iter().filter(|c| c.consumed < input.len()).collect();
+        assert!(heads.iter().any(|c| c.text == "我们"), "缺句首词 我们");
+        for c in heads {
+            assert_eq!(
+                c.consumed,
+                2 * c.pinyin.split_whitespace().count(),
+                "{} 用掉了 {:?}",
+                c.text,
+                &input[..c.consumed]
+            );
+        }
     }
 
     #[test]
