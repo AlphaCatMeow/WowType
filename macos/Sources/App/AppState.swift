@@ -23,6 +23,10 @@ final class AppState {
     /// 正在用的词库文件，和它载入时的 (大小, 修改时间)
     private var lexiconInUse: String?
     private var lexiconStamp: FileStamp?
+    /// 上次载入失败的词库和它那时的 (大小, 修改时间)：文件没变、设置没换就不再试（不然每秒重试一次），
+    /// 这期间用着自带的词库
+    private var failedLexicon: String?
+    private var failedLexiconStamp: FileStamp?
     private var configStamp: FileStamp?
     private var customStamp: FileStamp?
     private var lastCheck: TimeInterval = 0
@@ -259,19 +263,38 @@ final class AppState {
         save(force: true)
         loading = true
         let stamp = FileStamp(lexicon)
+        // 设置里指定的词库在、但读不出来（格式不对、没权限）：改载自带的，不然只能打英文
+        let bundled = bundledLexiconPath()
+        let fallback = bundled == lexicon ? nil : bundled
+        let fallbackStamp = fallback.flatMap { FileStamp($0) }
         let start = Date()
         DispatchQueue.global(qos: .userInitiated).async {
-            let engine = self.makeEngine(lexicon: lexicon)
+            var used = lexicon
+            var engine = self.makeEngine(lexicon: lexicon)
+            if engine == nil, let fallback {
+                NSLog("WowType: 词库 %@ 读不出来，改用自带的词库", lexicon)
+                engine = self.makeEngine(lexicon: fallback)
+                used = fallback
+            }
+            let loaded = engine, loadedPath = used
             DispatchQueue.main.async {
                 self.loading = false
-                NSLog("WowType: 词库 %@ 载入%@，用时 %.1f 秒", lexicon, engine == nil ? "失败" : "完成",
+                NSLog("WowType: 词库 %@ 载入%@，用时 %.1f 秒", loadedPath, loaded == nil ? "失败" : "完成",
                       Date().timeIntervalSince(start))
-                if let engine {
+                // 想要的词库没载上：记下来，文件和设置都没变时 checkForChanges 不再试
+                if loaded == nil || loadedPath != lexicon {
+                    self.failedLexicon = lexicon
+                    self.failedLexiconStamp = stamp
+                } else {
+                    self.failedLexicon = nil
+                    self.failedLexiconStamp = nil
+                }
+                if let engine = loaded {
                     self.applyEngineSettings(engine)
                     self.engine = engine
                     self.commitsSinceSave = 0
-                    self.lexiconInUse = lexicon
-                    self.lexiconStamp = stamp
+                    self.lexiconInUse = loadedPath
+                    self.lexiconStamp = loadedPath == lexicon ? stamp : fallbackStamp
                 }
                 if self.reloadAfterLoading {
                     self.reloadAfterLoading = false
@@ -316,15 +339,17 @@ final class AppState {
             let custom = engine.loadCustomWords(customWordsPath)
             NSLog("WowType: 自定义词改了，重新载入 %d 条", custom)
         }
-        guard engine != nil || loading else { return }
-        let wanted = lexiconPath()
-        if let wanted, wanted != lexiconInUse || FileStamp(wanted) != lexiconStamp {
-            if loading {
-                reloadAfterLoading = true
-            } else if engine != nil {
-                NSLog("WowType: 换词库 %@ -> %@", lexiconInUse ?? "", wanted)
-                loadEngineInBackground()
-            }
+        // 想要的词库变了就（重新）载入：换了词库、词库文件改了、上次没载上的文件换过了。
+        // engine 还是 nil（上次连自带的都没载上）时也走这里，不会卡在只能打英文
+        guard let wanted = lexiconPath() else { return }
+        let wantedStamp = FileStamp(wanted)
+        let failedBefore = wanted == failedLexicon && wantedStamp == failedLexiconStamp
+        guard !failedBefore, wanted != lexiconInUse || wantedStamp != lexiconStamp else { return }
+        if loading {
+            reloadAfterLoading = true
+        } else {
+            NSLog("WowType: 换词库 %@ -> %@", lexiconInUse ?? "", wanted)
+            loadEngineInBackground()
         }
     }
 
