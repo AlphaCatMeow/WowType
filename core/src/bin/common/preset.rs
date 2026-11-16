@@ -57,7 +57,9 @@ pub fn shell_config() -> EngineConfig {
 
 /// 词库旁边的数据文件（外壳在同一个数据目录里找 `words.lm`、`english.txt`）。
 pub fn sibling(lexicon: &str, name: &str) -> Option<String> {
-    let dir = Path::new(lexicon).parent().unwrap_or_else(|| Path::new("."));
+    let dir = Path::new(lexicon)
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
     let path: PathBuf = dir.join(name);
     path.is_file().then(|| path.to_string_lossy().into_owned())
 }

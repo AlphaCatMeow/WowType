@@ -94,7 +94,12 @@ fn parse_cases(path: &str, data: &str) -> Vec<Case> {
             .filter(|s| !s.is_empty())
         {
             let bad = || -> ! { fail(&format!("{path}:{}: 不认识的属性 {attr}", index + 1)) };
-            let number = |v: &str| v.parse::<usize>().ok().filter(|n| *n >= 1).unwrap_or_else(|| bad());
+            let number = |v: &str| {
+                v.parse::<usize>()
+                    .ok()
+                    .filter(|n| *n >= 1)
+                    .unwrap_or_else(|| bad())
+            };
             if attr == "before-single" {
                 check = Check::BeforeSingle;
             } else if let Some(v) = attr.strip_prefix("top=") {
@@ -166,7 +171,8 @@ struct Baseline {
 }
 
 fn read_baseline(path: &str) -> Baseline {
-    let text = std::fs::read_to_string(path).unwrap_or_else(|e| fail(&format!("读不了基线 {path}: {e}")));
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|e| fail(&format!("读不了基线 {path}: {e}")));
     let mut baseline = Baseline {
         data: None,
         rows: BTreeMap::new(),
@@ -270,7 +276,10 @@ fn main() {
             "--lexicon" => lexicon_path = value(&mut i, "--lexicon"),
             "--data" => {
                 let dir = value(&mut i, "--data");
-                lexicon_path = Path::new(&dir).join("lexicon.tsv").to_string_lossy().into_owned();
+                lexicon_path = Path::new(&dir)
+                    .join("lexicon.tsv")
+                    .to_string_lossy()
+                    .into_owned();
             }
             "--eval" => eval_paths.push(value(&mut i, "--eval")),
             "--lm" => lm_path = Some(value(&mut i, "--lm")),
@@ -292,9 +301,13 @@ fn main() {
                 }
             }
             "--abbrev-cost" => abbrev_cost = value(&mut i, "--abbrev-cost").parse().ok(),
-            "--tail-abbrev-cost" => tail_abbrev_cost = value(&mut i, "--tail-abbrev-cost").parse().ok(),
+            "--tail-abbrev-cost" => {
+                tail_abbrev_cost = value(&mut i, "--tail-abbrev-cost").parse().ok()
+            }
             "--typo-cost" => typo_cost = value(&mut i, "--typo-cost").parse().ok(),
-            "--completion-cost" => completion_cost = value(&mut i, "--completion-cost").parse().ok(),
+            "--completion-cost" => {
+                completion_cost = value(&mut i, "--completion-cost").parse().ok()
+            }
             "--no-typo" => no_typo = true,
             "--english" => english_path = Some(value(&mut i, "--english")),
             "--no-english" => no_english = true,
@@ -311,7 +324,10 @@ fn main() {
             "--shuangpin" => shuangpin = true,
             "--scheme" => {
                 let name = value(&mut i, "--scheme");
-                scheme = Some(Scheme::from_name(&name).unwrap_or_else(|| fail(&format!("不认识的双拼方案 {name}"))));
+                scheme = Some(
+                    Scheme::from_name(&name)
+                        .unwrap_or_else(|| fail(&format!("不认识的双拼方案 {name}"))),
+                );
             }
             "--legacy" => legacy = true,
             "--preset" => match value(&mut i, "--preset").as_str() {
@@ -383,7 +399,8 @@ fn main() {
     // 领域模型：和插件里一样混在通用模型上（插件的权重固定是 DOMAIN_LM_WEIGHT）
     let lm: Arc<dyn LanguageModel> = match &domain_lm_path {
         Some(path) => {
-            let domain = wowtype_core::lm::load_lm(path).unwrap_or_else(|e| fail(&format!("{e:#}")));
+            let domain =
+                wowtype_core::lm::load_lm(path).unwrap_or_else(|e| fail(&format!("{e:#}")));
             Arc::new(MixedLm::new(lm, domain, domain_lm_weight))
         }
         None => lm,
@@ -433,7 +450,11 @@ fn main() {
     let base_shuangpin = (config.shuangpin, config.shuangpin_scheme);
     eprintln!(
         "配置：{}，候选上限 {}，语言模型 {}，英文词表 {}，纠错{}，模糊音{}，{}",
-        if legacy { "旧默认（--legacy）" } else { "外壳" },
+        if legacy {
+            "旧默认（--legacy）"
+        } else {
+            "外壳"
+        },
         config.max_candidates,
         arpa_path
             .as_deref()
@@ -532,7 +553,10 @@ fn main() {
         let baseline = baseline_path.as_deref().map(read_baseline);
         let current_data = data_identity(&lexicon_path);
         let mut verdicts: Vec<String> = Vec::new();
-        let _ = writeln!(report, "| 组 | 用例 | top1 | top3 | top9 | 通过 | 基线 top1 | 差 | |");
+        let _ = writeln!(
+            report,
+            "| 组 | 用例 | top1 | top3 | top9 | 通过 | 基线 top1 | 差 | |"
+        );
         let _ = writeln!(report, "|---|---:|---:|---:|---:|---:|---:|---:|---|");
         for r in &results {
             let s = &r.stats;
@@ -683,7 +707,8 @@ fn replay(engine: &Engine, data: &str, learn_from: &str) {
     let replay = if learn_from.is_empty() {
         data.to_string()
     } else {
-        std::fs::read_to_string(learn_from).unwrap_or_else(|e| fail(&format!("读不了 {learn_from}: {e}")))
+        std::fs::read_to_string(learn_from)
+            .unwrap_or_else(|e| fail(&format!("读不了 {learn_from}: {e}")))
     };
     for line in replay.lines() {
         let mut cols = line.trim_end().split('\t');
@@ -793,7 +818,12 @@ fn run_group(
             misses.push(format!(
                 "  {input:<12} 期望 {:<6} 实际 {}",
                 accepted.join("|"),
-                texts.iter().take(12).cloned().collect::<Vec<_>>().join(", ")
+                texts
+                    .iter()
+                    .take(12)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
 
@@ -841,8 +871,14 @@ fn run_group(
                 line,
                 " 期望 {} {why}；实际{} {}",
                 accepted.join("|"),
-                rank.map(|r| format!("第 {}", r + 1)).unwrap_or_else(|| "没有".into()),
-                texts.iter().take(shown).cloned().collect::<Vec<_>>().join(", ")
+                rank.map(|r| format!("第 {}", r + 1))
+                    .unwrap_or_else(|| "没有".into()),
+                texts
+                    .iter()
+                    .take(shown)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
             failures.push(line);
         }
