@@ -628,6 +628,8 @@ constexpr char kControlInterface[] = "org.wowtype.Input1";
 
 std::string WowtypeControl::mode() { return engine_->modeName(); }
 
+std::string WowtypeControl::version() { return WOWTYPE_ADDON_VERSION; }
+
 std::string WowtypeControl::setMode(const std::string &mode) {
     if (!engine_->setModeByName(mode)) {
         throw fcitx::dbus::MethodCallError("org.freedesktop.DBus.Error.InvalidArgs",

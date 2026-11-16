@@ -1135,6 +1135,141 @@ def restart_fcitx_sync():
     return fcitx_call_sync("Restart") is not None
 
 
+# ---------------------------------------------------------------- 升级后提醒重启输入法
+#
+# 包管理器或应用内更新换掉了插件，正在跑的 fcitx5 还载着旧的，新功能不生效。
+# 插件在会话总线上的 org.wowtype.Input1 有 Version（0.4.1 起）：和设置界面自己的版本（同一个包装的）不一样，
+# 或者没有这个方法（旧插件），就是要重启输入法。
+
+ADDON_BUS = ("org.wowtype.Input", "/org/wowtype/Input", "org.wowtype.Input1")
+# 服务在、方法不在：旧插件。别的错（服务不在、超时）说不清，不提醒
+OLD_ADDON_ERRORS = frozenset({"org.freedesktop.DBus.Error.UnknownMethod",
+                              "org.freedesktop.DBus.Error.UnknownInterface",
+                              "org.freedesktop.DBus.Error.UnknownObject"})
+RESTART_NOTE = "重启后，Chrome、VS Code、微信等 Chromium / Electron 程序要彻底退出再打开才能打中文。"
+
+
+def addon_version_from(reply, error_name=None):
+    """Version 的回复 → 正在跑的插件版本；"" 是没有 Version 的旧插件（0.4.0 及以前）；None 是说不清。"""
+    if error_name is None:
+        return reply or None
+    return "" if error_name in OLD_ADDON_ERRORS else None
+
+
+def dbus_error_name(error):
+    if Gio.DBusError.is_remote_error(error):
+        return Gio.DBusError.get_remote_error(error)
+    return "?"
+
+
+def running_addon_version():
+    """问正在跑的插件是哪个版本（同步，命令行和 --startup 用），见 addon_version_from。"""
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        value = bus.call_sync(*ADDON_BUS, "Version", None, GLib.VariantType("(s)"),
+                              Gio.DBusCallFlags.NO_AUTO_START, 3000, None)
+    except GLib.Error as e:
+        return addon_version_from(None, dbus_error_name(e))
+    return addon_version_from(value.unpack()[0])
+
+
+def restart_needed(running, installed=None):
+    """正在跑的插件（running_addon_version 的结果）和装好的不是同一版：要重启输入法。
+
+    从源码直接跑的设置界面（版本是 @VERSION@）不算。"""
+    installed = VERSION if installed is None else installed
+    if running is None or installed.startswith("@"):
+        return False
+    return running != installed
+
+
+def notify(summary, body, actions=(), timeout=24 * 3600, shown=None):
+    """发桌面通知（org.freedesktop.Notifications，notify-send 走的也是它），等用户点。
+
+    actions：[(动作名, 按钮文字)…]，点通知本身是 "default"。发不出去（没有会话总线、没有通知服务）返回 None；
+    发出去了先调 shown()，再等到点了按钮（返回动作名）、关掉或超时（返回 ""）。
+    用自己的主循环上下文，可以在别的线程里等。"""
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    except GLib.Error:
+        return None
+    context = GLib.MainContext.new()
+    context.push_thread_default()
+    loop = GLib.MainLoop.new(context, False)
+    state = {"id": None, "action": ""}
+
+    def on_signal(_bus, _sender, _path, _iface, signal, params):
+        if state["id"] is None or params[0] != state["id"]:
+            return
+        if signal == "ActionInvoked":
+            state["action"] = params[1]
+        loop.quit()
+    subscriptions = [bus.signal_subscribe(None, "org.freedesktop.Notifications", signal,
+                                          "/org/freedesktop/Notifications", None,
+                                          Gio.DBusSignalFlags.NONE, on_signal)
+                     for signal in ("ActionInvoked", "NotificationClosed")]
+    try:
+        flat = [text for action in actions for text in action]
+        hints = {"desktop-entry": GLib.Variant("s", APP_ID)}
+        try:
+            reply = bus.call_sync(
+                "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications", "Notify",
+                GLib.Variant("(susssasa{sv}i)", ("WowType", 0, "wowtype", summary, body, flat, hints, -1)),
+                GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, 10000, None)
+        except GLib.Error as e:
+            log(f"桌面通知发不出去：{e.message}")
+            return None
+        state["id"] = reply.unpack()[0]
+        if shown:
+            shown()
+        if not actions:
+            return ""
+        timer = GLib.timeout_source_new_seconds(timeout)
+        timer.set_callback(lambda *_: loop.quit() or False)
+        timer.attach(context)
+        loop.run()
+        timer.destroy()
+        return state["action"]
+    finally:
+        for sub in subscriptions:
+            bus.signal_unsubscribe(sub)
+        context.pop_thread_default()
+
+
+def open_settings_detached(page):
+    """另起一个设置窗口（不跟着这个进程退出）。"""
+    try:
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "--page", page],
+                         start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        log(f"打不开设置：{e}")
+
+
+def restart_reminder():
+    """--startup 里：升级以后 fcitx5 还载着旧插件时发通知，点了「重启输入法」再重启（不静默重启：
+    Chromium / Electron 程序要跟着重开）。同一版本只提醒一次，通知发不出去不算提醒过。"""
+    running = running_addon_version()
+    if not restart_needed(running):
+        return
+    installed = current_version()
+    if read_state().get("restart_reminded") == installed:
+        return
+    log(f"正在跑的插件是 {running or '0.4.0 及以前'}，装好的是 {installed}：提醒重启输入法")
+    action = notify(f"WowType 已更新到 {installed}，重启输入法后生效",
+                    f"正在用的还是旧版（{running or '0.4.0 及以前'}）。{RESTART_NOTE}",
+                    [("restart", "重启输入法"), ("default", "打开设置")],
+                    shown=lambda: update_state(restart_reminded=installed))
+    if action == "restart":
+        ok = restart_fcitx_sync()
+        log("从通知重启输入法：" + ("好了" if ok else "失败"))
+        if not ok:
+            notify("重启输入法失败", "可以注销后重新登录。")
+    elif action == "default":
+        open_settings_detached("general")
+
+
 def system_keyboard_layout():
     """fcitx5 键盘布局的名字（us、de-nodeadkeys……），从 localectl 读，读不到用 us。"""
     layout = variant = ""
@@ -1299,6 +1434,14 @@ def startup_tasks():
         init_default_theme()
     except Exception as e:  # 主题弄不好也别耽误检查更新
         log(f"默认主题失败：{e!r}")
+
+    # 提醒重启的通知要等用户点（最长一天），放到另一个线程里等，不耽误检查更新；进程等它结束再退出
+    def remind():
+        try:
+            restart_reminder()
+        except Exception as e:  # noqa: BLE001
+            log(f"提醒重启输入法失败：{e!r}")
+    threading.Thread(target=remind).start()
     return background_check()
 
 
@@ -1826,23 +1969,19 @@ def background_check():
     write_update_state(state)
     if not is_newer(release) or state.get("notified") == release["tag"]:
         return 0
-    state["notified"] = release["tag"]
-    write_update_state(state)
     # NixOS、Manjaro、源码安装等没法一键装，通知里别说「一键安装」
     manager, _distro, _arch, reason = update_platform()
     one_click = not reason and package_version(manager) is not None
     hint = "一键安装" if one_click else "看怎么更新"
-    try:
-        chosen = subprocess.run(
-            ["notify-send", "--app-name=WowType", "--icon=wowtype",
-             "--action=open=查看更新", "--action=default=查看更新",
-             f"WowType {release['version']} 可以更新了",
-             f"当前是 {current_version()}。打开设置可以看更新内容，{hint}。"],
-            capture_output=True, text=True, timeout=24 * 3600).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return 0
+
+    def shown():  # 同一版本只提醒一次；发不出去的下次再发
+        state["notified"] = release["tag"]
+        write_update_state(state)
+    chosen = notify(f"WowType {release['version']} 可以更新了",
+                    f"当前是 {current_version()}。打开设置可以看更新内容，{hint}。",
+                    [("open", "查看更新"), ("default", "查看更新")], shown=shown)
     if chosen in ("open", "default"):
-        os.execv(sys.executable, [sys.executable, os.path.abspath(__file__), "--page", "update"])
+        open_settings_detached("update")
     return 0
 
 # ---------------------------------------------------------------- 词库
@@ -2442,6 +2581,22 @@ def translate_engine_self_test():
             assert "TranslateLocal=False" in open(CONFIG_FILE, encoding="utf-8").read()
         finally:
             CONFIG_FILE = saved
+
+
+def restart_self_test():
+    """升级后要不要提醒重启输入法。"""
+    assert addon_version_from("0.4.1") == "0.4.1"
+    assert addon_version_from(None, "org.freedesktop.DBus.Error.UnknownMethod") == ""
+    assert addon_version_from(None, "org.freedesktop.DBus.Error.UnknownObject") == ""
+    assert addon_version_from(None, "org.freedesktop.DBus.Error.ServiceUnknown") is None
+    assert addon_version_from(None, "org.freedesktop.DBus.Error.NoReply") is None
+    assert addon_version_from(None, "?") is None
+    assert not restart_needed("0.4.1", "0.4.1")
+    assert restart_needed("0.4.0", "0.4.1") and restart_needed("0.4.2", "0.4.1")  # 降级也要重启
+    assert restart_needed("", "0.4.1")  # 没有 Version 的旧插件
+    assert not restart_needed(None, "0.4.1")  # 插件没在跑、总线连不上：说不清，不提醒
+    assert not restart_needed("0.4.0", "@VERSION@") and not restart_needed("", "@VERSION@")  # 源码直接跑
+    assert restart_needed("0.4.1~git1.a", "0.4.1~git2.b")
 
 
 def config_write_self_test():
@@ -3335,6 +3490,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.show_page(page or "general")
 
         self.refresh_status()
+        self.refresh_restart_hint()
         self.refresh_theme()
         self.refresh_font()
         self.refresh_shift_conflict()
@@ -3388,6 +3544,14 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.status_button.connect("clicked", self.on_add_to_group)
         self.status_row.add_suffix(self.status_button)
         status.add(self.status_row)
+        # 升级以后 fcitx5 还载着旧插件（refresh_restart_hint）
+        self.restart_hint_row = Adw.ActionRow(title="WowType 已更新，重启输入法后生效", visible=False)
+        self.restart_hint_row.add_css_class("wt-warning")
+        restart_hint_button = Gtk.Button(label="重启输入法", valign=Gtk.Align.CENTER)
+        restart_hint_button.add_css_class("suggested-action")
+        restart_hint_button.connect("clicked", self.on_restart_hint)
+        self.restart_hint_row.add_suffix(restart_hint_button)
+        status.add(self.restart_hint_row)
         page.add(status)
 
         cands = Adw.PreferencesGroup(title="候选词")
@@ -4134,6 +4298,46 @@ class SettingsWindow(Adw.ApplicationWindow):
             self.toast("已添加，可以切换到 WowType 了" if ok else "添加失败")
             self.refresh_status()
         self.fcitx.add_to_group(group, layout, items, done)
+
+    def confirm(self, heading, body, yes_label, on_yes, no_label="取消"):
+        """问一句，点了 yes_label 才 on_yes()。"""
+        dialog = AlertDialog(heading=heading, body=body)
+        dialog.add_response("cancel", no_label)
+        dialog.add_response("yes", yes_label)
+        dialog.set_response_appearance("yes", ResponseAppearance.SUGGESTED)
+        dialog.connect("response", lambda _d, response: response == "yes" and on_yes())
+        dialog.present(self)
+        return dialog
+
+    def refresh_restart_hint(self):
+        """正在跑的插件和装好的不是同一版（升级了还没重启输入法）时，第一页提示重启。"""
+        bus = self.fcitx.bus
+        if not bus:
+            return
+
+        def finished(bus, result):
+            try:
+                running = addon_version_from(bus.call_finish(result).unpack()[0])
+            except GLib.Error as e:
+                running = addon_version_from(None, dbus_error_name(e))
+            needed = restart_needed(running)
+            self.restart_hint_row.set_visible(needed)
+            if needed:
+                self.restart_hint_row.set_subtitle(GLib.markup_escape_text(
+                    f"正在用的还是 {running or '旧版'}，装好的是 {current_version()}"))
+        bus.call(*ADDON_BUS, "Version", None, GLib.VariantType("(s)"),
+                 Gio.DBusCallFlags.NO_AUTO_START, 2000, None, finished)
+
+    def on_restart_hint(self, _button):
+        def restart():
+            def done(ok):
+                self.toast("输入法已重启" if ok else "重启失败，可以注销后重新登录")
+                if ok:
+                    self.restart_hint_row.set_visible(False)
+                self.refresh_status()
+                self.refresh_restart_hint()
+            self.fcitx.restart(done)
+        self.confirm("重启输入法？", "WowType 的新版要重启输入法才生效。" + RESTART_NOTE, "重启输入法", restart)
 
     # ---------------- 语音
 
@@ -4983,8 +5187,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         group.add(self.progress)
 
         self.restart_row = Adw.ActionRow(title="已更新，重启输入法后生效", visible=False)
-        self.add_info(self.restart_row, "设置界面会跟着重新打开。"
-                                        "重启后，浏览器等正在打开的应用可能要重新打开才能打字。")
+        self.add_info(self.restart_row, "设置界面会跟着重新打开。" + RESTART_NOTE)
         restart = Gtk.Button(label="重启输入法", valign=Gtk.Align.CENTER)
         restart.add_css_class("suggested-action")
         restart.connect("clicked", self.on_restart_fcitx)
@@ -5129,7 +5332,7 @@ class SettingsWindow(Adw.ApplicationWindow):
                     self.latest_row.set_title(f"已安装 {self.release['version']}")
                     self.updated = True
                     log(f"更新已安装：{self.release['version']}")
-                    self.toast("更新已安装，重启输入法后生效")
+                    self.ask_restart_after_update()
                 elif code in (126, 127):  # pkexec：取消授权 / 没通过
                     self.install_failed("没有授权，已取消")
                 else:
@@ -5146,6 +5349,12 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.check_button.set_sensitive(True)
         self.toast(text)
         return GLib.SOURCE_REMOVE
+
+    def ask_restart_after_update(self):
+        """装好更新马上问要不要重启输入法；不重启的话「更新」页留着「重启输入法」按钮。"""
+        self.confirm(f"已更新到 {self.release['version']}，现在重启输入法吗？",
+                     "重启输入法后新版才生效，设置界面会跟着重新打开。" + RESTART_NOTE,
+                     "重启输入法", lambda: self.on_restart_fcitx(None), no_label="稍后")
 
     def on_restart_fcitx(self, _button):
         def done(ok):
@@ -5376,6 +5585,7 @@ if __name__ == "__main__":
         llama_self_test()
         translate_engine_self_test()
         config_write_self_test()
+        restart_self_test()
         voice_model_self_test()
         lexicon_self_test()
         # fcitx5 默认配置：左 Shift 是「临时切换输入法」

@@ -363,17 +363,21 @@ class WowtypeEngine;
 
 /// 会话总线上的 org.wowtype.Input：外部命令切中 / 英 / 译（vim 退出插入模式切英文，#98）。
 ///   busctl --user call org.wowtype.Input /org/wowtype/Input org.wowtype.Input1 SetMode s en
+/// Version 返回正在跑的插件的版本：升级以后设置界面拿它和装好的版本比，不一样（或者没有这个方法，
+/// 是 0.4.0 及以前的插件）就提醒重启输入法。
 class WowtypeControl : public fcitx::dbus::ObjectVTable<WowtypeControl> {
 public:
     explicit WowtypeControl(WowtypeEngine *engine) : engine_(engine) {}
     std::string mode();
     /// zh / en / translate / toggle（只在中英之间切），返回切完以后的模式。
     std::string setMode(const std::string &mode);
+    std::string version();
 
 private:
     WowtypeEngine *engine_;
     FCITX_OBJECT_VTABLE_METHOD(mode, "Mode", "", "s");
     FCITX_OBJECT_VTABLE_METHOD(setMode, "SetMode", "s", "s");
+    FCITX_OBJECT_VTABLE_METHOD(version, "Version", "", "s");
 };
 
 class WowtypeEngine final : public fcitx::InputMethodEngineV2 {

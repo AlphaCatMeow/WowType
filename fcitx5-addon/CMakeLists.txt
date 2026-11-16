@@ -163,6 +163,8 @@ if(WOWTYPE_BUILD_TESTS)
     add_executable(wowtype-key-harness test/key_harness.cpp src/clipboard_copy.cpp)
     target_include_directories(wowtype-key-harness PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(wowtype-key-harness PRIVATE Fcitx5::Core Fcitx5::Utils)
+    # 经 D-Bus 问插件版本（Version）的用例拿它对照
+    target_compile_definitions(wowtype-key-harness PRIVATE WOWTYPE_ADDON_VERSION="${WOWTYPE_VERSION}")
     # 「密码框也用输入法」（Behavior/AllowInputMethodForPassword）5.0 没有：看头文件里有没有它的读取函数，
     # 有就测「打开以后密码框里照常打中文」，没有就测「密码框里不用输入法、按键原样交给应用」
     get_target_property(_wowtype_fcitx_inc Fcitx5::Core INTERFACE_INCLUDE_DIRECTORIES)
