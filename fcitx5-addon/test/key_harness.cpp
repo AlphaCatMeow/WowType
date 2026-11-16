@@ -332,6 +332,65 @@ void runCases(Instance &instance) {
     }
     fresh(ic.get());
     check(!send(ic.get(), Key(FcitxKey_Delete, KeyState::Ctrl)), "没在打字时 Ctrl+Delete 交给应用");
+
+    // 打字途中会话不管的键（小键盘的 + - * / .、F 键、Insert、不是 ASCII 的键……）都吃掉：
+    // 交给应用的话，小键盘的 + 先到应用、上屏后成了「+你好」，F5 把网页刷新掉
+    fresh(ic.get());
+    type(ic.get(), "nihao");
+    {
+        const std::string before = preedit(ic.get());
+        const auto candidates = page(ic.get());
+        std::string leaked;
+        for (const KeySym sym :
+             {FcitxKey_KP_Add, FcitxKey_KP_Subtract, FcitxKey_KP_Multiply, FcitxKey_KP_Divide,
+              FcitxKey_KP_Decimal, FcitxKey_F1, FcitxKey_F5, FcitxKey_F12, FcitxKey_Insert,
+              FcitxKey_Menu, FcitxKey_Pause, FcitxKey_Home, FcitxKey_Delete, FcitxKey_eacute,
+              FcitxKey_Cyrillic_a, FcitxKey_dead_acute}) {
+            if (!send(ic.get(), Key(sym))) {
+                leaked += Key(sym).toString() + " ";
+            }
+        }
+        // Shift 加上这些键也一样（Shift+F10 是右键菜单、Shift+Insert 是粘贴）
+        for (const KeySym sym : {FcitxKey_F10, FcitxKey_Insert, FcitxKey_KP_Add}) {
+            if (!send(ic.get(), Key(sym, KeyState::Shift))) {
+                leaked += Key(sym, KeyState::Shift).toString() + " ";
+            }
+        }
+        check(leaked.empty(), "打字途中会话不管的键都吃掉，漏给应用的：" + leaked);
+        check(preedit(ic.get()) == before && page(ic.get()) == candidates && ic->committed.empty() &&
+                  ic->passed.empty(),
+              "吃掉以后编辑区和候选不动：" + preedit(ic.get()) + " 上屏「" + ic->committed + "」");
+        // 修饰键、锁定键本身，松开的键，带 Ctrl / Alt / Super 的组合键照常交给应用
+        std::string eaten;
+        for (const KeySym sym : {FcitxKey_Control_L, FcitxKey_Alt_L, FcitxKey_Super_L,
+                                 FcitxKey_Caps_Lock, FcitxKey_Num_Lock, FcitxKey_ISO_Level3_Shift}) {
+            KeyEvent press(ic.get(), Key(sym), false);
+            if (ic->keyEvent(press)) {
+                eaten += Key(sym).toString() + " ";
+            }
+        }
+        for (const KeySym sym : {FcitxKey_F5, FcitxKey_KP_Add, FcitxKey_Control_L}) {
+            KeyEvent release(ic.get(), Key(sym), true);
+            if (ic->keyEvent(release)) {
+                eaten += Key(sym).toString() + "(松开) ";
+            }
+        }
+        for (const Key &key : {Key(FcitxKey_c, KeyState::Ctrl), Key(FcitxKey_F4, KeyState::Alt),
+                               Key(FcitxKey_F5, KeyState::Ctrl), Key(FcitxKey_KP_Add, KeyState::Super)}) {
+            if (send(ic.get(), key)) {
+                eaten += key.toString() + " ";
+            }
+        }
+        check(eaten.empty(), "打字途中修饰键本身、松开的键、带 Ctrl / Alt / Super 的组合键照常交给应用，吃掉的：" +
+                                 eaten);
+        check(preedit(ic.get()) == before, "交给应用以后编辑区还在：" + preedit(ic.get()));
+        type(ic.get(), "<sp>");
+        check(ic->committed == "你好", "接着空格照常上屏，前面没有多出来的字，实际 " + ic->committed);
+    }
+    fresh(ic.get());
+    check(!send(ic.get(), Key(FcitxKey_F5)) && !send(ic.get(), Key(FcitxKey_KP_Add)) &&
+              !send(ic.get(), Key(FcitxKey_Insert)),
+          "没在打字时这些键照常交给应用");
     // 单音节不出拆开音节的句首词（dan -> 大）
     fresh(ic.get());
     type(ic.get(), "dan");

@@ -317,6 +317,16 @@ WowtypeEngineHandle *loadCore(const std::string &userDict, std::string lexicon) 
     return core;
 }
 
+/// 打字途中会话不管的键里，照常交给应用的那些：修饰键和锁定键本身（Shift / Ctrl / Alt / Super、
+/// 大写锁定、数字锁定、AltGr、切换键盘布局的键），还有认不出来的键（没有 keysym）。别的都吃掉。
+bool passesWhileComposing(fcitx::KeySym sym) {
+    const auto value = static_cast<uint32_t>(sym);
+    return sym == FcitxKey_None || sym == FcitxKey_VoidSymbol ||
+           (value >= FcitxKey_Shift_L && value <= FcitxKey_Hyper_R) ||
+           (value >= FcitxKey_ISO_Lock && value <= FcitxKey_ISO_Level5_Lock) ||
+           sym == FcitxKey_Mode_switch || sym == FcitxKey_Num_Lock || sym == FcitxKey_Scroll_Lock;
+}
+
 /// 候选窗里显示的样子：自定义词里的换行、制表符画成 ⏎、⇥，不把候选窗撑乱。
 std::string shownText(const std::string &text) {
     if (text.find_first_of("\n\t") == std::string::npos) {
@@ -1828,21 +1838,19 @@ void WowtypeEngine::keyEvent(const fcitx::InputMethodEntry & /*entry*/,
             updateInputPanel(ic, state);
         }
 
-        // 标点、符号（先上屏候选再上屏标点）也由会话处理了；会话不管的只剩下面这些
-        // 编辑区里光标没法移动，这些键吃掉，免得应用里的光标乱跑
-        if (key.isCursorMove() || sym == FcitxKey_Tab || sym == FcitxKey_Delete) {
+        // 标点、符号（先上屏候选再上屏标点）也由会话处理了。会话不管的键（Home / End / Delete / Tab、
+        // 小键盘的 + - * / .、F1–F12、Insert、不是 ASCII 的键……）都吃掉：编辑区里的字还没上屏，
+        // 这时交给应用，应用里的光标会乱跑，小键盘的 + 排到「你好」前面，F5 把网页刷新掉。
+        // 修饰键、锁定键本身照常交给应用（按住 Ctrl 再按别的键、大写锁定），不然应用里对不上按下和松开
+        if (!passesWhileComposing(sym)) {
             event.filterAndAccept();
-            return;
         }
+        return;
     }
 
     // 没在打字时也交给会话：字母（大写原样保留，Hello、iPhone 要用到）开始编辑区；
     // 标点换成中文标点（半角样式、数字后面的、没有中文写法的 / + 交给应用）；
     // 汉字后面打数字要补空格时会话自己上屏（第5章）
-    // （打字途中的键上面已经交给过会话了，会话不管的交给应用）
-    if (state->composing()) {
-        return;
-    }
     if (const WowtypeFrame *frame = sessionKey(ic, state, key); frame && frame->handled) {
         applySessionFrame(ic, state, frame);
         event.filterAndAccept();
