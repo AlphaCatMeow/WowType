@@ -23,6 +23,9 @@ final class AppState {
     /// 正在用的词库文件，和它载入时的 (大小, 修改时间)
     private var lexiconInUse: String?
     private var lexiconStamp: FileStamp?
+    /// 上次载入失败的词库和它当时的文件状态：文件没变就不再重试（见 checkForChanges）。
+    private var failedLexicon: String?
+    private var failedLexiconStamp: FileStamp?
     private var configStamp: FileStamp?
     private var customStamp: FileStamp?
     private var lastCheck: TimeInterval = 0
@@ -272,6 +275,13 @@ final class AppState {
                     self.commitsSinceSave = 0
                     self.lexiconInUse = lexicon
                     self.lexiconStamp = stamp
+                    self.failedLexicon = nil
+                    self.failedLexiconStamp = nil
+                } else {
+                    // 记下来：这个文件没变之前不再重试。不记的话打字时每秒都会重新载一遍
+                    // （每次先在主线程存一次盘，再在后台把整个词库重读一遍）
+                    self.failedLexicon = lexicon
+                    self.failedLexiconStamp = stamp
                 }
                 if self.reloadAfterLoading {
                     self.reloadAfterLoading = false
@@ -319,6 +329,10 @@ final class AppState {
         guard engine != nil || loading else { return }
         let wanted = lexiconPath()
         if let wanted, wanted != lexiconInUse || FileStamp(wanted) != lexiconStamp {
+            if wanted == failedLexicon && FileStamp(wanted) == failedLexiconStamp {
+                // 这个文件上次就载入失败了，而且没变过
+                return
+            }
             if loading {
                 reloadAfterLoading = true
             } else if engine != nil {
