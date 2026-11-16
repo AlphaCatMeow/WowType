@@ -12,6 +12,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::sync::{Arc, RwLock};
 
@@ -774,20 +775,113 @@ impl Lexicon for FuzzyLexicon<'_> {
     }
 }
 
+/// 给用户词库就地改动用的两个入口。查询那边不认识它们：改完以后的样子必须和
+/// 「把同样的词按同样的顺序从头 insert 一遍」完全一样（`user_lexicon_matches_fresh_build` 测这个）。
+impl MemoryLexicon {
+    /// 接在最后加一个词，返回它在 entries 里的下标。
+    fn append(&mut self, pinyin: &str, word: &str, freq: f64) -> Result<usize> {
+        self.insert(pinyin, word, freq)?;
+        // 模糊音索引是按当时的词条建的，多了一个词就不全了：丢掉，下次模糊查询再建
+        self.fuzzy_index = OnceLock::new();
+        Ok(self.entries.len() - 1)
+    }
+
+    /// 只改一个词条的频次，索引不动。改不了（频次不合法、改完生僻字的身份变了——索引里
+    /// 生僻字排在每组最后）返回 false，什么都没动，调用方整份重建。
+    fn set_entry_freq(&mut self, idx: usize, freq: f64) -> bool {
+        if !freq.is_finite() || freq < 0.0 {
+            return false;
+        }
+        let Some(entry) = self.entries.get_mut(idx) else {
+            return false;
+        };
+        let was_rare = entry.is_rare();
+        let old = std::mem::replace(&mut entry.freq, freq);
+        if entry.is_rare() != was_rare {
+            entry.freq = old;
+            return false;
+        }
+        // 从头加一遍而不是加上差值：和重建出来的一位不差，改多少次也不会越漂越远。
+        // 几千个数相加是几微秒
+        self.total_freq = self.entries.iter().fold(0.0, |sum, e| sum + e.freq);
+        true
+    }
+}
+
+/// 用户词（学到的、手动加的），连同给它们建的词典。两样放在一把锁里，改的时候不会对不上。
+#[derive(Default)]
+struct UserWords {
+    /// (拼音, 词, 频次)，按加进来的先后；一个词只有一条。
+    list: Vec<(String, String, f64)>,
+    /// 词 -> `list` 里的下标。
+    pos: HashMap<String, usize>,
+    /// `list[i]` 在 `lexicon` 里的词条下标；没收进去的（频次不合法等）是 None。
+    slot: Vec<Option<usize>>,
+    lexicon: MemoryLexicon,
+}
+
+impl UserWords {
+    /// 记下一个词（已有就换掉拼音和频次），不动词典。返回 `list` 里的下标、是不是新加的。
+    fn put(&mut self, pinyin: &str, word: &str, freq: f64) -> (usize, bool) {
+        if let Some(&i) = self.pos.get(word) {
+            let item = &mut self.list[i];
+            if item.0 != pinyin {
+                item.0 = pinyin.to_string();
+            }
+            item.2 = freq;
+            return (i, false);
+        }
+        let i = self.list.len();
+        self.list.push((pinyin.to_string(), word.to_string(), freq));
+        self.pos.insert(word.to_string(), i);
+        self.slot.push(None);
+        (i, true)
+    }
+
+    /// 词典从头建一遍。
+    fn rebuild(&mut self) {
+        let mut lexicon = MemoryLexicon::new();
+        self.slot.clear();
+        for (pinyin, word, freq) in &self.list {
+            let slot = if storable(pinyin, word) {
+                lexicon
+                    .insert(pinyin, word, *freq)
+                    .ok()
+                    .map(|()| lexicon.entries.len() - 1)
+            } else {
+                None
+            };
+            self.slot.push(slot);
+        }
+        self.lexicon = lexicon;
+    }
+}
+
+/// 拼音、词里带制表符或换行的存不进 TSV（读回来就错位了），不收进词典。
+/// 以前这样一个词会让整份用户词典重建失败、之后加的词全都不生效。
+fn storable(pinyin: &str, word: &str) -> bool {
+    !pinyin.contains(['\t', '\n']) && !word.contains(['\t', '\n'])
+}
+
 /// 用户词库：在基础词库之上叠加用户自己添加的词。
 ///
-/// 用户词以 (拼音, 词, 频次) 保存，改动时重建一份小的 MemoryLexicon；
-/// 用户词通常只有几百到几千条，重建成本可以忽略。
+/// 用户词以 (拼音, 词, 频次) 保存，另外给它们建一份小的 MemoryLexicon。几千条用户词从头建
+/// 一遍要几毫秒，所以能不重建就不重建：从文件载入是全部读完建一次；加新词接在最后；
+/// 已有的词只是频次变了（学过的词每上屏一次就来一回，在按键的线程上）就地改。
+/// 删词、改拼音才从头建。自定义词单独一份词典，换自定义词不用动用户词的。
 pub struct UserLexicon {
     base: Arc<dyn Lexicon>,
-    words: RwLock<Vec<(String, String, f64)>>,
+    user: RwLock<UserWords>,
     /// 自定义词（设置里添加的，存在 custom.tsv）：只读，整份替换，不写回用户词库。
     custom: RwLock<Vec<(String, String, f64)>>,
     /// 自定义词里编码不是拼音的（mail -> 邮箱地址）：只在整个输入正好等于编码时给出。
     codes: RwLock<Vec<(String, String)>>,
     /// 全部自定义词按文件里的顺序（编码、词，词保留转义），给工具栏的「常用语」列表用。
     phrases: RwLock<Vec<(String, String)>>,
-    snapshot: RwLock<Arc<MemoryLexicon>>,
+    /// `custom` 建成的词典。
+    custom_lexicon: RwLock<MemoryLexicon>,
+    /// 用户词的词典从头建过几次（测试看它，保证载入、改频次不会一个词重建一次）。
+    rebuilds: AtomicUsize,
 }
 
 /// 自定义词默认频次：和最常用的词差不多，所以排在同音词前面。
@@ -797,59 +891,98 @@ impl UserLexicon {
     pub fn new(base: Arc<dyn Lexicon>) -> Self {
         Self {
             base,
-            words: RwLock::new(Vec::new()),
+            user: RwLock::new(UserWords::default()),
             custom: RwLock::new(Vec::new()),
             codes: RwLock::new(Vec::new()),
             phrases: RwLock::new(Vec::new()),
-            snapshot: RwLock::new(Arc::new(MemoryLexicon::new())),
+            custom_lexicon: RwLock::new(MemoryLexicon::new()),
+            rebuilds: AtomicUsize::new(0),
         }
     }
 
-    /// 添加或更新一个用户词。拼音可以是 ni hao / nihao / xi'an。
-    pub fn add(&self, pinyin: &str, word: &str, freq: f64) -> Result<()> {
-        if word.is_empty() || pinyin.trim().is_empty() {
+    /// 拼音、词能不能当用户词：都不能空，拼音要解析得出来。返回去掉首尾空白的拼音。
+    fn check_word<'a>(pinyin: &'a str, word: &str) -> Result<&'a str> {
+        let pinyin = pinyin.trim();
+        if word.is_empty() || pinyin.is_empty() {
             bail!("用户词的拼音和词都不能为空");
         }
         // 先单独校验一次，拼音非法时不要污染词库。
         // 注意不能借用 from_tsv_str：它对未知音节是「跳过」而不是报错。
-        parse_pinyin_keys(pinyin.trim()).context("用户词拼音无法解析")?;
+        parse_pinyin_keys(pinyin).context("用户词拼音无法解析")?;
+        Ok(pinyin)
+    }
 
-        {
-            let mut words = self.words.write().unwrap();
-            if let Some(slot) = words.iter_mut().find(|(_, w, _)| w == word) {
-                slot.0 = pinyin.trim().to_string();
-                slot.2 = freq;
-            } else {
-                words.push((pinyin.trim().to_string(), word.to_string(), freq));
+    /// 用户词的词典从头建一遍（调用方拿着写锁）。
+    fn rebuild_user(&self, user: &mut UserWords) {
+        user.rebuild();
+        self.rebuilds.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 用户词的词典从头建过几次。
+    #[cfg(test)]
+    fn rebuild_count(&self) -> usize {
+        self.rebuilds.load(Ordering::Relaxed)
+    }
+
+    /// 添加或更新一个用户词。拼音可以是 ni hao / nihao / xi'an。
+    pub fn add(&self, pinyin: &str, word: &str, freq: f64) -> Result<()> {
+        let pinyin = Self::check_word(pinyin, word)?;
+        let mut guard = self.user.write().unwrap();
+        let user = &mut *guard;
+        let same_pinyin = user
+            .pos
+            .get(word)
+            .is_some_and(|&i| user.list[i].0 == pinyin);
+        let (i, new) = user.put(pinyin, word, freq);
+        if new {
+            // 新词接在最后，和重建出来的顺序一样
+            if storable(pinyin, word) {
+                user.slot[i] = user.lexicon.append(pinyin, word, freq).ok();
             }
+            return Ok(());
         }
-        self.rebuild();
+        // 已有的词：读音没变、只是频次变了就地改；别的情况（改了读音、原来没收进词典、
+        // 新频次不合法）少见，从头建。写法不一样（ni hao / ni'hao）读音也可能一样，比音节
+        let same_reading = |entry: &LexEntry| {
+            same_pinyin
+                || (storable(pinyin, word)
+                    && parse_pinyin_keys(pinyin).is_ok_and(|keys| keys == entry.keys))
+        };
+        let in_place = user.slot[i].is_some_and(|idx| {
+            same_reading(&user.lexicon.entries[idx]) && user.lexicon.set_entry_freq(idx, freq)
+        });
+        if !in_place {
+            self.rebuild_user(user);
+        }
         Ok(())
     }
 
     /// 删除用户词，返回是否删掉了东西。
     pub fn remove(&self, word: &str) -> bool {
-        let removed = {
-            let mut words = self.words.write().unwrap();
-            let before = words.len();
-            words.retain(|(_, w, _)| w != word);
-            words.len() != before
+        let mut guard = self.user.write().unwrap();
+        let user = &mut *guard;
+        let Some(at) = user.pos.remove(word) else {
+            return false;
         };
-        if removed {
-            self.rebuild();
+        user.list.remove(at);
+        for i in user.pos.values_mut() {
+            if *i > at {
+                *i -= 1;
+            }
         }
-        removed
+        // 词典里的词条下标都跟着变，删词又少见（候选框里 Ctrl+Delete）：从头建
+        self.rebuild_user(user);
+        true
     }
 
     pub fn words(&self) -> Vec<(String, String, f64)> {
-        self.words.read().map(|w| w.clone()).unwrap_or_default()
+        self.user.read().map(|u| u.list.clone()).unwrap_or_default()
     }
 
     pub fn clear(&self) {
-        if let Ok(mut words) = self.words.write() {
-            words.clear();
+        if let Ok(mut user) = self.user.write() {
+            *user = UserWords::default();
         }
-        self.rebuild();
     }
 
     /// 把用户词写成 TSV（与 lexicon 格式一致）。空的也写（只有注释行）：
@@ -866,10 +999,14 @@ impl UserLexicon {
     }
 
     /// 从 TSV 载入用户词，追加到现有内容。
+    ///
+    /// 全部读完才建一次词典：以前一行调一次 [`UserLexicon::add`]、每次都整份重建，
+    /// 3000 个词要 7 秒、6000 个 27 秒。
     pub fn load_tsv<P: AsRef<Path>>(&self, path: P) -> Result<usize> {
         let data = fs::read_to_string(path.as_ref())
             .with_context(|| format!("读取用户词库失败: {}", path.as_ref().display()))?;
-        let mut added = 0;
+        // 解析、校验拼音不用拿锁；拿到锁以后只是记下来、建一次词典
+        let mut words = Vec::new();
         for line in data.lines() {
             if line.trim().is_empty() || line.starts_with('#') {
                 continue;
@@ -879,11 +1016,18 @@ impl UserLexicon {
                 continue;
             };
             let freq = cols.next().and_then(|f| f.parse().ok()).unwrap_or(1000.0);
-            if self.add(pinyin, word, freq).is_ok() {
-                added += 1;
+            if let Ok(pinyin) = Self::check_word(pinyin, word) {
+                words.push((pinyin, word, freq));
             }
         }
-        Ok(added)
+        if !words.is_empty() {
+            let mut user = self.user.write().unwrap();
+            for (pinyin, word, freq) in &words {
+                user.put(pinyin, word, *freq);
+            }
+            self.rebuild_user(&mut user);
+        }
+        Ok(words.len())
     }
 
     /// 用一份自定义词整体替换现有的。格式 `编码<TAB>词[<TAB>频次]`。
@@ -940,7 +1084,14 @@ impl UserLexicon {
         if let Ok(mut slot) = self.phrases.write() {
             *slot = phrases;
         }
-        self.rebuild();
+        // 只建自定义词这一份，用户词的词典不用动
+        let mut lexicon = MemoryLexicon::new();
+        for (pinyin, word, freq) in self.custom_words() {
+            let _ = lexicon.insert(&pinyin, &word, freq);
+        }
+        if let Ok(mut slot) = self.custom_lexicon.write() {
+            *slot = lexicon;
+        }
         count
     }
 
@@ -991,45 +1142,56 @@ impl UserLexicon {
         self.custom.read().map(|w| w.clone()).unwrap_or_default()
     }
 
-    fn rebuild(&self) {
-        let mut words = self.words.read().map(|w| w.clone()).unwrap_or_default();
-        words.extend(self.custom_words());
-        let mut tsv = String::new();
-        for (pinyin, word, freq) in &words {
-            tsv.push_str(&format!("{}\t{}\t{}\n", pinyin, word, freq));
-        }
-        if let Ok(lexicon) = MemoryLexicon::from_tsv_str(&tsv) {
-            if let Ok(mut slot) = self.snapshot.write() {
-                *slot = Arc::new(lexicon);
-            }
-        }
+    /// 在用户词的词典、自定义词的词典里各查一次。
+    fn in_overlays<T: Default>(&self, f: impl Fn(&MemoryLexicon) -> T) -> (T, T) {
+        let user = self.user.read().map(|u| f(&u.lexicon)).unwrap_or_default();
+        let custom = self
+            .custom_lexicon
+            .read()
+            .map(|c| f(&c))
+            .unwrap_or_default();
+        (user, custom)
     }
 }
 
 impl Lexicon for UserLexicon {
     fn lookup(&self, query: &[SyllableQuery]) -> Vec<LexEntry> {
         let mut result = self.base.lookup(query);
-        if let Ok(snapshot) = self.snapshot.read() {
-            result.extend(snapshot.lookup(query));
+        let (user, custom) = self.in_overlays(|lex| lex.lookup(query));
+        if custom.is_empty() || !user.iter().any(LexEntry::is_rare) {
+            result.extend(user);
+            result.extend(custom);
+        } else {
+            // 用户词和自定义词以前在同一份词典里，生僻字排在两样的最后；分成两份以后顺序照旧
+            let (user, user_rare): (Vec<_>, Vec<_>) = user.into_iter().partition(|e| !e.is_rare());
+            let (custom, custom_rare): (Vec<_>, Vec<_>) =
+                custom.into_iter().partition(|e| !e.is_rare());
+            result.extend(user);
+            result.extend(custom);
+            result.extend(user_rare);
+            result.extend(custom_rare);
         }
         result
     }
 
     fn lookup_common(&self, query: &[SyllableQuery]) -> Vec<LexEntry> {
         let mut result = self.base.lookup_common(query);
-        if let Ok(snapshot) = self.snapshot.read() {
-            result.extend(snapshot.lookup_common(query));
-        }
+        let (user, custom) = self.in_overlays(|lex| lex.lookup_common(query));
+        result.extend(user);
+        result.extend(custom);
         result
     }
 
     fn has_longer(&self, query: &[SyllableQuery]) -> bool {
         self.base.has_longer(query)
             || self
-                .snapshot
+                .user
                 .read()
-                .map(|s| s.has_longer(query))
-                .unwrap_or(true)
+                .map_or(true, |u| u.lexicon.has_longer(query))
+            || self
+                .custom_lexicon
+                .read()
+                .map_or(true, |c| c.has_longer(query))
     }
 
     fn prepare_fuzzy(&self) {
@@ -1038,18 +1200,20 @@ impl Lexicon for UserLexicon {
 
     fn lookup_fuzzy(&self, query: &[SyllableQuery], groups: u32) -> Vec<LexEntry> {
         let mut result = self.base.lookup_fuzzy(query, groups);
-        if let Ok(snapshot) = self.snapshot.read() {
-            result.extend(snapshot.lookup_fuzzy(query, groups));
-        }
+        let (user, custom) = self.in_overlays(|lex| lex.lookup_fuzzy(query, groups));
+        result.extend(user);
+        result.extend(custom);
         result
     }
 
     fn total_freq(&self) -> f64 {
-        self.base.total_freq() + self.snapshot.read().map(|s| s.total_freq()).unwrap_or(0.0)
+        let (user, custom) = self.in_overlays(|lex| lex.total_freq());
+        self.base.total_freq() + (user + custom)
     }
 
     fn len(&self) -> usize {
-        self.base.len() + self.snapshot.read().map(|s| s.len()).unwrap_or(0)
+        let (user, custom) = self.in_overlays(|lex| lex.len());
+        self.base.len() + user + custom
     }
 }
 
@@ -1561,5 +1725,202 @@ mod tests {
         assert_eq!(freq("不坚硬"), 100.0);
         assert_eq!(freq("这个"), 100.0);
         assert_eq!(lex.total_freq, total);
+    }
+
+    fn user_lexicon() -> UserLexicon {
+        UserLexicon::new(Arc::new(MemoryLexicon::new()))
+    }
+
+    fn full(text: &str) -> Vec<SyllableQuery> {
+        text.split(' ')
+            .map(|t| Syllable::from_text(t).unwrap().query(false))
+            .collect()
+    }
+
+    fn freq_of(user: &UserLexicon, pinyin: &str, word: &str) -> Option<f64> {
+        user.lookup(&full(pinyin))
+            .into_iter()
+            .find(|e| e.word == word)
+            .map(|e| e.freq)
+    }
+
+    #[test]
+    fn loading_user_words_rebuilds_once() {
+        // 以前一行重建一次：3000 个词 7 秒。数重建的次数，不看时间
+        let syllables = ["ni", "hao", "zhong", "guo", "ren", "min", "da", "xue"];
+        let n = 500;
+        let mut body = String::from("# 用户词库\n");
+        for i in 0..n {
+            let (a, b) = (syllables[i % 8], syllables[(i / 8) % 8]);
+            body.push_str(&format!("{a} {b}\t词{i}\t{}\n", 1000 + i));
+        }
+        let path = temp_lexicon("user_bulk", &body);
+        let user = user_lexicon();
+        assert_eq!(user.load_tsv(&path).unwrap(), n);
+        cleanup(&path);
+        assert_eq!(user.rebuild_count(), 1, "载入 {n} 个词只建一次词典");
+        assert_eq!(user.words().len(), n);
+        assert_eq!(user.len(), n);
+        assert_eq!(freq_of(&user, "ni ni", "词0"), Some(1000.0));
+        assert_eq!(freq_of(&user, "hao xue", "词57"), Some(1057.0));
+        assert_eq!(freq_of(&user, "guo da", "词499"), Some(1499.0));
+
+        // 学过的词再上屏：只是频次变大，就地改
+        user.add("ni ni", "词0", 5000.0).unwrap();
+        assert_eq!(freq_of(&user, "ni ni", "词0"), Some(5000.0));
+        // 拼音换了个写法，读音没变
+        user.add("ni'ni", "词0", 6000.0).unwrap();
+        assert_eq!(freq_of(&user, "ni ni", "词0"), Some(6000.0));
+        // 新词接在最后
+        user.add("da xue", "大学", 2000.0).unwrap();
+        assert_eq!(freq_of(&user, "da xue", "大学"), Some(2000.0));
+        assert_eq!(user.rebuild_count(), 1, "改频次、加新词都不重建");
+        assert_eq!(user.words().len(), n + 1);
+
+        // 删词、改拼音才从头建
+        assert!(user.remove("词57"));
+        assert_eq!(freq_of(&user, "hao xue", "词57"), None);
+        assert_eq!(user.rebuild_count(), 2);
+        user.add("xue da", "大学", 2000.0).unwrap();
+        assert_eq!(freq_of(&user, "da xue", "大学"), None);
+        assert_eq!(freq_of(&user, "xue da", "大学"), Some(2000.0));
+        assert_eq!(user.rebuild_count(), 3);
+        assert!(!user.remove("没有这个词"));
+        assert_eq!(user.rebuild_count(), 3);
+
+        // 空文件、只有注释的文件不用建
+        let empty = temp_lexicon("user_empty", "# 用户词库\n");
+        assert_eq!(user.load_tsv(&empty).unwrap(), 0);
+        cleanup(&empty);
+        assert_eq!(user.rebuild_count(), 3);
+    }
+
+    /// 以前的做法：用户词、自定义词写成一份 TSV，从头解析成一份词典。
+    fn fresh_build(user: &UserLexicon) -> MemoryLexicon {
+        let mut tsv = String::new();
+        for (pinyin, word, freq) in user.words().into_iter().chain(user.custom_words()) {
+            tsv.push_str(&format!("{pinyin}\t{word}\t{freq}\n"));
+        }
+        MemoryLexicon::from_tsv_str(&tsv).unwrap()
+    }
+
+    #[test]
+    fn user_lexicon_matches_fresh_build() {
+        // 就地改频次、接在最后加词、用户词和自定义词分成两份词典，查出来的东西（连顺序）
+        // 都要和以前每次从头建的一样
+        let syllables = ["ni", "hao", "shi", "si", "zhi", "zi", "an", "ang"];
+        let mut queries: Vec<Vec<SyllableQuery>> = Vec::new();
+        let letters = [b'n', b'h', b's', b'z', b'a'];
+        for a in syllables {
+            queries.push(full(a));
+            for b in syllables {
+                queries.push(full(&format!("{a} {b}")));
+            }
+            for letter in letters {
+                queries.push(vec![full(a)[0], SyllableQuery::Jianpin { letter }]);
+                queries.push(vec![SyllableQuery::Jianpin { letter }, full(a)[0]]);
+            }
+        }
+        for a in letters {
+            queries.push(vec![SyllableQuery::Jianpin { letter: a }]);
+            for b in letters {
+                queries.push(vec![
+                    SyllableQuery::Jianpin { letter: a },
+                    SyllableQuery::Jianpin { letter: b },
+                ]);
+            }
+        }
+        let check = |user: &UserLexicon, step: &str| {
+            let fresh = fresh_build(user);
+            assert_eq!(user.len(), fresh.len(), "{step}");
+            assert_eq!(user.total_freq(), fresh.total_freq(), "{step}");
+            for q in &queries {
+                assert_eq!(user.lookup(q), fresh.lookup(q), "{step} {q:?}");
+                assert_eq!(
+                    user.lookup_common(q),
+                    fresh.lookup_common(q),
+                    "{step} {q:?}"
+                );
+                assert_eq!(
+                    user.lookup_fuzzy(q, crate::syllable::fuzzy::ALL),
+                    fresh.lookup_fuzzy(q, crate::syllable::fuzzy::ALL),
+                    "{step} {q:?}"
+                );
+                assert_eq!(user.has_longer(q), fresh.has_longer(q), "{step} {q:?}");
+            }
+        };
+
+        // 单字（频次不到 1 就是生僻字，排在最后）和词都有；频次里有不合法的
+        let words = [
+            "妮", "是", "子", "你好", "只是", "自私", "暗示", "昂", "死", "指",
+        ];
+        let freqs = [0.25, 0.5, 1.0, 3.0, 1000.0, 2000.0, 50_000.0];
+        let bad_freqs = [f64::NAN, f64::INFINITY, -1.0];
+        let customs = [
+            "",
+            "ni\t妮\t0.5\nni\t你\nni hao\t妮好\nshi\t是\t2\n",
+            "si\t死\t0.5\nsi\t四\nzhi shi\t只是\nmail\t邮箱\n",
+        ];
+        let user = user_lexicon();
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |n: usize| {
+            // xorshift：每次跑都是同一串
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        for step in 0..600 {
+            let word = words[next(words.len())];
+            let what = match next(10) {
+                0 => {
+                    user.remove(word);
+                    format!("第 {step} 步：删 {word}")
+                }
+                1 => {
+                    let custom = customs[next(customs.len())];
+                    user.set_custom_tsv(custom);
+                    format!("第 {step} 步：换自定义词 {custom:?}")
+                }
+                _ => {
+                    // 同一个词大多用同一个拼音（只是频次变了），偶尔换一个
+                    let at = if next(6) == 0 {
+                        next(64)
+                    } else {
+                        word.len() * 7 + word.as_bytes()[1] as usize
+                    };
+                    let pinyin = if at % 3 == 0 {
+                        syllables[at % 8].to_string()
+                    } else {
+                        // 隔音符和空格是一个读音的两种写法
+                        let sep = if next(4) == 0 { "'" } else { " " };
+                        format!("{}{sep}{}", syllables[at % 8], syllables[(at / 8) % 8])
+                    };
+                    let freq = if next(12) == 0 {
+                        bad_freqs[next(bad_freqs.len())]
+                    } else {
+                        freqs[next(freqs.len())]
+                    };
+                    user.add(&pinyin, word, freq).unwrap();
+                    format!("第 {step} 步：加 {pinyin} {word} {freq}")
+                }
+            };
+            check(&user, &what);
+        }
+        user.clear();
+        check(&user, "清空");
+        assert!(user.words().is_empty());
+    }
+
+    #[test]
+    fn user_word_with_tab_does_not_freeze_the_rest() {
+        // 带制表符的词写不进 TSV。以前它让整份重建失败，之后加的词全都查不到
+        let user = user_lexicon();
+        user.add("ni hao", "你\t好", 1000.0).unwrap();
+        user.add("ni hao", "你好", 1000.0).unwrap();
+        let found = user.lookup(&full("ni hao"));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].word, "你好");
+        assert_eq!(user.words().len(), 2);
     }
 }
