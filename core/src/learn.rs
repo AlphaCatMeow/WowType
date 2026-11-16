@@ -9,6 +9,9 @@
 //!   「发给」以后，`wofageini` 出「我发给你」而不是「我发个你」。
 //!
 //! 都存在 `history.tsv`（和用户词库放一起），重启输入法不会丢。
+//!
+//! 存盘时淘汰一些（[`save_history`]）：只用过一次、又很久没再用的不存；条数超过上限时不存最冷的。
+//! 不淘汰的话文件只会变长——用一两周就有九千多行，每次存盘都整份重写。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -27,6 +30,22 @@ pub const HALF_LIFE_MS: f64 = 30.0 * 24.0 * 3600.0 * 1000.0;
 /// 又不至于让一次误选永远压住词库里差得很远的词。
 pub const PAIR_WEIGHT: f64 = 2.5;
 pub const PAIR_BONUS_CAP: f64 = 6.0;
+
+/// 只用过一次的词、搭配，这么久没再用就不存了：90 天（毫秒），三个半衰期。
+///
+/// 这时热度只剩 1/8，排序里的 ln(1+热度) 约 0.12，搭配加分约 0.3，有没有它候选的顺序几乎一样；
+/// 这种条目却占了文件的大半（随手打过一次的词、碰巧挨在一起的两个词）。用过两次以上的不按这条
+/// 丢——那是用户真的在用的，久了不用也留着，除非总数超了上限。
+pub const STALE_ONCE_MS: u64 = 90 * 24 * 3600 * 1000;
+
+/// 最多存这么多个词的热度（`w` 行）。超了就丢衰减以后热度最低的。
+///
+/// 正常用不到：一两周约三千个，过了 90 天只用过一次的又会被 [`STALE_ONCE_MS`] 清掉。
+/// 留这个上限是防着文件无止境地长（每次存盘整份重写，载入也整份读进内存）。
+pub const MAX_WORDS: usize = 20_000;
+
+/// 最多存这么多条搭配（`p` 行），同上。搭配比词多（一两周约六千条），上限给到两倍。
+pub const MAX_PAIRS: usize = 40_000;
 
 /// 按半衰期衰减后的次数。
 pub fn decayed(entry: HistoryEntry, at_ms: u64) -> f64 {
@@ -136,12 +155,41 @@ impl LanguageModel for LearnedLm<'_> {
     }
 }
 
+/// 存盘时留下哪些条目：先去掉只用过一次、到 `now_ms` 已经 [`STALE_ONCE_MS`] 没再用的；
+/// 剩下的还比 `cap` 多，就只留衰减以后热度最高的 `cap` 条。两样都没碰上时原样返回。
+fn kept_for_save<K: Ord>(
+    mut items: Vec<(K, HistoryEntry)>,
+    now_ms: u64,
+    cap: usize,
+) -> Vec<(K, HistoryEntry)> {
+    items.retain(|(_, e)| e.count > 1 || now_ms.saturating_sub(e.last_used_ms) <= STALE_ONCE_MS);
+    if items.len() > cap {
+        // 衰减后的热度是 次数 × 0.5^(过了多久 / 半衰期)。比大小用它的对数：很久以前的条目
+        // 直接算会全变成 0、分不出先后；而且「现在」是几点对谁热谁冷没有影响，可以不要
+        let heat = |e: &HistoryEntry| {
+            f64::from(e.count).ln() + e.last_used_ms as f64 * std::f64::consts::LN_2 / HALF_LIFE_MS
+        };
+        // 热的在前；一样热的留后用的，再一样按字面（每次存出来的都一样）
+        items.select_nth_unstable_by(cap, |a, b| {
+            heat(&b.1)
+                .total_cmp(&heat(&a.1))
+                .then(b.1.last_used_ms.cmp(&a.1.last_used_ms))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        items.truncate(cap);
+    }
+    items
+}
+
 /// 存盘格式（TSV，`#` 开头是注释，各列用 tab 分隔）：
 ///
 /// ```text
 /// w <词> <次数> <上次使用，epoch 毫秒>
 /// p <前一个词> <后一个词> <次数> <上次使用>
 /// ```
+///
+/// 只用过一次、[`STALE_ONCE_MS`] 没再用的不存；超过 [`MAX_WORDS`] / [`MAX_PAIRS`] 的不存最冷的。
+/// 内存里的不动（这次会话里排序不变），下次启动读回来的就是淘汰过的。
 pub fn save_history<P: AsRef<Path>>(
     path: P,
     words: &HashMap<String, HistoryEntry>,
@@ -150,7 +198,21 @@ pub fn save_history<P: AsRef<Path>>(
     let path = path.as_ref();
     let mut out = String::from("# wowtype 用户输入习惯 v1\n");
     let clean = |s: &str| !s.contains(['\t', '\n', '\r']);
-    let mut words: Vec<_> = words.iter().filter(|(w, _)| clean(w)).collect();
+    // 「现在」取系统时间和数据里最后一次使用的时间里早的那个：系统时钟被调到将来时，
+    // 不会把只用过一次的一下全当成过期的丢掉（带时间戳回放的测试也一样）
+    let newest = words
+        .values()
+        .map(|e| e.last_used_ms)
+        .chain(pairs.iter().map(|(_, _, e)| e.last_used_ms))
+        .max()
+        .unwrap_or(0);
+    let now_ms = crate::now_ms().min(newest);
+    let words = words
+        .iter()
+        .filter(|(w, _)| clean(w))
+        .map(|(w, e)| (w, *e))
+        .collect();
+    let mut words = kept_for_save(words, now_ms, MAX_WORDS);
     words.sort_by(|a, b| a.0.cmp(b.0));
     for (word, entry) in words {
         out.push_str(&format!(
@@ -158,12 +220,14 @@ pub fn save_history<P: AsRef<Path>>(
             entry.count, entry.last_used_ms
         ));
     }
-    let mut pairs: Vec<_> = pairs
+    let pairs = pairs
         .iter()
         .filter(|(p, c, _)| clean(p) && clean(c))
+        .map(|(p, c, e)| ((p, c), e))
         .collect();
-    pairs.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
-    for (prev, cur, entry) in pairs {
+    let mut pairs = kept_for_save(pairs, now_ms, MAX_PAIRS);
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    for ((prev, cur), entry) in pairs {
         out.push_str(&format!(
             "p\t{prev}\t{cur}\t{}\t{}\n",
             entry.count, entry.last_used_ms
@@ -293,5 +357,170 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         // 文件不存在还是报错
         assert!(load_history(&path, &mut words, &mut pairs).is_err());
+    }
+
+    const DAY_MS: u64 = 24 * 3600 * 1000;
+
+    fn entry(count: u32, last_used_ms: u64) -> HistoryEntry {
+        HistoryEntry {
+            count,
+            last_used_ms,
+        }
+    }
+
+    fn save_and_load(
+        tag: &str,
+        words: &HashMap<String, HistoryEntry>,
+        pairs: &UserPairs,
+    ) -> (HashMap<String, HistoryEntry>, UserPairs, String) {
+        let dir = std::env::temp_dir().join(format!("wowtype-learn-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.tsv");
+        save_history(&path, words, pairs).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut w2 = HashMap::new();
+        let mut p2 = UserPairs::default();
+        load_history(&path, &mut w2, &mut p2).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        (w2, p2, text)
+    }
+
+    #[test]
+    fn used_once_long_ago_is_not_saved() {
+        // 「现在」是数据里最后一次使用的时间：第 400 天
+        let now = 400 * DAY_MS;
+        let mut words = HashMap::new();
+        words.insert("刚用".to_string(), entry(1, now));
+        words.insert("一次很久".to_string(), entry(1, now - 91 * DAY_MS));
+        words.insert("一次不久".to_string(), entry(1, now - 89 * DAY_MS));
+        words.insert("两次很久".to_string(), entry(2, now - 300 * DAY_MS));
+        let mut pairs = UserPairs::default();
+        pairs.insert("发".into(), "给".into(), entry(1, now - 91 * DAY_MS));
+        pairs.insert("发".into(), "个".into(), entry(1, now - 90 * DAY_MS));
+        pairs.insert("再".into(), "见".into(), entry(3, now - 200 * DAY_MS));
+
+        let (w2, p2, text) = save_and_load("stale", &words, &pairs);
+        assert!(!w2.contains_key("一次很久"));
+        assert_eq!(w2.len(), 3);
+        assert_eq!(w2["一次不久"], entry(1, now - 89 * DAY_MS));
+        assert_eq!(w2["两次很久"], entry(2, now - 300 * DAY_MS));
+        assert!(p2.get("发", "给").is_none());
+        assert_eq!(p2.get("发", "个"), Some(entry(1, now - 90 * DAY_MS)));
+        assert_eq!(p2.get("再", "见"), Some(entry(3, now - 200 * DAY_MS)));
+        assert_eq!(p2.len(), 2);
+        // 内存里的没动
+        assert_eq!(words.len(), 4);
+        assert_eq!(pairs.len(), 3);
+        // 留下来的还是先词后搭配、各自按字面排好
+        let lines: Vec<&str> = text
+            .lines()
+            .skip(1)
+            .map(|l| &l[..l.rfind('\t').unwrap()])
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "w\t一次不久\t1",
+                "w\t两次很久\t2",
+                "w\t刚用\t1",
+                "p\t再\t见\t3",
+                "p\t发\t个\t1"
+            ]
+        );
+    }
+
+    #[test]
+    fn nothing_is_dropped_when_all_is_recent() {
+        // 没碰上淘汰的条件：存出来的和以前一模一样
+        let now = 400 * DAY_MS;
+        let mut words = HashMap::new();
+        words.insert("种地".to_string(), entry(3, now));
+        words.insert("一次".to_string(), entry(1, now - 90 * DAY_MS));
+        words.insert("带\t制表符".to_string(), entry(9, now));
+        let mut pairs = UserPairs::default();
+        pairs.insert("发".into(), "给".into(), entry(1, now - 30 * DAY_MS));
+        pairs.insert("发".into(), "个".into(), entry(2, now - 399 * DAY_MS));
+        let (_, _, text) = save_and_load("recent", &words, &pairs);
+        let a = now - 90 * DAY_MS;
+        let b = now - 399 * DAY_MS;
+        let c = now - 30 * DAY_MS;
+        assert_eq!(
+            text,
+            format!(
+                "# wowtype 用户输入习惯 v1\nw\t一次\t1\t{a}\nw\t种地\t3\t{now}\n\
+                 p\t发\t个\t2\t{b}\np\t发\t给\t1\t{c}\n"
+            )
+        );
+    }
+
+    #[test]
+    fn over_the_cap_keeps_the_hottest() {
+        let now = 400 * DAY_MS;
+        let items = vec![
+            ("常用", entry(8, now - 10 * DAY_MS)),
+            // 很久以前用过很多次：8 × 0.5^(120/30) = 0.5，比不上最近的两次
+            ("以前常用", entry(8, now - 120 * DAY_MS)),
+            ("最近两次", entry(2, now - DAY_MS)),
+            ("最近一次", entry(1, now)),
+            ("一次不久", entry(1, now - 60 * DAY_MS)),
+            // 只用过一次又过了 90 天：不管上限先丢
+            ("一次很久", entry(1, now - 100 * DAY_MS)),
+        ];
+        let names = |kept: Vec<(&'static str, HistoryEntry)>| {
+            let mut names: Vec<_> = kept.into_iter().map(|(k, _)| k).collect();
+            names.sort_unstable();
+            names
+        };
+        // 没超上限：只丢过期的那一条
+        let kept = names(kept_for_save(items.clone(), now, 5));
+        assert_eq!(
+            kept,
+            ["一次不久", "以前常用", "常用", "最近一次", "最近两次"]
+        );
+        // 超了：留最热的三条（8×0.79=6.3、2×0.98=1.95、1），顺序和算热度的时刻无关
+        for at in [now, now - 30 * DAY_MS, 0] {
+            let mut input = items.clone();
+            input.retain(|(k, _)| *k != "一次很久");
+            assert_eq!(
+                names(kept_for_save(input, at, 3)),
+                ["常用", "最近一次", "最近两次"]
+            );
+        }
+        // 一样热的留后用的
+        let ties = vec![
+            ("甲", entry(2, 5)),
+            ("乙", entry(2, 5)),
+            ("丙", entry(2, 6)),
+        ];
+        assert_eq!(names(kept_for_save(ties, 6, 2)), ["丙", "乙"]);
+    }
+
+    #[test]
+    fn file_stops_growing_at_the_caps() {
+        // 都用过两次（不按「只用过一次」丢），越靠后的越新
+        let mut words = HashMap::new();
+        for i in 0..MAX_WORDS + 10 {
+            words.insert(format!("词{i}"), entry(2, 1000 + i as u64));
+        }
+        let mut pairs = UserPairs::default();
+        for i in 0..MAX_PAIRS + 10 {
+            pairs.insert(
+                format!("前{}", i % 100),
+                format!("后{i}"),
+                entry(2, 1000 + i as u64),
+            );
+        }
+        let (w2, p2, _) = save_and_load("caps", &words, &pairs);
+        assert_eq!(w2.len(), MAX_WORDS);
+        assert_eq!(p2.len(), MAX_PAIRS);
+        // 丢的是最旧的那 10 个
+        for i in 0..10 {
+            assert!(!w2.contains_key(&format!("词{i}")));
+            assert!(p2
+                .get(&format!("前{}", i % 100), &format!("后{i}"))
+                .is_none());
+        }
+        assert!(w2.contains_key("词10"));
+        assert!(p2.get("前10", "后10").is_some());
     }
 }
