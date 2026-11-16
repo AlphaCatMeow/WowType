@@ -332,6 +332,65 @@ void runCases(Instance &instance) {
     }
     fresh(ic.get());
     check(!send(ic.get(), Key(FcitxKey_Delete, KeyState::Ctrl)), "没在打字时 Ctrl+Delete 交给应用");
+
+    // 打字途中会话不管的键（小键盘的 + - * / .、F 键、Insert、不是 ASCII 的键……）都吃掉：
+    // 交给应用的话，小键盘的 + 先到应用、上屏后成了「+你好」，F5 把网页刷新掉
+    fresh(ic.get());
+    type(ic.get(), "nihao");
+    {
+        const std::string before = preedit(ic.get());
+        const auto candidates = page(ic.get());
+        std::string leaked;
+        for (const KeySym sym :
+             {FcitxKey_KP_Add, FcitxKey_KP_Subtract, FcitxKey_KP_Multiply, FcitxKey_KP_Divide,
+              FcitxKey_KP_Decimal, FcitxKey_F1, FcitxKey_F5, FcitxKey_F12, FcitxKey_Insert,
+              FcitxKey_Menu, FcitxKey_Pause, FcitxKey_Home, FcitxKey_Delete, FcitxKey_eacute,
+              FcitxKey_Cyrillic_a, FcitxKey_dead_acute}) {
+            if (!send(ic.get(), Key(sym))) {
+                leaked += Key(sym).toString() + " ";
+            }
+        }
+        // Shift 加上这些键也一样（Shift+F10 是右键菜单、Shift+Insert 是粘贴）
+        for (const KeySym sym : {FcitxKey_F10, FcitxKey_Insert, FcitxKey_KP_Add}) {
+            if (!send(ic.get(), Key(sym, KeyState::Shift))) {
+                leaked += Key(sym, KeyState::Shift).toString() + " ";
+            }
+        }
+        check(leaked.empty(), "打字途中会话不管的键都吃掉，漏给应用的：" + leaked);
+        check(preedit(ic.get()) == before && page(ic.get()) == candidates && ic->committed.empty() &&
+                  ic->passed.empty(),
+              "吃掉以后编辑区和候选不动：" + preedit(ic.get()) + " 上屏「" + ic->committed + "」");
+        // 修饰键、锁定键本身，松开的键，带 Ctrl / Alt / Super 的组合键照常交给应用
+        std::string eaten;
+        for (const KeySym sym : {FcitxKey_Control_L, FcitxKey_Alt_L, FcitxKey_Super_L,
+                                 FcitxKey_Caps_Lock, FcitxKey_Num_Lock, FcitxKey_ISO_Level3_Shift}) {
+            KeyEvent press(ic.get(), Key(sym), false);
+            if (ic->keyEvent(press)) {
+                eaten += Key(sym).toString() + " ";
+            }
+        }
+        for (const KeySym sym : {FcitxKey_F5, FcitxKey_KP_Add, FcitxKey_Control_L}) {
+            KeyEvent release(ic.get(), Key(sym), true);
+            if (ic->keyEvent(release)) {
+                eaten += Key(sym).toString() + "(松开) ";
+            }
+        }
+        for (const Key &key : {Key(FcitxKey_c, KeyState::Ctrl), Key(FcitxKey_F4, KeyState::Alt),
+                               Key(FcitxKey_F5, KeyState::Ctrl), Key(FcitxKey_KP_Add, KeyState::Super)}) {
+            if (send(ic.get(), key)) {
+                eaten += key.toString() + " ";
+            }
+        }
+        check(eaten.empty(), "打字途中修饰键本身、松开的键、带 Ctrl / Alt / Super 的组合键照常交给应用，吃掉的：" +
+                                 eaten);
+        check(preedit(ic.get()) == before, "交给应用以后编辑区还在：" + preedit(ic.get()));
+        type(ic.get(), "<sp>");
+        check(ic->committed == "你好", "接着空格照常上屏，前面没有多出来的字，实际 " + ic->committed);
+    }
+    fresh(ic.get());
+    check(!send(ic.get(), Key(FcitxKey_F5)) && !send(ic.get(), Key(FcitxKey_KP_Add)) &&
+              !send(ic.get(), Key(FcitxKey_Insert)),
+          "没在打字时这些键照常交给应用");
     // 单音节不出拆开音节的句首词（dan -> 大）
     fresh(ic.get());
     type(ic.get(), "dan");
@@ -574,6 +633,74 @@ void runCases(Instance &instance) {
         const auto p1 = page(ic.get());
         type(ic.get(), "2");
         check(p1.size() > 1 && ic->committed == p1[1], "收起后数字按当前页选，实际 " + ic->committed);
+    }
+    // 展开面板上点翻页按钮、滚滚轮（直接调列表的 next / prev）：会话的光标跟着到那一屏，
+    // 看到的这一屏上框着的词就是空格选的，数字选的是光标那一行的
+    /// 一行里〔〕框着的词；没有框是空的
+    auto framedIn = [](const std::vector<std::string> &rows) {
+        for (const auto &row : rows) {
+            const auto open = row.find("\u3014");
+            const auto close = row.find("\u3015");
+            if (open != std::string::npos && close != std::string::npos && close > open) {
+                return row.substr(open + 3, close - open - 3);
+            }
+        }
+        return std::string();
+    };
+    /// 有光标的那一行里标着 label（１–６）的词
+    auto labelledIn = [](const std::vector<std::string> &rows, const std::string &label) {
+        for (const auto &row : rows) {
+            auto at = row.find(label + "\u3000");
+            if (row.find("\u3014") == std::string::npos || at == std::string::npos) {
+                continue;
+            }
+            at += label.size() + 3;
+            std::string text = row.substr(at, row.find("\u3000", at) - at);
+            if (const auto pad = text.find("\u2002"); pad != std::string::npos) {
+                text.resize(pad); // 补宽度的半角空格
+            }
+            return text;
+        }
+        return std::string();
+    };
+    fresh(ic.get());
+    type(ic.get(), "shi<down>");
+    if (auto *list = common(); list && list->hasNext()) {
+        const auto screen1 = page(ic.get());
+        list->next();
+        list = common();
+        const auto screen2 = page(ic.get());
+        const std::string framed = framedIn(screen2);
+        check(list && list->currentPage() == 1 && list->cursorIndex() == 0 && screen2 != screen1 &&
+                  !framed.empty(),
+              "展开面板点下一屏：光标跟到第二屏第一个：" + join(screen2));
+        type(ic.get(), "<sp>");
+        check(!framed.empty() && ic->committed == framed,
+              "展开面板点下一屏后空格选这一屏框着的（" + framed + "），实际 " + ic->committed);
+        fresh(ic.get());
+        type(ic.get(), "shi<down>");
+        if ((list = common())) {
+            list->next();
+        }
+        const std::string second = labelledIn(page(ic.get()), "\uFF12");
+        type(ic.get(), "2");
+        check(!second.empty() && ic->committed == second,
+              "展开面板点下一屏后数字选这一屏的（" + second + "），实际 " + ic->committed);
+        fresh(ic.get());
+        type(ic.get(), "shi<down>");
+        if ((list = common())) {
+            list->next();
+        }
+        if ((list = common())) {
+            list->prev();
+        }
+        list = common();
+        const std::string back = framedIn(page(ic.get()));
+        check(list && list->currentPage() == 0 && !back.empty(), "展开面板点上一屏：回到第一屏：" + back);
+        type(ic.get(), "<sp>");
+        check(!back.empty() && ic->committed == back, "回到第一屏后空格选框着的，实际 " + ic->committed);
+    } else {
+        std::printf("skip 展开面板点翻页按钮（这个词库里 shi 的候选不到两屏）\n");
     }
     fresh(ic.get());
     type(ic.get(), "shi");
@@ -1181,6 +1308,145 @@ void runCases(Instance &instance) {
     check(ic->committed == "壹佰元伍角", "v 后面只打一个数：空格上屏大写金额：" + ic->committed);
     fresh(ic.get());
 
+    // 符号面板（和表情面板、展开面板一样是 6 列的网格）点翻页按钮、滚滚轮：光标跟着到那一屏，
+    // 屏幕上框着的就是空格选的、标着 ２ 的就是按 2 选的（以前只是 fcitx5 自己换了一屏，选的还是第一屏的）
+    fresh(ic.get());
+    type(ic.get(), "v<sp>3");
+    {
+        auto *list = common();
+        check(list && list->hasNext() && list->totalPages() == 2, "符号面板有两屏");
+        const auto screen1 = page(ic.get());
+        if (list) {
+            list->next(); // 候选框上的翻页按钮、滚轮直接调列表
+        }
+        list = common();
+        const auto screen2 = page(ic.get());
+        const std::string framed = framedIn(screen2);
+        check(list && list->currentPage() == 1 && list->cursorIndex() == 0 && !list->hasNext() &&
+                  screen2 != screen1 && !framed.empty(),
+              "符号面板点下一屏：光标跟到第二屏：" + join(screen2));
+        type(ic.get(), "<sp>");
+        check(!framed.empty() && ic->committed == framed,
+              "符号面板点下一屏后空格选这一屏框着的（" + framed + "），实际 " + ic->committed);
+    }
+    // 表情面板（不止三屏）：连着翻、翻回来、滚轮移光标、直接跳到某一屏
+    fresh(ic.get());
+    type(ic.get(), "v<sp>4");
+    {
+        if (auto *list = common()) {
+            list->next();
+        }
+        if (auto *list = common()) {
+            list->next();
+        }
+        auto *list = common();
+        const std::string third = labelledIn(page(ic.get()), "\uFF13");
+        check(list && list->currentPage() == 2 && !third.empty(), "表情面板连点两次下一屏：到第三屏");
+        type(ic.get(), "3");
+        check(!third.empty() && ic->committed == third,
+              "表情面板第三屏按 3 选这一屏标着 ３ 的（" + third + "），实际 " + ic->committed);
+    }
+    fresh(ic.get());
+    type(ic.get(), "v<sp>4");
+    {
+        if (auto *list = common()) {
+            list->next();
+        }
+        if (auto *list = common()) {
+            list->next();
+        }
+        if (auto *list = common()) {
+            list->prev();
+        }
+        auto *list = common();
+        const std::string framed = framedIn(page(ic.get()));
+        check(list && list->currentPage() == 1 && !framed.empty(), "表情面板点上一屏：回到第二屏");
+        if (list) {
+            list->nextCandidate(); // 滚轮移到下一行
+        }
+        list = common();
+        const std::string below = framedIn(page(ic.get()));
+        check(list && list->cursorIndex() == 1 && !below.empty() && below != framed,
+              "表情面板列表 nextCandidate：光标到下一行：" + below);
+        type(ic.get(), "<cr>");
+        check(!below.empty() && ic->committed == below, "接着回车选框着的，实际 " + ic->committed);
+    }
+    fresh(ic.get());
+    type(ic.get(), "v<sp>4");
+    {
+        if (auto *list = common()) {
+            list->setPage(2); // 直接跳到第三屏也是一屏一屏翻会话
+        }
+        auto *list = common();
+        const std::string framed = framedIn(page(ic.get()));
+        check(list && list->currentPage() == 2 && !framed.empty(), "表情面板 setPage(2)：到第三屏");
+        type(ic.get(), "<sp>");
+        check(!framed.empty() && ic->committed == framed, "setPage 后空格选框着的，实际 " + ic->committed);
+    }
+    // 工具栏的列表（常用语 11 条，一页 9 个）也一样：点下一页后数字、空格选的是第二页的
+    {
+        std::ofstream(customFile) << "ce jia\t测甲\nce yi\t测乙\nce bing\t测丙\nce ding\t测丁\nce wu\t测戊\n"
+                                     "ce ji\t测己\nce geng\t测庚\nce xin\t测辛\nce ren\t测壬\nce gui\t测癸\n"
+                                     "ce zi\t测子\n";
+    }
+    addon->reloadConfig();
+    fresh(ic.get());
+    type(ic.get(), "v<sp>2");
+    {
+        auto *list = common();
+        check(list && list->totalSize() == 11 && list->size() == 9 && list->hasNext(),
+              "常用语 11 条分两页：" + join(page(ic.get())));
+        if (list) {
+            list->next();
+        }
+        list = common();
+        const auto p2 = page(ic.get());
+        check(list && list->currentPage() == 1 && list->cursorIndex() == 0 && p2.size() == 2 &&
+                  p2[0] == "ce gui\u3000测癸" && p2[1] == "ce zi\u3000测子",
+              "常用语点下一页：第二页、光标在第一个：" + join(p2));
+        type(ic.get(), "2");
+        check(ic->committed == "测子", "常用语点下一页后按 2 选第二页第二个，实际 " + ic->committed);
+    }
+    fresh(ic.get());
+    type(ic.get(), "v<sp>2");
+    {
+        if (auto *list = common()) {
+            list->next();
+        }
+        type(ic.get(), "<sp>");
+        check(ic->committed == "测癸", "常用语点下一页后空格选第二页第一个，实际 " + ic->committed);
+    }
+    fresh(ic.get());
+    type(ic.get(), "v<sp>2");
+    {
+        if (auto *list = common()) {
+            list->next();
+        }
+        if (auto *list = common()) {
+            list->prev();
+        }
+        auto *list = common();
+        check(list && list->currentPage() == 0 && list->cursorIndex() == 0 && page(ic.get()).size() == 9,
+              "常用语点上一页：回到第一页");
+        if (list) {
+            list->nextCandidate();
+        }
+        type(ic.get(), "<sp>");
+        check(ic->committed == "测乙", "常用语列表 nextCandidate 后空格选第二个，实际 " + ic->committed);
+    }
+    fresh(ic.get());
+    type(ic.get(), "v<sp>2");
+    {
+        if (auto *list = common()) {
+            list->next();
+        }
+        if (auto list = ic->inputPanel().candidateList(); list && list->size() > 1) {
+            list->candidate(1).select(ic.get()); // 鼠标点第二页第二个
+        }
+        check(ic->committed == "测子", "常用语点下一页后点第二个，实际 " + ic->committed);
+    }
+    fresh(ic.get());
+
     // 删掉文件再 reload：回到默认
     std::filesystem::remove(configDir + "/wowtype.conf");
     std::filesystem::remove(customFile);
@@ -1724,6 +1990,36 @@ void runCases(Instance &instance) {
     tapKey(ic.get(), FcitxKey_Shift_R);  // 回中文
     check(ic->committed == " L" && ic->passed == "i",
           "英文模式汉字后第一个字母补空格，后面的照常交给应用：[" + ic->committed + "] " + ic->passed);
+    // 按下 Shift 还没松开，输入框就被重置（Shift+点鼠标选字）或者失去焦点又回来：再松开不算单按 Shift，
+    // 还是中文；之后单按 Shift 照常切换
+    for (const bool blur : {false, true}) {
+        fresh(ic.get());
+        surround("");
+        KeyEvent press(ic.get(), Key(FcitxKey_Shift_L), false);
+        ic->keyEvent(press);
+        if (blur) {
+            ic->focusOut();
+            ic->focusIn();
+        } else {
+            ic->reset();
+        }
+        KeyEvent release(ic.get(), Key(FcitxKey_Shift_L, KeyState::Shift), true);
+        const bool took = ic->keyEvent(release);
+        type(ic.get(), "nihao<sp>");
+        const bool chinese = ic->committed == "你好";
+        check(!took && chinese,
+              std::string(blur ? "按下 Shift 后失去焦点又回来" : "按下 Shift 后输入框被重置") +
+                  "：再松开不切中英文，实际上屏「" + ic->committed + "」交给应用「" + ic->passed + "」");
+        if (!chinese) {
+            tapKey(ic.get(), FcitxKey_Shift_L); // 切走了就切回来，别带坏后面的用例
+        }
+    }
+    fresh(ic.get());
+    tapKey(ic.get(), FcitxKey_Shift_L);
+    type(ic.get(), "ni");
+    tapKey(ic.get(), FcitxKey_Shift_L);
+    check(ic->committed.empty() && ic->passed == "ni", "之后单按 Shift 照常切到英文再切回来，实际交给应用「" +
+                                                          ic->passed + "」上屏「" + ic->committed + "」");
     fresh(ic.get());
     surround("第 ");
     type(ic.get(), "5");
@@ -1809,12 +2105,61 @@ void runCases(Instance &instance) {
         fresh(ic.get());
         type(ic.get(), "ceshiciku<sp>");
         check(ic->committed == "测试词库", "只改别的设置时词库不动，实际 " + ic->committed);
+        // 用户词库、输入习惯的文件在、却读不出来（这里写成不是 UTF-8 的）：下面重新载入以后，第一次存之前
+        // 先把原文件改名留成 <原名>.bad-<时间戳>，不拿只有这次运行里学到的内容把它盖掉
+        const std::filesystem::path userDict = std::getenv("WOWTYPE_USER_DICT");
+        const std::filesystem::path historyFile = userDict.parent_path() / "history.tsv";
+        const std::string garbage = "ni hao\t你好\t1\n\xff\xfe\xfd 坏了\n";
+        const auto slurp = [](const std::filesystem::path &file) {
+            std::ifstream in(file, std::ios::binary);
+            return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        };
+        const auto backups = [](const std::filesystem::path &file) {
+            std::vector<std::filesystem::path> found;
+            const std::string prefix = file.filename().string() + ".bad-";
+            std::error_code ec;
+            for (const auto &entry : std::filesystem::directory_iterator(file.parent_path(), ec)) {
+                if (entry.path().filename().string().rfind(prefix, 0) == 0) {
+                    found.push_back(entry.path());
+                }
+            }
+            return found;
+        };
+        // 攒着的先存掉（失去焦点就存）：重新载入之前就不会再存一次、把下面写的坏文件换掉
+        ic->focusOut();
+        ic->focusIn();
+        std::ofstream(userDict, std::ios::binary) << garbage;
+        std::ofstream(historyFile, std::ios::binary) << garbage;
         // 词库文件被换掉（更新了词库包），路径没变：reloadConfig 时也重新载入
         std::ofstream(dictFile) << "ping guo\t平锅\t1000000\nce shi ci ku\t测试词库\t100\n"
                                    "geng xin le\t更新了\t100\n";
         addon->reloadConfig();
         const bool reloaded = waitFor("gengxinle", "更新了");
         check(reloaded, "词库文件更新后重新载入：" + join(page(ic.get())));
+        check(slurp(userDict) == garbage && slurp(historyFile) == garbage && backups(userDict).empty() &&
+                  backups(historyFile).empty(),
+              "读不出来的用户词库、输入习惯：还没到存的时候原样留着");
+        for (int round = 1; round <= 2; ++round) {
+            // 学到一个词，失去焦点时存。第一次存之前改名留底，第二次不再留
+            fresh(ic.get());
+            type(ic.get(), "gengxinle<sp>");
+            ic->focusOut();
+            ic->focusIn();
+            const auto dictKept = backups(userDict);
+            const auto historyKept = backups(historyFile);
+            const std::string dictNow = slurp(userDict);
+            const std::string historyNow = slurp(historyFile);
+            check(dictKept.size() == 1 && slurp(dictKept[0]) == garbage && historyKept.size() == 1 &&
+                      slurp(historyKept[0]) == garbage,
+                  "读不出来的用户词库、输入习惯存之前改名留成 .bad-<时间戳>，只留一次（第 " +
+                      std::to_string(round) + " 次存）：" + std::to_string(dictKept.size()) + " / " +
+                      std::to_string(historyKept.size()) + " 份");
+            check(!dictNow.empty() && dictNow.find('\xff') == std::string::npos &&
+                      historyNow.find("更新了") != std::string::npos &&
+                      historyNow.find('\xff') == std::string::npos,
+                  "新学到的另存成好的文件（第 " + std::to_string(round) + " 次存）");
+        }
+        fresh(ic.get());
         // 换回来
         std::filesystem::remove(configDir + "/wowtype.conf");
         if (!savedLexicon.empty()) {
@@ -1963,6 +2308,31 @@ void runTranslateCase(Instance &instance, std::function<void()> done) {
                  [](HarnessInputContext *ic) {
                      return ic->committed.empty() && preedit(ic).empty() && inlineText(ic).empty() &&
                             page(ic).empty();
+                 }});
+    // 「译」里选的词进了原文、没有上屏，引擎也学到了：失去焦点时照样存用户词库和输入习惯
+    // （以前只在上屏时数，只在「译」里打字的话一条都不存）
+    s.push_back({"只在「译」里选了词：失去焦点时也存用户词库",
+                 [reset](HarnessInputContext *ic) {
+                     reset(ic);
+                     // 前面上屏攒着的先存掉（失去焦点就存），再把文件删了：下面只在「译」里选一次词
+                     ic->focusOut();
+                     ic->focusIn();
+                     const std::filesystem::path dict = std::getenv("WOWTYPE_USER_DICT");
+                     std::error_code ec;
+                     std::filesystem::remove(dict, ec);
+                     std::filesystem::remove(dict.parent_path() / "history.tsv", ec);
+                     type(ic, "nihao<sp>");
+                     check(ic->committed.empty() && preedit(ic) == "你好", "互译：选的词进了原文，没上屏");
+                     ic->focusOut();
+                     ic->focusIn();
+                 },
+                 [](HarnessInputContext *ic) {
+                     const std::filesystem::path dict = std::getenv("WOWTYPE_USER_DICT");
+                     std::ifstream in(dict.parent_path() / "history.tsv");
+                     const std::string history((std::istreambuf_iterator<char>(in)),
+                                               std::istreambuf_iterator<char>());
+                     return ic->committed.empty() && std::filesystem::exists(dict) &&
+                            history.find("你好") != std::string::npos;
                  }});
     s.push_back({"数字进原文；打拼音时原文框里带着前面的原文",
                  [reset](HarnessInputContext *ic) {
@@ -2491,6 +2861,25 @@ void runVoiceNoModelCase(Instance &instance, std::function<void()> done) {
                    s.name + "：打字时提示收起，实际 " + s.ic->inputPanel().auxUp().toString());
              type(s.ic.get(), "<esc>");
              std::printf("语音·没有模型：只提示去设置里下载，没有下载\n");
+         }},
+        {54,
+         [](VoiceScript &s) {
+             // 按住语音键时焦点切走：松开的那一下到不了输入法。回来后第一次按语音键照样有反应
+             // （以前被当成还按着时的自动重复吃掉）
+             KeyEvent down(s.ic.get(), Key(FcitxKey_Alt_R), false);
+             s.ic->keyEvent(down);
+             s.ic->focusOut();
+             s.ic->focusIn();
+             check(s.ic->inputPanel().auxUp().empty(),
+                   s.name + "：按住语音键时失去焦点，提示收起，实际 " + s.ic->inputPanel().auxUp().toString());
+             KeyEvent again(s.ic.get(), Key(FcitxKey_Alt_R), false);
+             const bool took = s.ic->keyEvent(again);
+             const std::string aux = s.ic->inputPanel().auxUp().toString();
+             check(took && aux.find("设置") != std::string::npos,
+                   s.name + "：按住语音键时切走焦点，回来后第一次按照样有反应，实际 " + aux);
+             KeyEvent up(s.ic.get(), Key(FcitxKey_Alt_R, KeyState::Alt), true);
+             check(s.ic->keyEvent(up), s.name + "：这次松开也被接住");
+             type(s.ic.get(), "ni<esc>");
          }},
     };
     runVoiceScript(instance, "语音·没有模型", steps, done);

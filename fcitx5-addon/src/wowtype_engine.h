@@ -361,6 +361,13 @@ inline void loadWowtypeConfig(WowtypeConfig &config, const fcitx::RawConfig &fil
 
 class WowtypeEngine;
 
+/// 后台载入的结果：核心（失败是空的），还有哪个用户文件在、却没读出来。
+struct WowtypeLoaded {
+    WowtypeEngineHandle *core = nullptr;
+    bool userDictUnread = false;
+    bool historyUnread = false;
+};
+
 /// 会话总线上的 org.wowtype.Input：外部命令切中 / 英 / 译（vim 退出插入模式切英文，#98）。
 ///   busctl --user call org.wowtype.Input /org/wowtype/Input org.wowtype.Input1 SetMode s en
 class WowtypeControl : public fcitx::dbus::ObjectVTable<WowtypeControl> {
@@ -414,11 +421,16 @@ public:
     void choosePanelItem(fcitx::InputContext *ic, WowtypeState *state, std::size_t index);
     /// 展开的候选面板里点了第 row 行：光标在这行就选光标处的词，否则选这行第一个。
     void selectGridRow(fcitx::InputContext *ic, WowtypeState *state, std::size_t row);
+    /// 工具栏 / 表情面板 / 展开面板的候选框上点了翻页按钮、滚了滚轮：和键盘上按 sym（Page Up /
+    /// Page Down、上下键）一样交给会话，照会话的页和光标重画。面板的页码、光标只在会话里有一份。
+    void panelListKey(fcitx::InputContext *ic, WowtypeState *state, fcitx::KeySym sym);
     /// 互译：上屏译文；还没译好就记下来，好了再上屏。
 
 private:
     /// 词库在后台线程载入；载入好之前 core_ 为空，按键照常进编辑区。
     bool coreReady();
+    /// 后台载入完了（loading_ 已经就绪，或者愿意等）：收下核心和「哪个用户文件没读出来」。
+    void takeLoaded();
     /// 配置里换了词库：存好用户词、清掉各输入框的编辑状态，在后台换新词库。
     /// 上一次载入还没完就先记着，载完再换（不在主线程上等）。
     void maybeSwitchLexicon();
@@ -474,7 +486,7 @@ private:
     void fillTranslateView(fcitx::InputContext *ic, WowtypeState *state, fcitx::InputPanel &panel);
 
     // 表情面板（快捷键打开，打拼音或英文搜 emoji 和符号）
-    void fillToolPanel(fcitx::InputPanel &panel, WowtypeState *state);
+    void fillToolPanel(fcitx::InputContext *ic, WowtypeState *state);
     /// 剪贴板历史：从 fcitx5 的 clipboard 插件拿最新一条交给核心（没有这个插件就什么都不做）。
     void sampleClipboard(fcitx::InputContext *ic);
 
@@ -501,10 +513,13 @@ private:
     void refreshCandidates(WowtypeState *state);
     /// 会话的候选重算过才重新抄；返回 true 表示重抄了。页码、光标每次都抄。
     bool syncView(WowtypeState *state);
-    void fillGridPanel(fcitx::InputPanel &panel, WowtypeState *state);
+    void fillGridPanel(fcitx::InputContext *ic, WowtypeState *state);
     std::string segmentedRemaining(WowtypeState *state);
     /// 会话上屏以后：上屏 frame->commit、清空外壳的状态；frame->learned 时攒着存用户词库。
     void finishCommit(fcitx::InputContext *ic, WowtypeState *state, const WowtypeFrame *frame);
+    /// 会话这次调用里引擎学到了选词（frame->learned）就记一次，返回记了没有。会话给的每个 frame 都要过
+    /// 一遍（finishCommit 里也是它）：「译」里选的词进了原文、没有要上屏的字，也是学到了。
+    bool countLearned(const WowtypeFrame *frame);
     /// 上屏已选的词 + 还没选的原始输入（切输入法、打到一半切英文），原始输入也记一次选词。
     void commitInput(fcitx::InputContext *ic, WowtypeState *state);
     /// 选中光标所在的候选；没有候选时上屏原始输入（交给会话按一次空格）。
@@ -538,14 +553,18 @@ private:
 
     fcitx::Instance *instance_;
     WowtypeEngineHandle *core_;
-    std::future<WowtypeEngineHandle *> loading_;
+    std::future<WowtypeLoaded> loading_;
+    /// 用户词库（user.tsv）/ 输入习惯（history.tsv）文件在、这次载入却没读出来：存之前先把原文件改名成
+    /// <原名>.bad-<时间戳> 留着（maybeSaveUserDict），不然会被只有这次运行里学到的内容盖掉。
+    bool userDictUnread_ = false;
+    bool historyUnread_ = false;
     /// core_ / loading_ 用的词库文件，和配置要的词库文件（不一样就该换了）。
     std::string lexicon_;
     std::string wantedLexicon_;
     /// lexicon_ 载入时的 (大小, 修改时间)：同一个路径的文件被换掉（更新了词库包）也要重载。
     std::pair<std::uintmax_t, long long> lexiconStamp_{0, 0};
     fcitx::FactoryFor<WowtypeState> factory_;
-    /// 距离上次保存用户词库的上屏次数。
+    /// 距离上次保存用户词库，引擎学到了几次（上屏、「译」里选词进原文、忘掉学错的词）。
     int unsavedCommits_ = 0;
 
     WowtypeConfig config_;

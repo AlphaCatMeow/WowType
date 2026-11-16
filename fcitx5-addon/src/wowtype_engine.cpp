@@ -244,8 +244,37 @@ WowtypeEngineHandle *openCore(const std::string &lexicon, std::string &lm) {
     return core;
 }
 
+/// 载入失败的文件（还在的话）改名成 <原名>.bad-<时间戳> 留着，免得接下来存的把它盖掉：
+/// 盖上去的只有这次运行里学到的，原来攒的全没了。返回 true 表示可以往 path 存了
+/// （改好名了，或者文件已经不在了）；改不了名返回 false，这次先不存。
+bool setAsideUnreadFile(const std::string &path, const char *what) {
+    std::error_code ec;
+    if (!std::filesystem::exists(std::filesystem::symlink_status(path, ec))) {
+        return true;
+    }
+    char stamp[32] = "0";
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+    if (localtime_r(&now, &local)) {
+        std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local);
+    }
+    std::string backup = path + ".bad-" + stamp;
+    for (int i = 2; std::filesystem::exists(std::filesystem::symlink_status(backup, ec)); ++i) {
+        backup = path + ".bad-" + stamp + "-" + std::to_string(i);
+    }
+    std::filesystem::rename(path, backup, ec);
+    if (ec) {
+        WLOG_W() << "WowType: " << what << " " << path << " 启动时没读出来，想改名留着也没改成（"
+                 << ec.message() << "），这次先不存，免得把它盖掉";
+        return false;
+    }
+    WLOG_W() << "WowType: " << what << " " << path << " 启动时没读出来，原文件改名留在 " << backup
+             << "，新学到的另存";
+    return true;
+}
+
 /// 在后台线程里做的事：载入词库、语言模型、各种开关和用户词。
-WowtypeEngineHandle *loadCore(const std::string &userDict, std::string lexicon) {
+WowtypeLoaded loadCore(const std::string &userDict, std::string lexicon) {
     if (lexicon.ends_with("/demo_lexicon.tsv")) {
         WLOG_W() << "WowType: 没找到 lexicon.tsv，用 demo 词典（只有几十个词）";
     }
@@ -272,8 +301,10 @@ WowtypeEngineHandle *loadCore(const std::string &userDict, std::string lexicon) 
         WLOG_E() << "WowType: 初始化 Rust 核心失败，词典=" << lexicon
                       << "，错误="
                       << (wowtype_last_error() ? wowtype_last_error() : "unknown");
-        return nullptr;
+        return {};
     }
+    WowtypeLoaded result;
+    result.core = core;
 
     const std::string english = findDataFile("WOWTYPE_ENGLISH", "english.txt");
     if (!english.empty()) {
@@ -303,18 +334,28 @@ WowtypeEngineHandle *loadCore(const std::string &userDict, std::string lexicon) 
                          << (wowtype_last_error() ? wowtype_last_error() : "unknown");
         }
     }
-    if (!userDict.empty()) {
+    // 文件在、却没读出来（读不了、不是 UTF-8……）：记下来，存之前先把原文件改名留着（maybeSaveUserDict），
+    // 不然下次存盘会用只有这次运行里学到的内容把它盖掉。文件不在是第一次用，不算
+    const auto present = [](const std::string &path) {
+        std::error_code ec;
+        return std::filesystem::exists(std::filesystem::symlink_status(path, ec));
+    };
+    if (!userDict.empty() && present(userDict)) {
         const int loaded = wowtype_engine_load_user_dict(core, userDict.c_str());
         if (loaded > 0) {
             WLOG_I() << "WowType: 载入用户词 " << loaded << " 条";
+        } else if (loaded < 0) {
+            result.userDictUnread = true;
+            WLOG_W() << "WowType: 用户词库载入失败 " << userDict << "："
+                         << (wowtype_last_error() ? wowtype_last_error() : "unknown");
         }
     }
-    if (const std::string history = historyPathFor(userDict);
-        !history.empty() && std::filesystem::exists(history)) {
+    if (const std::string history = historyPathFor(userDict); !history.empty() && present(history)) {
         const int loaded = wowtype_engine_load_history(core, history.c_str());
         if (loaded >= 0) {
             WLOG_I() << "WowType: 载入输入习惯 " << loaded << " 条";
         } else {
+            result.historyUnread = true;
             WLOG_W() << "WowType: 输入习惯载入失败 " << history << "："
                          << (wowtype_last_error() ? wowtype_last_error() : "unknown");
         }
@@ -324,7 +365,17 @@ WowtypeEngineHandle *loadCore(const std::string &userDict, std::string lexicon) 
                         .count();
     WLOG_I() << "WowType: 词典 " << lexicon << " 载入完成，用时 " << ms << " ms"
                  << (lm.empty() ? "（没有语言模型）" : "，语言模型 " + lm);
-    return core;
+    return result;
+}
+
+/// 打字途中会话不管的键里，照常交给应用的那些：修饰键和锁定键本身（Shift / Ctrl / Alt / Super、
+/// 大写锁定、数字锁定、AltGr、切换键盘布局的键），还有认不出来的键（没有 keysym）。别的都吃掉。
+bool passesWhileComposing(fcitx::KeySym sym) {
+    const auto value = static_cast<uint32_t>(sym);
+    return sym == FcitxKey_None || sym == FcitxKey_VoidSymbol ||
+           (value >= FcitxKey_Shift_L && value <= FcitxKey_Hyper_R) ||
+           (value >= FcitxKey_ISO_Lock && value <= FcitxKey_ISO_Level5_Lock) ||
+           sym == FcitxKey_Mode_switch || sym == FcitxKey_Num_Lock || sym == FcitxKey_Scroll_Lock;
 }
 
 /// 候选窗里显示的样子：自定义词里的换行、制表符画成 ⏎、⇥，不把候选窗撑乱。
@@ -534,6 +585,9 @@ public:
     }
     void clear() {
         wowtype_session_reset(session_, 0);
+        // 按下了 Shift 还没松开，输入框就被重置、失去焦点（Shift+点鼠标选字、按着 Shift 换窗口）：和按住
+        // Shift 时按了别的键一样报给会话，再松开就不算单按 Shift、不切中英文
+        sessionKey(FcitxKey_VoidSymbol, 0, WOWTYPE_KEY_ACTION_OBSERVE);
         forgetCandidates();
     }
 
@@ -607,6 +661,62 @@ private:
 
     WowtypeState *state_;
     bool mirroring_ = false;
+};
+
+/// 工具栏、表情面板、展开面板的列表：候选框上的翻页按钮、滚轮和直接调列表的，都和键盘上按
+/// Page Up / Page Down、上下键一样交给会话，再照会话的光标整个重画（WowtypeEngine::panelListKey）。
+/// 让 CommonCandidateList 自己翻的话只是换了显示的那一页，会话的光标还在原来那一页，接着按数字、
+/// 空格选的是原来那页的。
+class WowtypePanelList final : public fcitx::CommonCandidateList {
+public:
+    WowtypePanelList(WowtypeEngine *engine, fcitx::InputContext *ic, WowtypeState *state)
+        : engine_(engine), ic_(ic->watch()), state_(state) {}
+
+    void prev() override { act(FcitxKey_Page_Up); }
+    void next() override { act(FcitxKey_Page_Down); }
+    void prevCandidate() override {
+        // 第一个（展开面板是第一行）上不再往上：展开面板里那是收起
+        if (globalCursorIndex() > 0) {
+            act(FcitxKey_Up);
+        }
+    }
+    void nextCandidate() override { act(FcitxKey_Down); }
+    void setPage(int page) override {
+        // 一屏一屏翻会话。重画会换掉输入框的列表，翻完之前自己先留着
+        const auto keep = shown();
+        if (!keep) {
+            return;
+        }
+        const int steps = page - currentPage();
+        for (int i = 0; i < std::min(std::abs(steps), 1000) && ic_.get(); ++i) {
+            engine_->panelListKey(ic_.get(), state_, steps < 0 ? FcitxKey_Page_Up : FcitxKey_Page_Down);
+        }
+    }
+
+    /// 建列表时照会话的光标摆好（只摆自己）：setGlobalCursorIndex 只设光标、不翻页，先翻到光标那一页，
+    /// 不然光标走到后面几页时看不到。
+    void place(std::size_t page, std::size_t cursor) {
+        CommonCandidateList::setPage(static_cast<int>(page));
+        setGlobalCursorIndex(static_cast<int>(cursor));
+    }
+
+private:
+    /// 输入框现在显示的就是这个列表才返回它（不是的话是一个过时的列表，不能拿它去翻会话）。
+    std::shared_ptr<fcitx::CandidateList> shown() const {
+        auto *ic = ic_.get();
+        auto list = ic ? ic->inputPanel().candidateList() : nullptr;
+        return list.get() == this ? list : nullptr;
+    }
+
+    void act(fcitx::KeySym sym) {
+        if (const auto keep = shown()) {
+            engine_->panelListKey(ic_.get(), state_, sym);
+        }
+    }
+
+    WowtypeEngine *engine_;
+    fcitx::TrackableObjectReference<fcitx::InputContext> ic_;
+    WowtypeState *state_;
 };
 
 } // namespace
@@ -813,7 +923,7 @@ void WowtypeEngine::maybeSwitchLexicon() {
         if (loading_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
             return; // 还在载入上一个：coreReady() 载完时再来
         }
-        core_ = loading_.get();
+        takeLoaded();
     }
     if (core_) {
         maybeSaveUserDict(true);
@@ -1105,7 +1215,7 @@ bool WowtypeEngine::canToggleMode() const {
 
 WowtypeEngine::~WowtypeEngine() {
     if (loading_.valid()) {
-        core_ = loading_.get();
+        takeLoaded();
     }
     // 会话借用引擎和翻译器：先让它们放开，再释放（ABI.md：要比会话活得久）
     instance_->inputContextManager().foreach([this](fcitx::InputContext *ic) {
@@ -1131,13 +1241,20 @@ WowtypeEngine::~WowtypeEngine() {
     }
 }
 
+void WowtypeEngine::takeLoaded() {
+    const WowtypeLoaded loaded = loading_.get();
+    core_ = loaded.core;
+    userDictUnread_ = loaded.userDictUnread;
+    historyUnread_ = loaded.historyUnread;
+}
+
 bool WowtypeEngine::coreReady() {
     if (core_) {
         return true;
     }
     if (loading_.valid() &&
         loading_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        core_ = loading_.get();
+        takeLoaded();
         if (wantedLexicon_ != lexicon_ || fileStamp(lexicon_) != lexiconStamp_) {
             // 载入途中配置换了词库：这个不用了，换新的
             maybeSwitchLexicon();
@@ -1171,30 +1288,51 @@ void WowtypeEngine::maybeSaveUserDict(bool force) {
     if (path.empty()) {
         return;
     }
-    const bool dictSaved = wowtype_engine_save_user_dict(core_, path.c_str()) == 0;
+    // 载入时没读出来的文件，第一次存之前先改名留着（只做一次；改不了名就先不存，下次再试）
+    if (userDictUnread_ && setAsideUnreadFile(path, "用户词库")) {
+        userDictUnread_ = false;
+    }
     const std::string history = historyPathFor(path);
-    const bool historySaved =
-        !history.empty() && wowtype_engine_save_history(core_, history.c_str()) == 0;
-    if (!historySaved) {
-        WLOG_W() << "WowType: 输入习惯保存失败 " << history << "："
-                     << (wowtype_last_error() ? wowtype_last_error() : "unknown");
+    if (historyUnread_ && (history.empty() || setAsideUnreadFile(history, "输入习惯"))) {
+        historyUnread_ = false;
+    }
+    bool dictSaved = false;
+    if (!userDictUnread_) {
+        dictSaved = wowtype_engine_save_user_dict(core_, path.c_str()) == 0;
+        if (!dictSaved) {
+            WLOG_W() << "WowType: 用户词库保存失败 " << path << "："
+                         << (wowtype_last_error() ? wowtype_last_error() : "unknown");
+        }
+    }
+    bool historySaved = false;
+    if (!historyUnread_) {
+        historySaved = !history.empty() && wowtype_engine_save_history(core_, history.c_str()) == 0;
+        if (!historySaved) {
+            WLOG_W() << "WowType: 输入习惯保存失败 " << history << "："
+                         << (wowtype_last_error() ? wowtype_last_error() : "unknown");
+        }
     }
     if (dictSaved && historySaved) {
         unsavedCommits_ = 0;
     }
 }
 
+bool WowtypeEngine::countLearned(const WowtypeFrame *frame) {
+    if (!frame || !frame->learned || !core_) {
+        return false;
+    }
+    ++unsavedCommits_;
+    return true;
+}
+
 void WowtypeEngine::finishCommit(fcitx::InputContext *ic, WowtypeState *state,
                                  const WowtypeFrame *frame) {
     // 会话已经清空编辑区、记过选词和上文、补好了空格；这里上屏、攒着存用户词库
     const std::string text = frame && frame->commit ? frame->commit : "";
-    const bool learned = frame && frame->learned;
+    const bool learned = countLearned(frame);
     if (ic && !text.empty()) {
         // 会话已经补好了空格；互译时攒原文也是会话做的，这里上屏的是译文、原文或不在互译时的字
         ic->commitString(text);
-    }
-    if (learned && core_ && !text.empty()) {
-        ++unsavedCommits_;
     }
     // 会话上屏时已经清好了它上屏的那部分，这里从不 reset 会话（reset 会把还在打的丢掉）：只丢掉抄的候选，
     // 会话还在打字就重新抄（五笔顶字：首选上屏，新打的字母开始下一个码；离开「译」：拼音留着接着打）
@@ -1339,13 +1477,22 @@ void WowtypeEngine::applySessionFrame(fcitx::InputContext *ic, WowtypeState *sta
         updateInputPanel(ic, state);
         return;
     }
+    // 没有要上屏的字也可能学到了：「译」里选的词进了原文，不在 frame->commit 里。也记一次、攒够了存，
+    // 不然只在「译」里打字的话，失去焦点、退出时一条都不存（frame 在下一次调会话前有效，先读出来）
+    const bool learned = countLearned(frame);
     if (!state->composing()) {
         state->forgetCandidates();
         updateInputPanel(ic, state);
+        if (learned) {
+            maybeSaveUserDict(false);
+        }
         return;
     }
     const bool wasExpanded = state->expanded_;
     const bool recopied = syncView(state);
+    if (learned) {
+        maybeSaveUserDict(false);
+    }
     if (recopied || wasExpanded || state->expanded_) {
         updateInputPanel(ic, state);
         return;
@@ -1452,7 +1599,7 @@ void WowtypeEngine::sampleClipboard(fcitx::InputContext *ic) {
     }
 }
 
-void WowtypeEngine::fillToolPanel(fcitx::InputPanel &panel, WowtypeState *state) {
+void WowtypeEngine::fillToolPanel(fcitx::InputContext *ic, WowtypeState *state) {
     // 工具栏（菜单、剪贴板、常用语）：竖排一列，一页 9 个，数字键选这一页的
     constexpr std::size_t kToolPageSize = 9;
     const std::size_t n = state->candidates_.size();
@@ -1460,17 +1607,35 @@ void WowtypeEngine::fillToolPanel(fcitx::InputPanel &panel, WowtypeState *state)
         return;
     }
     const std::size_t cursor = std::min(state->panelCursor_, n - 1);
-    auto list = std::make_unique<fcitx::CommonCandidateList>();
+    // 翻到哪一页由会话的光标定（鼠标翻页也交给会话），屏幕上的第 N 项就是按 N 选的那一项
+    auto list = std::make_unique<WowtypePanelList>(this, ic, state);
     list->setLayoutHint(fcitx::CandidateLayoutHint::Vertical);
     list->setPageSize(static_cast<int>(kToolPageSize));
     list->setSelectionKey(fcitx::Key::keyListFromString("1 2 3 4 5 6 7 8 9"));
     for (std::size_t i = 0; i < n; ++i) {
         list->append<WowtypeToolWord>(this, state, i, state->candidates_[i].text);
     }
-    // setGlobalCursorIndex 只设光标、不翻页：先翻到光标那一页，不然光标走到后面几页时看不到
-    list->setPage(static_cast<int>(cursor / kToolPageSize));
-    list->setGlobalCursorIndex(static_cast<int>(cursor));
-    panel.setCandidateList(std::move(list));
+    list->place(cursor / kToolPageSize, cursor);
+    ic->inputPanel().setCandidateList(std::move(list));
+}
+
+void WowtypeEngine::panelListKey(fcitx::InputContext *ic, WowtypeState *state, fcitx::KeySym sym) {
+    if (!ic || !state) {
+        return;
+    }
+    // 面板还开着才交给会话（没开着时这个键在会话里是别的意思）；不管怎样都照会话现在的样子重画
+    WowtypeSessionView view{};
+    view.size = sizeof(view);
+    const bool expanded = state->composing() &&
+                          wowtype_session_view(state->session_, &view) == 0 && view.expanded != 0;
+    if (state->panel() != WOWTYPE_TOOL_NONE || expanded) {
+        if (const WowtypeFrame *frame = sessionKey(ic, state, fcitx::Key(sym));
+            frame && frame->handled) {
+            applySessionFrame(ic, state, frame);
+            return;
+        }
+    }
+    updateInputPanel(ic, state);
 }
 
 void WowtypeEngine::choosePanelItem(fcitx::InputContext *ic, WowtypeState *state,
@@ -1535,9 +1700,9 @@ void WowtypeEngine::updateInputPanel(fcitx::InputContext *ic,
         }
         if (!state->candidates_.empty()) {
             if (open == WOWTYPE_TOOL_EMOJI || open == WOWTYPE_TOOL_SYMBOLS) {
-                fillGridPanel(panel, state);
+                fillGridPanel(ic, state);
             } else {
-                fillToolPanel(panel, state);
+                fillToolPanel(ic, state);
             }
         }
         ic->updatePreedit();
@@ -1574,7 +1739,7 @@ void WowtypeEngine::updateInputPanel(fcitx::InputContext *ic,
     }
 
     if (state->expanded_ && !state->candidates_.empty()) {
-        fillGridPanel(panel, state);
+        fillGridPanel(ic, state);
     } else if (!state->candidates_.empty()) {
         auto candidates = std::make_unique<WowtypeSessionList>(state);
         candidates->setLayoutHint(horizontal_
@@ -1606,7 +1771,7 @@ void WowtypeEngine::updateInputPanel(fcitx::InputContext *ic,
 /// 照微信输入法的样子：光标所在行标 １–６，光标处的词用〔〕框起来；同一屏里各列
 /// 按最宽的词补齐，这样上下键在同一列里走。classic UI 和 kimpanel 都只会画一行或
 /// 一列，画不了真正的网格，所以用全角字符拼出来。
-void WowtypeEngine::fillGridPanel(fcitx::InputPanel &panel, WowtypeState *state) {
+void WowtypeEngine::fillGridPanel(fcitx::InputContext *ic, WowtypeState *state) {
     static const char *kLabels[] = {"\uFF11", "\uFF12", "\uFF13",
                                     "\uFF14", "\uFF15", "\uFF16"};
     static_assert(sizeof(kLabels) / sizeof(kLabels[0]) == kGridCols);
@@ -1616,7 +1781,8 @@ void WowtypeEngine::fillGridPanel(fcitx::InputPanel &panel, WowtypeState *state)
     const std::size_t rows = (n + kGridCols - 1) / kGridCols;
     const std::size_t cursorRow = state->gridCursor_ / kGridCols;
 
-    auto list = std::make_unique<fcitx::CommonCandidateList>();
+    // 一屏一屏翻也交给会话（WowtypePanelList）：光标跟着到新的一屏，数字、空格选的是看到的这一屏
+    auto list = std::make_unique<WowtypePanelList>(this, ic, state);
     list->setLayoutHint(fcitx::CandidateLayoutHint::Vertical);
     list->setPageSize(static_cast<int>(kGridRows));
     list->setSelectionKey(fcitx::KeyList{}); // 不要行号：编号画在行里
@@ -1645,10 +1811,9 @@ void WowtypeEngine::fillGridPanel(fcitx::InputPanel &panel, WowtypeState *state)
             list->append<WowtypeGridRow>(this, state, r, std::move(line));
         }
     }
-    // 先翻到光标所在的那一屏（setGlobalCursorIndex 不翻页），下键走到第 7 行以后才看得到
-    list->setPage(static_cast<int>(cursorRow / kGridRows));
-    list->setGlobalCursorIndex(static_cast<int>(cursorRow));
-    panel.setCandidateList(std::move(list));
+    // 先翻到光标所在的那一屏，下键走到第 7 行以后才看得到
+    list->place(cursorRow / kGridRows, cursorRow);
+    ic->inputPanel().setCandidateList(std::move(list));
 }
 
 void WowtypeEngine::selectGridRow(fcitx::InputContext *ic, WowtypeState *state,
@@ -1712,8 +1877,12 @@ void WowtypeEngine::commitCandidate(fcitx::InputContext *ic,
     if (frame->commit) {
         finishCommit(ic, state, frame);
     } else {
-        // 句首词进了已选栈，剩下的拼音继续选
+        // 句首词进了已选栈，剩下的拼音继续选；「译」里是选的词进了原文（没有要上屏的字，学到了照样记）
+        const bool learned = countLearned(frame);
         refreshCandidates(state);
+        if (learned) {
+            maybeSaveUserDict(false);
+        }
     }
     updateInputPanel(ic, state);
 }
@@ -1838,21 +2007,19 @@ void WowtypeEngine::keyEvent(const fcitx::InputMethodEntry & /*entry*/,
             updateInputPanel(ic, state);
         }
 
-        // 标点、符号（先上屏候选再上屏标点）也由会话处理了；会话不管的只剩下面这些
-        // 编辑区里光标没法移动，这些键吃掉，免得应用里的光标乱跑
-        if (key.isCursorMove() || sym == FcitxKey_Tab || sym == FcitxKey_Delete) {
+        // 标点、符号（先上屏候选再上屏标点）也由会话处理了。会话不管的键（Home / End / Delete / Tab、
+        // 小键盘的 + - * / .、F1–F12、Insert、不是 ASCII 的键……）都吃掉：编辑区里的字还没上屏，
+        // 这时交给应用，应用里的光标会乱跑，小键盘的 + 排到「你好」前面，F5 把网页刷新掉。
+        // 修饰键、锁定键本身照常交给应用（按住 Ctrl 再按别的键、大写锁定），不然应用里对不上按下和松开
+        if (!passesWhileComposing(sym)) {
             event.filterAndAccept();
-            return;
         }
+        return;
     }
 
     // 没在打字时也交给会话：字母（大写原样保留，Hello、iPhone 要用到）开始编辑区；
     // 标点换成中文标点（半角样式、数字后面的、没有中文写法的 / + 交给应用）；
     // 汉字后面打数字要补空格时会话自己上屏（第5章）
-    // （打字途中的键上面已经交给过会话了，会话不管的交给应用）
-    if (state->composing()) {
-        return;
-    }
     if (const WowtypeFrame *frame = sessionKey(ic, state, key); frame && frame->handled) {
         applySessionFrame(ic, state, frame);
         event.filterAndAccept();
@@ -1922,6 +2089,9 @@ void WowtypeEngine::deactivate(const fcitx::InputMethodEntry &entry,
     if (voiceActive() && voiceIc_.get() == event.inputContext()) {
         cancelVoice();
     }
+    // 按住语音键时焦点切走（或者换了输入法）：松开的那一下到不了这里。不清掉的话，回来后第一次按语音键
+    // 会被当成还按着时的自动重复吃掉，没有反应
+    voiceKeyDown_ = false;
     reset(entry, event);
     maybeSaveUserDict(true);
 }
@@ -2009,6 +2179,8 @@ void WowtypeEngine::followSessionMode(fcitx::InputContext *ic, WowtypeState *sta
     const bool committed = frame->commit != nullptr;
     if (committed) {
         finishCommit(ic, state, frame);
+    } else {
+        countLearned(frame);
     }
     switchMode(ic, state, mode == WOWTYPE_MODE_ENGLISH, mode == WOWTYPE_MODE_TRANSLATE, true);
     if (committed || state->composing()) {
@@ -2043,6 +2215,8 @@ void WowtypeEngine::syncMode(fcitx::InputContext *ic, WowtypeState *state) {
         if (frame && frame->commit && ic) {
             finishCommit(ic, state, frame);
             updateInputPanel(ic, state);
+        } else {
+            countLearned(frame);
         }
     };
     if (want == WOWTYPE_MODE_TRANSLATE) {
