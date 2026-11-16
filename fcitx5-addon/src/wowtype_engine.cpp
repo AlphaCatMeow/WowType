@@ -234,8 +234,37 @@ WowtypeEngineHandle *openCore(const std::string &lexicon, std::string &lm) {
     return core;
 }
 
+/// 载入失败的文件（还在的话）改名成 <原名>.bad-<时间戳> 留着，免得接下来存的把它盖掉：
+/// 盖上去的只有这次运行里学到的，原来攒的全没了。返回 true 表示可以往 path 存了
+/// （改好名了，或者文件已经不在了）；改不了名返回 false，这次先不存。
+bool setAsideUnreadFile(const std::string &path, const char *what) {
+    std::error_code ec;
+    if (!std::filesystem::exists(std::filesystem::symlink_status(path, ec))) {
+        return true;
+    }
+    char stamp[32] = "0";
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+    if (localtime_r(&now, &local)) {
+        std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local);
+    }
+    std::string backup = path + ".bad-" + stamp;
+    for (int i = 2; std::filesystem::exists(std::filesystem::symlink_status(backup, ec)); ++i) {
+        backup = path + ".bad-" + stamp + "-" + std::to_string(i);
+    }
+    std::filesystem::rename(path, backup, ec);
+    if (ec) {
+        WLOG_W() << "WowType: " << what << " " << path << " 启动时没读出来，想改名留着也没改成（"
+                 << ec.message() << "），这次先不存，免得把它盖掉";
+        return false;
+    }
+    WLOG_W() << "WowType: " << what << " " << path << " 启动时没读出来，原文件改名留在 " << backup
+             << "，新学到的另存";
+    return true;
+}
+
 /// 在后台线程里做的事：载入词库、语言模型、各种开关和用户词。
-WowtypeEngineHandle *loadCore(const std::string &userDict, std::string lexicon) {
+WowtypeLoaded loadCore(const std::string &userDict, std::string lexicon) {
     if (lexicon.ends_with("/demo_lexicon.tsv")) {
         WLOG_W() << "WowType: 没找到 lexicon.tsv，用 demo 词典（只有几十个词）";
     }
@@ -262,8 +291,10 @@ WowtypeEngineHandle *loadCore(const std::string &userDict, std::string lexicon) 
         WLOG_E() << "WowType: 初始化 Rust 核心失败，词典=" << lexicon
                       << "，错误="
                       << (wowtype_last_error() ? wowtype_last_error() : "unknown");
-        return nullptr;
+        return {};
     }
+    WowtypeLoaded result;
+    result.core = core;
 
     const std::string english = findDataFile("WOWTYPE_ENGLISH", "english.txt");
     if (!english.empty()) {
@@ -293,18 +324,28 @@ WowtypeEngineHandle *loadCore(const std::string &userDict, std::string lexicon) 
                          << (wowtype_last_error() ? wowtype_last_error() : "unknown");
         }
     }
-    if (!userDict.empty()) {
+    // 文件在、却没读出来（读不了、不是 UTF-8……）：记下来，存之前先把原文件改名留着（maybeSaveUserDict），
+    // 不然下次存盘会用只有这次运行里学到的内容把它盖掉。文件不在是第一次用，不算
+    const auto present = [](const std::string &path) {
+        std::error_code ec;
+        return std::filesystem::exists(std::filesystem::symlink_status(path, ec));
+    };
+    if (!userDict.empty() && present(userDict)) {
         const int loaded = wowtype_engine_load_user_dict(core, userDict.c_str());
         if (loaded > 0) {
             WLOG_I() << "WowType: 载入用户词 " << loaded << " 条";
+        } else if (loaded < 0) {
+            result.userDictUnread = true;
+            WLOG_W() << "WowType: 用户词库载入失败 " << userDict << "："
+                         << (wowtype_last_error() ? wowtype_last_error() : "unknown");
         }
     }
-    if (const std::string history = historyPathFor(userDict);
-        !history.empty() && std::filesystem::exists(history)) {
+    if (const std::string history = historyPathFor(userDict); !history.empty() && present(history)) {
         const int loaded = wowtype_engine_load_history(core, history.c_str());
         if (loaded >= 0) {
             WLOG_I() << "WowType: 载入输入习惯 " << loaded << " 条";
         } else {
+            result.historyUnread = true;
             WLOG_W() << "WowType: 输入习惯载入失败 " << history << "："
                          << (wowtype_last_error() ? wowtype_last_error() : "unknown");
         }
@@ -314,7 +355,7 @@ WowtypeEngineHandle *loadCore(const std::string &userDict, std::string lexicon) 
                         .count();
     WLOG_I() << "WowType: 词典 " << lexicon << " 载入完成，用时 " << ms << " ms"
                  << (lm.empty() ? "（没有语言模型）" : "，语言模型 " + lm);
-    return core;
+    return result;
 }
 
 /// 打字途中会话不管的键里，照常交给应用的那些：修饰键和锁定键本身（Shift / Ctrl / Alt / Super、
@@ -869,7 +910,7 @@ void WowtypeEngine::maybeSwitchLexicon() {
         if (loading_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
             return; // 还在载入上一个：coreReady() 载完时再来
         }
-        core_ = loading_.get();
+        takeLoaded();
     }
     if (core_) {
         maybeSaveUserDict(true);
@@ -1161,7 +1202,7 @@ bool WowtypeEngine::canToggleMode() const {
 
 WowtypeEngine::~WowtypeEngine() {
     if (loading_.valid()) {
-        core_ = loading_.get();
+        takeLoaded();
     }
     // 会话借用引擎和翻译器：先让它们放开，再释放（ABI.md：要比会话活得久）
     instance_->inputContextManager().foreach([this](fcitx::InputContext *ic) {
@@ -1187,13 +1228,20 @@ WowtypeEngine::~WowtypeEngine() {
     }
 }
 
+void WowtypeEngine::takeLoaded() {
+    const WowtypeLoaded loaded = loading_.get();
+    core_ = loaded.core;
+    userDictUnread_ = loaded.userDictUnread;
+    historyUnread_ = loaded.historyUnread;
+}
+
 bool WowtypeEngine::coreReady() {
     if (core_) {
         return true;
     }
     if (loading_.valid() &&
         loading_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        core_ = loading_.get();
+        takeLoaded();
         if (wantedLexicon_ != lexicon_ || fileStamp(lexicon_) != lexiconStamp_) {
             // 载入途中配置换了词库：这个不用了，换新的
             maybeSwitchLexicon();
@@ -1227,13 +1275,29 @@ void WowtypeEngine::maybeSaveUserDict(bool force) {
     if (path.empty()) {
         return;
     }
-    const bool dictSaved = wowtype_engine_save_user_dict(core_, path.c_str()) == 0;
+    // 载入时没读出来的文件，第一次存之前先改名留着（只做一次；改不了名就先不存，下次再试）
+    if (userDictUnread_ && setAsideUnreadFile(path, "用户词库")) {
+        userDictUnread_ = false;
+    }
     const std::string history = historyPathFor(path);
-    const bool historySaved =
-        !history.empty() && wowtype_engine_save_history(core_, history.c_str()) == 0;
-    if (!historySaved) {
-        WLOG_W() << "WowType: 输入习惯保存失败 " << history << "："
-                     << (wowtype_last_error() ? wowtype_last_error() : "unknown");
+    if (historyUnread_ && (history.empty() || setAsideUnreadFile(history, "输入习惯"))) {
+        historyUnread_ = false;
+    }
+    bool dictSaved = false;
+    if (!userDictUnread_) {
+        dictSaved = wowtype_engine_save_user_dict(core_, path.c_str()) == 0;
+        if (!dictSaved) {
+            WLOG_W() << "WowType: 用户词库保存失败 " << path << "："
+                         << (wowtype_last_error() ? wowtype_last_error() : "unknown");
+        }
+    }
+    bool historySaved = false;
+    if (!historyUnread_) {
+        historySaved = !history.empty() && wowtype_engine_save_history(core_, history.c_str()) == 0;
+        if (!historySaved) {
+            WLOG_W() << "WowType: 输入习惯保存失败 " << history << "："
+                         << (wowtype_last_error() ? wowtype_last_error() : "unknown");
+        }
     }
     if (dictSaved && historySaved) {
         unsavedCommits_ = 0;

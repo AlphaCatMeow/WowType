@@ -2075,12 +2075,61 @@ void runCases(Instance &instance) {
         fresh(ic.get());
         type(ic.get(), "ceshiciku<sp>");
         check(ic->committed == "测试词库", "只改别的设置时词库不动，实际 " + ic->committed);
+        // 用户词库、输入习惯的文件在、却读不出来（这里写成不是 UTF-8 的）：下面重新载入以后，第一次存之前
+        // 先把原文件改名留成 <原名>.bad-<时间戳>，不拿只有这次运行里学到的内容把它盖掉
+        const std::filesystem::path userDict = std::getenv("WOWTYPE_USER_DICT");
+        const std::filesystem::path historyFile = userDict.parent_path() / "history.tsv";
+        const std::string garbage = "ni hao\t你好\t1\n\xff\xfe\xfd 坏了\n";
+        const auto slurp = [](const std::filesystem::path &file) {
+            std::ifstream in(file, std::ios::binary);
+            return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        };
+        const auto backups = [](const std::filesystem::path &file) {
+            std::vector<std::filesystem::path> found;
+            const std::string prefix = file.filename().string() + ".bad-";
+            std::error_code ec;
+            for (const auto &entry : std::filesystem::directory_iterator(file.parent_path(), ec)) {
+                if (entry.path().filename().string().rfind(prefix, 0) == 0) {
+                    found.push_back(entry.path());
+                }
+            }
+            return found;
+        };
+        // 攒着的先存掉（失去焦点就存）：重新载入之前就不会再存一次、把下面写的坏文件换掉
+        ic->focusOut();
+        ic->focusIn();
+        std::ofstream(userDict, std::ios::binary) << garbage;
+        std::ofstream(historyFile, std::ios::binary) << garbage;
         // 词库文件被换掉（更新了词库包），路径没变：reloadConfig 时也重新载入
         std::ofstream(dictFile) << "ping guo\t平锅\t1000000\nce shi ci ku\t测试词库\t100\n"
                                    "geng xin le\t更新了\t100\n";
         addon->reloadConfig();
         const bool reloaded = waitFor("gengxinle", "更新了");
         check(reloaded, "词库文件更新后重新载入：" + join(page(ic.get())));
+        check(slurp(userDict) == garbage && slurp(historyFile) == garbage && backups(userDict).empty() &&
+                  backups(historyFile).empty(),
+              "读不出来的用户词库、输入习惯：还没到存的时候原样留着");
+        for (int round = 1; round <= 2; ++round) {
+            // 学到一个词，失去焦点时存。第一次存之前改名留底，第二次不再留
+            fresh(ic.get());
+            type(ic.get(), "gengxinle<sp>");
+            ic->focusOut();
+            ic->focusIn();
+            const auto dictKept = backups(userDict);
+            const auto historyKept = backups(historyFile);
+            const std::string dictNow = slurp(userDict);
+            const std::string historyNow = slurp(historyFile);
+            check(dictKept.size() == 1 && slurp(dictKept[0]) == garbage && historyKept.size() == 1 &&
+                      slurp(historyKept[0]) == garbage,
+                  "读不出来的用户词库、输入习惯存之前改名留成 .bad-<时间戳>，只留一次（第 " +
+                      std::to_string(round) + " 次存）：" + std::to_string(dictKept.size()) + " / " +
+                      std::to_string(historyKept.size()) + " 份");
+            check(!dictNow.empty() && dictNow.find('\xff') == std::string::npos &&
+                      historyNow.find("更新了") != std::string::npos &&
+                      historyNow.find('\xff') == std::string::npos,
+                  "新学到的另存成好的文件（第 " + std::to_string(round) + " 次存）");
+        }
+        fresh(ic.get());
         // 换回来
         std::filesystem::remove(configDir + "/wowtype.conf");
         if (!savedLexicon.empty()) {

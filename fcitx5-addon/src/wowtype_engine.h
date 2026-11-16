@@ -361,6 +361,13 @@ inline void loadWowtypeConfig(WowtypeConfig &config, const fcitx::RawConfig &fil
 
 class WowtypeEngine;
 
+/// 后台载入的结果：核心（失败是空的），还有哪个用户文件在、却没读出来。
+struct WowtypeLoaded {
+    WowtypeEngineHandle *core = nullptr;
+    bool userDictUnread = false;
+    bool historyUnread = false;
+};
+
 /// 会话总线上的 org.wowtype.Input：外部命令切中 / 英 / 译（vim 退出插入模式切英文，#98）。
 ///   busctl --user call org.wowtype.Input /org/wowtype/Input org.wowtype.Input1 SetMode s en
 class WowtypeControl : public fcitx::dbus::ObjectVTable<WowtypeControl> {
@@ -422,6 +429,8 @@ public:
 private:
     /// 词库在后台线程载入；载入好之前 core_ 为空，按键照常进编辑区。
     bool coreReady();
+    /// 后台载入完了（loading_ 已经就绪，或者愿意等）：收下核心和「哪个用户文件没读出来」。
+    void takeLoaded();
     /// 配置里换了词库：存好用户词、清掉各输入框的编辑状态，在后台换新词库。
     /// 上一次载入还没完就先记着，载完再换（不在主线程上等）。
     void maybeSwitchLexicon();
@@ -544,7 +553,11 @@ private:
 
     fcitx::Instance *instance_;
     WowtypeEngineHandle *core_;
-    std::future<WowtypeEngineHandle *> loading_;
+    std::future<WowtypeLoaded> loading_;
+    /// 用户词库（user.tsv）/ 输入习惯（history.tsv）文件在、这次载入却没读出来：存之前先把原文件改名成
+    /// <原名>.bad-<时间戳> 留着（maybeSaveUserDict），不然会被只有这次运行里学到的内容盖掉。
+    bool userDictUnread_ = false;
+    bool historyUnread_ = false;
     /// core_ / loading_ 用的词库文件，和配置要的词库文件（不一样就该换了）。
     std::string lexicon_;
     std::string wantedLexicon_;
