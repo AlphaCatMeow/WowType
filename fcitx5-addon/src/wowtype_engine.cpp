@@ -85,10 +85,20 @@ std::string findDataFile(const char *envName, const std::string &fileName) {
     }
     std::error_code ec;
     const std::string user = userDataDir();
+    const std::string system = std::string(kSystemDataDir) + "/" + fileName;
     if (!user.empty() && std::filesystem::exists(user + "/" + fileName, ec)) {
+        // 从源码装过的会在用户目录放一份词库；后来装了安装包，系统目录里的是新版，
+        // 用户目录那份照样优先、而且一直用下去。比系统目录的旧就在日志里提一句
+        std::error_code userEc;
+        std::error_code systemEc;
+        const auto userTime = std::filesystem::last_write_time(user + "/" + fileName, userEc);
+        const auto systemTime = std::filesystem::last_write_time(system, systemEc);
+        if (!userEc && !systemEc && systemTime > userTime) {
+            WLOG_W() << "WowType: 用的是 " << user << "/" << fileName << "，它比 " << system
+                     << " 旧；想用安装包带的新版就把用户目录这份删掉或改名";
+        }
         return user + "/" + fileName;
     }
-    const std::string system = std::string(kSystemDataDir) + "/" + fileName;
     if (std::filesystem::exists(system, ec)) {
         return system;
     }
