@@ -9,6 +9,11 @@
 //! 分词用词库：每段汉字取词频乘积最大的切法（最长 8 个字一个词）。
 //! 句号、问号、叹号、分号、换行之后算句首（前一个词是 `<s>`）；逗号等只断开、不算句首。
 //!
+//! 整词内部的搭配也记：切出来的多字词（我要、不知道）在不许用它自己的前提下再切一次（我 | 要、不 | 知道），
+//! 内部相邻两段也记一次搭配。不这样做的话，词库里有「我要」「我会」「我觉得」，整词总是赢，
+//! （我, 要）这类最常见的搭配一次都数不到：先上屏「我」再打 yao 时，「腰」比「要」分还高。
+//! `--no-split-compounds` 关掉。
+//!
 //! 选项：`--threads N`、`--min-count N`、`--max-bigrams N`、`--min-unigram N`、
 //! `--max-chars N`（只读前 N 个字，试跑用）、`--save-counts 文件`（把计数存下来）、
 //! `--from-counts 文件`（不读语料，用存下来的计数换参数重新出模型）。
@@ -110,6 +115,11 @@ fn load_dict(lexicon: &str, s2t: Option<&str>) -> Dict {
 
 /// 一段汉字按词频最大切分，返回词编号（不认识的单字是 OOV）。
 fn segment(dict: &Dict, run: &str, out: &mut Vec<u32>) {
+    segment_limited(dict, run, MAX_WORD_CHARS, out);
+}
+
+/// 同 [`segment`]，但一个词最多 max_chars 个字（再切整词用：不许用它自己）。
+fn segment_limited(dict: &Dict, run: &str, max_chars: usize, out: &mut Vec<u32>) {
     let offs: Vec<usize> = run
         .char_indices()
         .map(|(i, _)| i)
@@ -120,7 +130,7 @@ fn segment(dict: &Dict, run: &str, out: &mut Vec<u32>) {
     let mut back = vec![(0usize, OOV); n + 1];
     best[0] = 0.0;
     for i in 1..=n {
-        for l in 1..=MAX_WORD_CHARS.min(i) {
+        for l in 1..=max_chars.min(i) {
             let j = i - l;
             if best[j] == f64::NEG_INFINITY {
                 continue;
@@ -152,6 +162,33 @@ struct Local {
     unigram: Vec<u64>,
     bigram: FxMap<u64, u32>,
     tokens: u64,
+    /// 整词内部的搭配也记（见文件头）。
+    split_compounds: bool,
+    inner: Vec<u32>,
+}
+
+impl Local {
+    fn add_bigram(&mut self, prev: u32, cur: u32) {
+        *self.bigram.entry((prev as u64) << 32 | cur as u64).or_insert(0) += 1;
+    }
+
+    /// 多字词 id 再切一次（不许用它自己），内部相邻两段各记一次搭配；切不出全是词库词的就不记。
+    fn add_inner(&mut self, dict: &Dict, id: u32) {
+        let word = &dict.names[id as usize];
+        let n = word.chars().count();
+        if n < 2 {
+            return;
+        }
+        let mut inner = std::mem::take(&mut self.inner);
+        inner.clear();
+        segment_limited(dict, word, n - 1, &mut inner);
+        if inner.len() >= 2 && !inner.contains(&OOV) {
+            for pair in inner.windows(2) {
+                self.add_bigram(pair[0], pair[1]);
+            }
+        }
+        self.inner = inner;
+    }
 }
 
 fn count_line(dict: &Dict, line: &str, local: &mut Local, run: &mut String, ids: &mut Vec<u32>) {
@@ -175,10 +212,10 @@ fn count_line(dict: &Dict, line: &str, local: &mut Local, run: &mut String, ids:
             local.unigram[id as usize] += 1;
             local.tokens += 1;
             if let Some(p) = prev {
-                *local
-                    .bigram
-                    .entry((p as u64) << 32 | id as u64)
-                    .or_insert(0) += 1;
+                local.add_bigram(p, id);
+            }
+            if local.split_compounds {
+                local.add_inner(dict, id);
             }
             prev = Some(id);
         }
@@ -211,6 +248,7 @@ fn main() {
     let mut max_chars = u64::MAX;
     let mut config = BuildConfig::default();
     let mut save_counts: Option<String> = None;
+    let mut split_compounds = true;
     let mut from_counts: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
@@ -230,6 +268,7 @@ fn main() {
             "--min-unigram" => config.min_unigram = take().parse().unwrap_or(20),
             "--save-counts" => save_counts = Some(take()),
             "--from-counts" => from_counts = Some(take()),
+            "--no-split-compounds" => split_compounds = false,
             "-h" | "--help" => {
                 println!("用法：wowtype-lmbuild --lexicon lexicon.tsv [--s2t s2t.tsv] --out words.lm 语料...");
                 return;
@@ -267,6 +306,7 @@ fn main() {
             std::thread::spawn(move || {
                 let mut local = Local {
                     unigram: vec![0; dict.names.len()],
+                    split_compounds,
                     ..Local::default()
                 };
                 let (mut run, mut ids) = (String::new(), Vec::new());
