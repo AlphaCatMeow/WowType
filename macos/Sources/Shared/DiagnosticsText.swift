@@ -12,7 +12,7 @@ public enum DiagnosticsText {
             guard !body.hasPrefix("#"), !body.hasPrefix(";"), !body.hasPrefix("["),
                   let eq = line.firstIndex(of: "=")
             else { return line }
-            let key = String(line[..<eq].filter { $0 != " " && $0 != "\t" })
+            let key = String(line[..<eq]).filter { $0 != " " && $0 != "\t" }
             let value = trimmed(String(line[line.index(after: eq)...]))
             if key == "TranslateBaseUrl" {
                 return key + "=" + maskURL(value)

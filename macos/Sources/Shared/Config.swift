@@ -501,8 +501,8 @@ public struct WowtypeConfig: Equatable {
     /// 第一次打开设置时写出来的文件：带说明，每项都是注释掉的默认值（# PageSize=9），一项都不生效。
     /// 设置窗口只把改过的键写进来（就地换掉那一行），以后改了默认值，没改过的人跟着变。
     public static func template() -> String {
-        defaultsDocument().split(separator: "\n", omittingEmptySubsequences: false).map { line in
-            line.isEmpty || line.hasPrefix("#") ? String(line) : "# " + line
+        defaultsDocument().split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+            line.isEmpty || line.hasPrefix("#") ? String(line) : "# " + String(line)
         }.joined(separator: "\n")
     }
 
