@@ -133,14 +133,21 @@ cargo run --release -p wowtype-core --bin wowtype-eval -- \
     --weights coverage_score=1.5,prob=0,history_count=0.3
 ```
 
+默认配置和两个外壳默认设置下一样（候选上限 1000、词库旁边的 `words.lm` 和 `english.txt`、纠错开、模糊音关，
+逐项见 `core/src/bin/common/preset.rs`）；首选会随候选上限变，所以别拿上限 10 的数字和输入法里比。
+仓库里固定的评测集、回归集、基线和 CI 门槛见 [tools/eval/README.md](../tools/eval/README.md)，
+一条命令跑全套：`scripts/eval.sh <数据目录>`。
+
 常用参数：
 
 | 参数 | 作用 |
 |---|---|
-| `--k n` | 报告 top-n 召回（默认 3） |
-| `--max n` | 候选数量上限 |
-| `--fuzzy` / `--shuangpin` | 用对应模式评测 |
-| `--lm` / `--arpa` | 指定语言模型 |
+| `--data dir` | 数据目录（`lexicon.tsv`、`words.lm`、`english.txt`） |
+| `--k n` | 报告 top-n 召回（默认 3；另外总报 top1/3/9） |
+| `--max n` | 候选数量上限（默认 1000，和外壳一样） |
+| `--legacy` | 以前的默认：上限 10、只用命令行给的语言模型和英文词表 |
+| `--fuzzy` / `--shuangpin [--scheme 方案]` | 用对应模式评测 |
+| `--lm` / `--arpa` / `--no-lm` | 指定（或不用）语言模型 |
 
 用例可以从词库自动生成，也可以自己标注：
 
