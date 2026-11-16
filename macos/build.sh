@@ -76,6 +76,8 @@ cp core/data/OPENCC-LICENSE "$res/OPENCC-LICENSE"
 [[ -f "$DATA/LICENSE" ]] && cp "$DATA/LICENSE" "$res/DATA-LICENSE"
 [[ -f "$DATA/SOURCE.txt" ]] && cp "$DATA/SOURCE.txt" "$res/DATA-SOURCE.txt"
 [[ -f "$DATA/VERSION" ]] && cp "$DATA/VERSION" "$res/DATA-VERSION"
+# 数据清单：各数据文件的名字、版本、来源（docs/DATA.md「数据版本标记」）
+[[ -f "$DATA/DATA-MANIFEST" ]] && cp "$DATA/DATA-MANIFEST" "$res/DATA-MANIFEST"
 # 五笔码表（rime-wubi，LGPL-3.0）：许可证、作者、来源随包带上，改名免得和词库的 LICENSE 混
 cp "$DATA/wubi86.tsv" "$res/"
 cp "$DATA/WUBI-LICENSE" "$res/DATA-WUBI-LICENSE"
@@ -83,7 +85,7 @@ cp "$DATA/WUBI-AUTHORS" "$res/DATA-WUBI-AUTHORS"
 cp "$DATA/WUBI-SOURCE.txt" "$res/DATA-WUBI-SOURCE.txt"
 
 # 安装包里只能有这些文件（微信输入法的模型、HY-MT 翻译模型等都不许带）
-allowed='^(menu\.pdf|caret@2x\.pdf|AppIcon\.icns|[A-Za-z-]+\.lproj|[A-Za-z-]+\.lproj/InfoPlist\.strings|lexicon\.tsv|english\.txt|words\.lm|s2t\.tsv|OPENCC-LICENSE|DATA-LICENSE|DATA-SOURCE\.txt|DATA-VERSION|wubi86\.tsv|DATA-WUBI-LICENSE|DATA-WUBI-AUTHORS|DATA-WUBI-SOURCE\.txt)$'
+allowed='^(menu\.pdf|caret@2x\.pdf|AppIcon\.icns|[A-Za-z-]+\.lproj|[A-Za-z-]+\.lproj/InfoPlist\.strings|lexicon\.tsv|english\.txt|words\.lm|s2t\.tsv|OPENCC-LICENSE|DATA-LICENSE|DATA-SOURCE\.txt|DATA-VERSION|DATA-MANIFEST|wubi86\.tsv|DATA-WUBI-LICENSE|DATA-WUBI-AUTHORS|DATA-WUBI-SOURCE\.txt)$'
 bad=$(cd "$res" && find . -mindepth 1 | sed 's#^\./##' | grep -Ev "$allowed" || true)
 if [[ -n "$bad" ]]; then
   echo "安装包里有不该带的文件：" >&2

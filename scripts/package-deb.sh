@@ -79,7 +79,7 @@ data_copyright() { # <数据目录>：copyright 里词库那几段
 }
 
 check_data() { # <数据目录>
-  for f in lexicon.tsv english.txt words.lm LICENSE SOURCE.txt VERSION; do
+  for f in lexicon.tsv english.txt words.lm LICENSE SOURCE.txt VERSION DATA-MANIFEST; do
     [[ -f "$1/$f" ]] || { echo "缺 $1/${f}，先跑 scripts/make-data.sh" >&2; exit 1; }
   done
   for f in wubi86.tsv WUBI-LICENSE WUBI-SOURCE.txt WUBI-AUTHORS; do
@@ -115,6 +115,8 @@ engine)
   for f in lexicon.tsv english.txt words.lm wubi86.tsv; do
     install -Dm644 "$data/$f" "$stage/usr/share/wowtype/$f"
   done
+  # 数据清单：各数据文件的名字、版本、来源（tools/datamark.py manifest，docs/DATA.md「数据版本标记」）
+  install -Dm644 "$data/DATA-MANIFEST" "$stage/usr/share/wowtype/DATA-MANIFEST"
   doc="$stage/usr/share/doc/wowtype"
   install -Dm644 README.md "$doc/README.md"
   install -Dm644 "$data/SOURCE.txt" "$doc/DATA-SOURCE.txt"
@@ -174,7 +176,7 @@ data)
   # sha256 都一样，打包脚本（如 AUR）钉住的校验和不会因为重新发版而失效。
   tar -C "$data" --sort=name --mtime="@${SOURCE_DATE_EPOCH:-0}" \
     --owner=0 --group=0 --numeric-owner -cf - \
-    lexicon.tsv english.txt words.lm LICENSE SOURCE.txt \
+    lexicon.tsv english.txt words.lm LICENSE SOURCE.txt DATA-MANIFEST \
     wubi86.tsv WUBI-LICENSE WUBI-SOURCE.txt WUBI-AUTHORS | gzip -n >"$tarball"
   echo "$tarball"
   ;;

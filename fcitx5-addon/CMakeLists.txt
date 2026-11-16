@@ -116,9 +116,10 @@ endif()
 # 以前源码安装要自己把它们拷进 ~/.local/share/wowtype/，那份拷贝以后会一直挡在新版数据前面。
 # 各发行版的打包脚本自己放这几个文件（同样的位置），这里多装一遍不碍事；不想要就 -DWOWTYPE_DATA_DIR=
 set(WOWTYPE_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../dist/data" CACHE PATH
-    "Directory with lexicon.tsv, english.txt, words.lm and wubi86.tsv (scripts/make-data.sh output); empty to skip")
+    "Directory with lexicon.tsv, english.txt, words.lm, wubi86.tsv and DATA-MANIFEST (scripts/make-data.sh output); empty to skip")
 if(WOWTYPE_DATA_DIR)
-    foreach(_wowtype_data lexicon.tsv english.txt words.lm wubi86.tsv)
+    # DATA-MANIFEST：各数据文件的名字、版本、来源（docs/DATA.md「数据版本标记」）
+    foreach(_wowtype_data lexicon.tsv english.txt words.lm wubi86.tsv DATA-MANIFEST)
         install(FILES "${WOWTYPE_DATA_DIR}/${_wowtype_data}"
             DESTINATION "${CMAKE_INSTALL_DATADIR}/wowtype" OPTIONAL)
     endforeach()

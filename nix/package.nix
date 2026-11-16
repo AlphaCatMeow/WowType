@@ -102,6 +102,10 @@ stdenv.mkDerivation {
     mkdir -p data
     tar -xzf ${data} -C data
     install -Dm644 -t "$out/share/wowtype" data/lexicon.tsv data/english.txt data/words.lm
+    # 数据清单（docs/DATA.md「数据版本标记」）：REV=6 起的词库包里才有，钉的还是旧包时没有
+    if [ -f data/DATA-MANIFEST ]; then
+      install -Dm644 -t "$out/share/wowtype" data/DATA-MANIFEST
+    fi
     install -Dm644 ../README.md "$out/share/doc/wowtype/README.md"
     install -Dm644 data/SOURCE.txt "$out/share/doc/wowtype/DATA-SOURCE.txt"
     echo ${dataVersion} > "$out/share/doc/wowtype/DATA-VERSION"
