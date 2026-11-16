@@ -3,7 +3,7 @@
 #
 #   macos/build.sh <数据目录> [输出目录]
 #
-# 数据目录是 scripts/make-data.sh 的输出（lexicon.tsv、english.txt、words.lm、LICENSE、SOURCE.txt、VERSION），
+# 数据目录是 scripts/make-data.sh 的输出（lexicon.tsv、english.txt、words.lm、LICENSE、SOURCE.txt、VERSION；有 nnlm.bin 也带上），
 # 加上 scripts/make-wubi.sh 的输出（wubi86.tsv、WUBI-LICENSE、WUBI-AUTHORS、WUBI-SOURCE.txt）。
 # 产物：<输出目录>/WowType.app、WowType-<版本>-macos.pkg（给普通用户双击安装）和 WowType-<版本>-macos.zip
 # （给 macos/install.sh 用）。arm64 + x86_64 通用，ad-hoc 签名，没有 Apple 开发者签名和公证。
@@ -69,6 +69,8 @@ for lproj in macos/Resources/*.lproj; do
 done
 cp "$DATA/lexicon.tsv" "$DATA/english.txt" "$res/"
 [[ -f "$DATA/words.lm" ]] && cp "$DATA/words.lm" "$res/"
+# WowType 自己训的整句增强模型（字级神经语言模型），有就带上；输入法没有用户导入的微信输入法模型时用它
+if [[ -f "$DATA/nnlm.bin" ]]; then cp "$DATA/nnlm.bin" "$res/"; fi
 # 简繁对照表（设置里 Traditional=True 时用），和 Linux 包里的 /usr/share/wowtype/s2t.tsv 是同一份
 cp "${WOWTYPE_S2T:-core/data/s2t.tsv}" "$res/s2t.tsv"
 # 简繁表由 OpenCC 数据生成（Apache-2.0），许可证随包带上
@@ -82,8 +84,8 @@ cp "$DATA/WUBI-LICENSE" "$res/DATA-WUBI-LICENSE"
 cp "$DATA/WUBI-AUTHORS" "$res/DATA-WUBI-AUTHORS"
 cp "$DATA/WUBI-SOURCE.txt" "$res/DATA-WUBI-SOURCE.txt"
 
-# 安装包里只能有这些文件（微信输入法的模型、HY-MT 翻译模型等都不许带）
-allowed='^(menu\.pdf|caret@2x\.pdf|AppIcon\.icns|[A-Za-z-]+\.lproj|[A-Za-z-]+\.lproj/InfoPlist\.strings|lexicon\.tsv|english\.txt|words\.lm|s2t\.tsv|OPENCC-LICENSE|DATA-LICENSE|DATA-SOURCE\.txt|DATA-VERSION|wubi86\.tsv|DATA-WUBI-LICENSE|DATA-WUBI-AUTHORS|DATA-WUBI-SOURCE\.txt)$'
+# 安装包里只能有这些文件（微信输入法的模型 nlrgpt2_nnlm.bin、HY-MT 翻译模型等都不许带；nnlm.bin 是 WowType 自己训的）
+allowed='^(menu\.pdf|caret@2x\.pdf|AppIcon\.icns|[A-Za-z-]+\.lproj|[A-Za-z-]+\.lproj/InfoPlist\.strings|lexicon\.tsv|english\.txt|words\.lm|nnlm\.bin|s2t\.tsv|OPENCC-LICENSE|DATA-LICENSE|DATA-SOURCE\.txt|DATA-VERSION|wubi86\.tsv|DATA-WUBI-LICENSE|DATA-WUBI-AUTHORS|DATA-WUBI-SOURCE\.txt)$'
 bad=$(cd "$res" && find . -mindepth 1 | sed 's#^\./##' | grep -Ev "$allowed" || true)
 if [[ -n "$bad" ]]; then
   echo "安装包里有不该带的文件：" >&2

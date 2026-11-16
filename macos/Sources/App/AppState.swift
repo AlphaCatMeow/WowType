@@ -1,6 +1,7 @@
 // 进程里只有一份的东西：词库（后台载入）、设置、数据目录、定时保存学习数据、互译的翻译器。
 
 import AppKit
+import CWowtype
 
 final class AppState {
     static let shared = AppState()
@@ -27,6 +28,9 @@ final class AppState {
     /// 这期间用着自带的词库
     private var failedLexicon: String?
     private var failedLexiconStamp: FileStamp?
+    /// 引擎载入时用的整句增强模型（没有是 nil）和它那时的 (大小, 修改时间)：导入、删掉、换了就重新载入引擎
+    private var nnlmInUse: String?
+    private var nnlmStamp: FileStamp?
     private var configStamp: FileStamp?
     private var customStamp: FileStamp?
     private var lastCheck: TimeInterval = 0
@@ -137,6 +141,16 @@ final class AppState {
         return link.path
     }
 
+    /// 整句增强模型（字级神经语言模型）：设置窗口导入的微信输入法模型优先，没有再用安装包里的 nnlm.bin
+    /// （WowType 以后随包附带自己训的，现在还没有）；都没有是 nil，整句照常出，只是不用它重排。
+    func nnlmPath() -> String? {
+        let imported = NnlmInstaller.model(in: supportDir).path
+        if FileManager.default.fileExists(atPath: imported) {
+            return imported
+        }
+        return resource("nnlm.bin")
+    }
+
     func resource(_ name: String) -> String? {
         let path = resourceDir.appendingPathComponent(name).path
         return FileManager.default.fileExists(atPath: path) ? path : nil
@@ -229,6 +243,14 @@ final class AppState {
                 NSLog("WowType: 领域词级模型载入失败 %@", domain)
             }
         }
+        if let nnlm = nnlmPath() {
+            let vocab = wowtype_engine_load_nnlm(engine.handle, nnlm)
+            if vocab >= 0 {
+                NSLog("WowType: 载入整句增强模型 %@（字表 %d）", nnlm, vocab)
+            } else {
+                NSLog("WowType: 整句增强模型载入失败 %@", nnlm)
+            }
+        }
         engine.loadUserDict(userDictPath)
         engine.loadHistory(historyPath)
         return engine
@@ -267,6 +289,9 @@ final class AppState {
         let bundled = bundledLexiconPath()
         let fallback = bundled == lexicon ? nil : bundled
         let fallbackStamp = fallback.flatMap { FileStamp($0) }
+        // makeEngine 里载入的整句增强模型：记下是哪个、什么时候的（载没载上都记，不然载不上时每秒重载）
+        let nnlm = nnlmPath()
+        let nnlmStampNow = nnlm.flatMap { FileStamp($0) }
         let start = Date()
         DispatchQueue.global(qos: .userInitiated).async {
             var used = lexicon
@@ -279,6 +304,8 @@ final class AppState {
             let loaded = engine, loadedPath = used
             DispatchQueue.main.async {
                 self.loading = false
+                self.nnlmInUse = nnlm
+                self.nnlmStamp = nnlmStampNow
                 NSLog("WowType: 词库 %@ 载入%@，用时 %.1f 秒", loadedPath, loaded == nil ? "失败" : "完成",
                       Date().timeIntervalSince(start))
                 // 想要的词库没载上：记下来，文件和设置都没变时 checkForChanges 不再试
@@ -344,11 +371,19 @@ final class AppState {
         guard let wanted = lexiconPath() else { return }
         let wantedStamp = FileStamp(wanted)
         let failedBefore = wanted == failedLexicon && wantedStamp == failedLexiconStamp
-        guard !failedBefore, wanted != lexiconInUse || wantedStamp != lexiconStamp else { return }
+        let lexiconChanged = !failedBefore && (wanted != lexiconInUse || wantedStamp != lexiconStamp)
+        // 设置窗口导入、删掉了整句增强模型：核心没有「卸下模型」的接口，整个引擎在后台重新载入（几秒，载完之前照旧用旧的）
+        let nnlm = nnlmPath()
+        let nnlmChanged = nnlm != nnlmInUse || nnlm.flatMap { FileStamp($0) } != nnlmStamp
+        guard lexiconChanged || nnlmChanged else { return }
         if loading {
             reloadAfterLoading = true
         } else {
-            NSLog("WowType: 换词库 %@ -> %@", lexiconInUse ?? "", wanted)
+            if lexiconChanged {
+                NSLog("WowType: 换词库 %@ -> %@", lexiconInUse ?? "", wanted)
+            } else {
+                NSLog("WowType: 整句增强模型换了（%@），重新载入", nnlm ?? "删掉了")
+            }
             loadEngineInBackground()
         }
     }

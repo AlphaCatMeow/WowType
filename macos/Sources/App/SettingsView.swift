@@ -313,6 +313,8 @@ private struct InputPage: View {
         }
         .onAppear { model.checkRelease() }
 
+        NnlmGroup(nnlm: model.nnlm)
+
         PrefGroup("输入方案") {
             RadioRow(title: WowtypeConfig.InputScheme.quanpin.name, subtitle: "全拼，也能只打声母", selected: model.config.inputScheme == .quanpin) {
                 model.config.inputScheme = .quanpin
@@ -469,6 +471,35 @@ private struct InputPage: View {
 
     private var lexiconColor: Color? {
         model.lexiconKind == .custom && model.customLexiconMissing ? palette.warning : nil
+    }
+}
+
+/// 整句增强模型：一行状态，「导入…」，导入过的能删（和 Linux 设置的一样）
+private struct NnlmGroup: View {
+    @ObservedObject var nnlm: NnlmModel
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        PrefGroup("整句增强", info: "微信输入法自带一个按字预测下一个字的小模型（\(NnlmInstaller.fileName)），"
+                  + "WowType 用它给整句候选重排，长句的首选更准，每次按键多 2 毫秒左右。\n\n"
+                  + "模型属于腾讯，WowType 不分发它。手上有微信输入法 macOS 版的安装包（.zip）或装好的 WeType.app 时，"
+                  + "点「导入…」选它，也可以直接选模型文件。导入后几秒生效，"
+                  + "放在 ~/Library/Application Support/WowType/wetype。") {
+            HStack(spacing: 10) {
+                RowLabel(title: "整句增强模型", subtitle: nnlm.status,
+                         subtitleColor: nnlm.error != nil && !nnlm.busy ? palette.warning : nil)
+                if nnlm.busy {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Button("导入…") { nnlm.choose() }
+                    if nnlm.imported {
+                        IconButton(symbol: "trash", help: "删除导入的模型") { nnlm.remove() }
+                    }
+                }
+            }
+            .rowPadding()
+        }
     }
 }
 
