@@ -9,6 +9,7 @@ pub mod beam;
 pub mod calc;
 pub mod clipboard;
 pub mod convert;
+pub mod datamark;
 pub mod datetime;
 pub mod emoji;
 pub mod ffi;
