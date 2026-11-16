@@ -1509,7 +1509,8 @@ def _data_version_note(path):
         return ""
     marker = read_data_marker(path)
     if marker and marker[0] != os.path.basename(path):
-        return f"，标记是 {marker[0]} {marker[1]}（{marker[2] or '没写来源'}）"
+        # 别的数据（万象词库包的标记名字是 wanxiang/lexicon.tsv）
+        return f"，{marker[0]} 版本 {marker[1]}" + (f"（{marker[2]}）" if marker[2] else "")
     found = data_file_version(path)
     if not found:
         return "，没有版本标记"
