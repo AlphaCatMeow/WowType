@@ -1867,6 +1867,16 @@ impl Engine {
         };
         let mut order: Vec<usize> = (0..paths.len()).collect();
         order.sort_by(|&a, &b| paths[b].score.total_cmp(&paths[a].score));
+        // 没有上文时只给长输入重排：单独一个词（kexue、jieran）时字级模型只会比较「哪串字常见」，
+        // 盖过词库对整词的判断；几个词连起来顺不顺才是它擅长的。见 NNLM_MIN_SYLLABLES
+        let syllables: usize = paths[order[0]]
+            .words
+            .iter()
+            .map(|w| w.pinyin.split_whitespace().count())
+            .sum();
+        if syllables < NNLM_MIN_SYLLABLES && self.context().trim().is_empty() {
+            return out;
+        }
         let context = model.context_tokens(&self.context());
         let scored: Vec<(usize, f64)> = order
             .iter()
@@ -2140,6 +2150,11 @@ const EXACT_LONG_SYLLABLES: usize = 3;
 /// 撞上常用词拼出来的整句（吃 | 今晚、搭理 | 要）时不该抢第一；它们照样在第一页的同音词里。
 /// 占位词频是 100，手工补的冷门词（发一版 65）也在这条线以上。
 const EXACT_LONG_MIN_FREQ: f64 = 10.0;
+/// 没有上文时，输入至少这么多个音节才用字级神经语言模型重排（有上文时都用）。
+/// scripts/eval.sh 实测（WowType 自己的 nnlm.bin，权重 0.5）：门槛 0 时日常整句 +2.2、上文 +4.9，
+/// 但常用词 -3.5、简拼 -6.7、截断 -8.7；门槛 4 时冷门词还掉 1.6；门槛 5 时单独打词的各组和不带模型时一样，
+/// 日常整句 90.6% -> 94.2%、上文 89.1% -> 94.0%。
+const NNLM_MIN_SYLLABLES: usize = 5;
 /// 神经语言模型特征最低到多少（自然对数），免得一条特别离谱的把分数拉得太开。
 const NNLM_FLOOR: f64 = 20.0;
 

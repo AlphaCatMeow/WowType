@@ -10,10 +10,11 @@ DIR 里是 tools/nnlm/prep_corpus.py 生成的 wiki.txt、lccc.txt（一行一�
 输出层和字向量共用（logit = wte[字]·y）。编号 0 = 填充，1 = <unk>，2 = <s>（和 nnlm.rs 的约定一样）。
 
 WTNN 格式（小端）：
-    b"WTNN"、u32 版本 1、u32 词表大小 V、u32 字数 N、N 组 (u32 码位, u32 编号)、
+    b"WTNN"、u32 版本 1、u32 说明长度 + UTF-8 说明、u32 词表大小 V、u32 字数 N、N 组 (u32 码位, u32 编号)、
     float16 权重：wte[V*D]、wpe[512*D]、每层 ln1_g ln1_b attn_w[3D*D] attn_b[3D] proj_w[D*D] proj_b
-    ln2_g ln2_b fc_w[FF*D] fc_b[FF] out_w[D*FF] out_b、最后 lnf_g lnf_b；
-    然后 u32 长度 + UTF-8 JSON（名字、版本、语料、许可证）。
+    ln2_g ln2_b fc_w[FF*D] fc_b[FF] out_w[D*FF] out_b、最后 lnf_g lnf_b。
+说明的第一行是数据版本标记 `wowtype-data: nnlm.bin <版本> <来源>`（在文件前 4096 字节里，插件和设置界面
+按它认用户目录里的旧副本，见 docs/DATA.md），后面是 JSON（名字、版本、语料、许可证）。
 矩阵都按 [输出, 输入] 行存（和 PyTorch 的 Linear.weight 一样）。
 """
 
@@ -129,14 +130,15 @@ def export(model, vocab, path, meta):
                   sd[p + "fc.weight"], sd[p + "fc.bias"], sd[p + "out.weight"], sd[p + "out.bias"]]
     parts += [sd["lnf.weight"], sd["lnf.bias"]]
     vocab_size = sd["wte.weight"].shape[0]
+    marker = f"wowtype-data: nnlm.bin {meta['version']} wowtype-nnlm LCCC+zhwiki"
+    text = (marker + "\n" + json.dumps(meta, ensure_ascii=False)).encode("utf-8")
     blob = bytearray(b"WTNN")
-    blob += struct.pack("<III", 1, vocab_size, len(vocab))
+    blob += struct.pack("<II", 1, len(text)) + text
+    blob += struct.pack("<II", vocab_size, len(vocab))
     for ch, i in sorted(vocab.items(), key=lambda kv: kv[1]):
         blob += struct.pack("<II", ord(ch), i)
     for p in parts:
         blob += np.ascontiguousarray(p, dtype="<f2").tobytes()
-    js = json.dumps(meta, ensure_ascii=False).encode("utf-8")
-    blob += struct.pack("<I", len(js)) + js
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
         f.write(blob)
@@ -158,6 +160,7 @@ def main():
     ap.add_argument("--lccc-weight", type=float, default=0.6, help="每批里对话语料占的比例")
     ap.add_argument("--version", default=time.strftime("%Y.%m.%d.0"))
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--export-only", action="store_true", help="不训练，把 --work 里的 checkpoint.pt 导出成 --out")
     args = ap.parse_args()
     work = args.work or args.text
     os.makedirs(work, exist_ok=True)
@@ -189,6 +192,17 @@ def main():
 
     vocab_size = SPECIAL + len(vocab)
     model = Model(vocab_size).to(device)
+    meta = {
+        "name": "wowtype-nnlm",
+        "version": args.version,
+        "corpus": "LCCC (thu-coai, MIT) + 中文维基百科 (wikimedia/wikipedia 20231101.zh, CC BY-SA 4.0)",
+        "license": "CC BY-SA 4.0",
+        "steps": args.steps,
+    }
+    if args.export_only:
+        model.load_state_dict(torch.load(os.path.join(work, "checkpoint.pt"), map_location=device))
+        export(model, vocab, args.out, meta)
+        return
     print(f"参数 {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     decay = [p for n, p in model.named_parameters() if p.dim() >= 2]
     no_decay = [p for n, p in model.named_parameters() if p.dim() < 2]
@@ -235,13 +249,6 @@ def main():
                   f"({(time.time() - started) / 60:.1f} 分钟)", flush=True)
             torch.save(model.state_dict(), os.path.join(work, "checkpoint.pt"))
 
-    meta = {
-        "name": "wowtype-nnlm",
-        "version": args.version,
-        "corpus": "LCCC (thu-coai, MIT) + 中文维基百科 (wikimedia/wikipedia 20231101.zh, CC BY-SA 4.0)",
-        "license": "CC BY-SA 4.0",
-        "steps": args.steps,
-    }
     export(model, vocab, args.out, meta)
 
 

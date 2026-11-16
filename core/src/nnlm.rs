@@ -65,7 +65,8 @@ pub struct Nnlm {
     lnf_g: Vec<f32>,
     lnf_b: Vec<f32>,
     vocab_size: usize,
-    /// WTNN 文件末尾的说明（JSON：名字、版本、语料、许可证）；微信的模型没有。
+    /// WTNN 文件头里的说明（第一行是 `wowtype-data:` 版本标记，后面是 JSON：名字、版本、语料、许可证）；
+    /// 微信的模型没有。
     meta: Option<String>,
     cache: Mutex<Cache>,
 }
@@ -161,19 +162,26 @@ impl Nnlm {
     }
 
     /// WowType 自己的格式（`tools/nnlm/train.py` 导出）：
-    /// `WTNN`、u32 版本、u32 词表大小 V、u32 字数 N、N 组 (u32 码位, u32 编号)、
-    /// float16 权重（wte、wpe、每层 12 个、ln_f 两个，顺序和形状同推理代码）、u32 长度 + JSON 说明。
+    /// `WTNN`、u32 版本、u32 说明长度 + 说明（第一行是 `wowtype-data:` 版本标记，后面是 JSON）、
+    /// u32 词表大小 V、u32 字数 N、N 组 (u32 码位, u32 编号)、
+    /// float16 权重（wte、wpe、每层 12 个、ln_f 两个，顺序和形状同推理代码）。
     fn from_wtnn(data: &[u8]) -> Result<Self> {
         let version = u32_at(data, 4)?;
         if version != 1 {
             bail!("WTNN 版本 {version} 不认识");
         }
-        let vocab_size = u32_at(data, 8)? as usize;
-        let n = u32_at(data, 12)? as usize;
+        let meta_len = u32_at(data, 8)? as usize;
+        let meta = data
+            .get(12..12 + meta_len)
+            .context("WTNN 说明越界")?;
+        let meta = std::str::from_utf8(meta).ok().map(str::to_owned);
+        let mut at = 12 + meta_len;
+        let vocab_size = u32_at(data, at)? as usize;
+        let n = u32_at(data, at + 4)? as usize;
         if !(1000..65536).contains(&vocab_size) || n > vocab_size {
             bail!("WTNN 词表大小不对（{vocab_size}，{n} 个字）");
         }
-        let mut at = 16;
+        at += 8;
         let mut vocab = HashMap::with_capacity(n);
         for _ in 0..n {
             let cp = u32_at(data, at)?;
@@ -215,13 +223,6 @@ impl Nnlm {
         }
         let lnf_g = take(D)?;
         let lnf_b = take(D)?;
-        let meta = match u32_at(data, at) {
-            Ok(len) => data
-                .get(at + 4..at + 4 + len as usize)
-                .and_then(|b| std::str::from_utf8(b).ok())
-                .map(str::to_owned),
-            Err(_) => None,
-        };
         if [&wte, &wpe, &lnf_g].iter().any(|w| w.iter().any(|v| !v.is_finite())) {
             bail!("WTNN 权重里有非有限数");
         }
@@ -242,7 +243,7 @@ impl Nnlm {
         self.vocab_size
     }
 
-    /// 模型自带的说明（WTNN 的 JSON：名字、版本、语料、许可证）；微信的模型是 None。
+    /// 模型自带的说明（WTNN 的版本标记和 JSON）；微信的模型是 None。
     pub fn meta(&self) -> Option<&str> {
         self.meta.as_deref()
     }
@@ -707,7 +708,11 @@ mod tests {
         let vocab_size = 1100usize;
         let mut blob = Vec::new();
         blob.extend_from_slice(b"WTNN");
-        for v in [1u32, vocab_size as u32, 2] {
+        blob.extend_from_slice(&1u32.to_le_bytes());
+        let meta = "wowtype-data: nnlm.bin 2026.1.1.0 test\n{\"name\":\"wowtype-nnlm\"}".as_bytes();
+        blob.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+        blob.extend_from_slice(meta);
+        for v in [vocab_size as u32, 2] {
             blob.extend_from_slice(&v.to_le_bytes());
         }
         for (cp, id) in [('你' as u32, 3u32), ('好' as u32, 4)] {
@@ -722,14 +727,12 @@ mod tests {
             let v = ((seed >> 8) % 2001) as f32 / 1000.0 - 1.0;
             blob.extend_from_slice(&f32_to_f16(v * 0.05).to_le_bytes());
         }
-        let meta = br#"{"name":"wowtype-nnlm","version":"test"}"#;
-        blob.extend_from_slice(&(meta.len() as u32).to_le_bytes());
-        blob.extend_from_slice(meta);
         let model = Nnlm::from_bytes(&blob).expect("读得出来");
         assert_eq!(model.vocab_size(), vocab_size);
         assert_eq!(model.token('你'), 3);
         assert_eq!(model.token('他'), UNK);
-        assert!(model.meta().unwrap().contains("wowtype-nnlm"));
+        assert!(model.meta().unwrap().starts_with("wowtype-data: nnlm.bin 2026.1.1.0"));
+        assert!(crate::datamark::scan(&blob).is_some_and(|m| m.version == "2026.1.1.0"));
         let s = model.score(&model.context_tokens("我说"), "你好");
         assert!(s.is_finite() && s < 0.0, "{s}");
         assert!(Nnlm::from_bytes(&blob[..blob.len() / 2]).is_err());
