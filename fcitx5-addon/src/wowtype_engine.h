@@ -513,7 +513,9 @@ private:
     void commitInput(fcitx::InputContext *ic, WowtypeState *state);
     /// 选中光标所在的候选；没有候选时上屏原始输入（交给会话按一次空格）。
     void commitCurrent(fcitx::InputContext *ic, WowtypeState *state);
-    void maybeSaveUserDict(bool force);
+    /// 攒够上屏次数（force 时不管次数）就在后台存用户词库和输入习惯（按键的线程上不等磁盘）。
+    /// wait：等后台写完再返回（析构、换词库前：新引擎要读这些文件）。
+    void maybeSaveUserDict(bool force, bool wait = false);
     std::string userDictPath() const;
 
     // 语音输入：按住（或点一下）热键说话，识别结果上屏

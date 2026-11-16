@@ -811,7 +811,8 @@ void WowtypeEngine::maybeSwitchLexicon() {
         core_ = loading_.get();
     }
     if (core_) {
-        maybeSaveUserDict(true);
+        // 新引擎载入时要读这两个文件：等写完
+        maybeSaveUserDict(true, true);
     }
     // 候选、编辑区都是旧词库算出来的，先清掉
     instance_->inputContextManager().foreach([this](fcitx::InputContext *ic) {
@@ -1111,7 +1112,8 @@ WowtypeEngine::~WowtypeEngine() {
         return true;
     });
     if (core_) {
-        maybeSaveUserDict(true);
+        // 退出前等后台存盘写完（free 也会等，这里能把失败记进日志）
+        maybeSaveUserDict(true, true);
         wowtype_engine_free(core_);
         core_ = nullptr;
     }
@@ -1159,24 +1161,30 @@ std::string WowtypeEngine::userDictPath() const {
     return dir + "/user.tsv";
 }
 
-void WowtypeEngine::maybeSaveUserDict(bool force) {
-    if (!core_ || (!force && unsavedCommits_ < kSaveEvery) || unsavedCommits_ == 0) {
+void WowtypeEngine::maybeSaveUserDict(bool force, bool wait) {
+    if (!core_) {
         return;
+    }
+    // 存盘在核心的后台线程上（ABI 1.11）：这里只抄一份数据，不等两次 fsync。上次写失败了现在才知道：
+    // 记下来，这次接着存（写的都是整份，存成了就补上了）
+    if (wowtype_engine_save_wait(core_, 0) < 0) {
+        WLOG_W() << "WowType: 用户词库或输入习惯保存失败："
+                     << (wowtype_last_error() ? wowtype_last_error() : "unknown");
+        unsavedCommits_ = std::max(unsavedCommits_, kSaveEvery);
     }
     const std::string path = userDictPath();
-    if (path.empty()) {
-        return;
+    if (!path.empty() && unsavedCommits_ > 0 && (force || unsavedCommits_ >= kSaveEvery)) {
+        const bool dictQueued = wowtype_engine_save_user_dict_async(core_, path.c_str()) == 0;
+        const std::string history = historyPathFor(path);
+        const bool historyQueued =
+            !history.empty() && wowtype_engine_save_history_async(core_, history.c_str()) == 0;
+        if (dictQueued && historyQueued) {
+            unsavedCommits_ = 0;
+        }
     }
-    const bool dictSaved = wowtype_engine_save_user_dict(core_, path.c_str()) == 0;
-    const std::string history = historyPathFor(path);
-    const bool historySaved =
-        !history.empty() && wowtype_engine_save_history(core_, history.c_str()) == 0;
-    if (!historySaved) {
-        WLOG_W() << "WowType: 输入习惯保存失败 " << history << "："
+    if (wait && wowtype_engine_save_wait(core_, -1) < 0) {
+        WLOG_W() << "WowType: 用户词库或输入习惯保存失败："
                      << (wowtype_last_error() ? wowtype_last_error() : "unknown");
-    }
-    if (dictSaved && historySaved) {
-        unsavedCommits_ = 0;
     }
 }
 

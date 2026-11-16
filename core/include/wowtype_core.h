@@ -169,6 +169,17 @@ int wowtype_engine_load_custom_words(WowtypeEngineHandle *engine, const char *pa
 int wowtype_engine_save_history(WowtypeEngineHandle *engine, const char *path);
 int wowtype_engine_load_history(WowtypeEngineHandle *engine, const char *path);
 
+/* 后台存盘（1.11）：上面两个 save 在调用的线程上写完才返回（先写临时文件、刷到盘上再改名，要等两次 fsync），
+ * 别在按键的线程上用。_async 只在锁里抄一份要写的数据就返回，引擎自己的一个线程去写（写法和同步的一样）；
+ * 同一个文件还没开始写时，后来的那份顶掉前面的（连着的几次合并成一次）。返回 0 交出去了，-1 参数不对。
+ * 同步的 save 会先等后台排着的写完，不会被后写的旧数据盖掉。 */
+int wowtype_engine_save_user_dict_async(WowtypeEngineHandle *engine, const char *path);
+int wowtype_engine_save_history_async(WowtypeEngineHandle *engine, const char *path);
+/* 等后台存盘写完（1.11）：timeout_ms 小于 0 一直等，否则最多等这么久（0 只看一眼）。返回 0 都写完了、
+ * 上次调用以后交的都写成了；1 还没写完；-1 上次调用以后有写失败的（原因在 wowtype_last_error，只报一次）。
+ * 进程退出、外壳析构、换词库（新引擎要读这些文件）前调一次 -1；wowtype_engine_free 也会先写完再释放。 */
+int wowtype_engine_save_wait(WowtypeEngineHandle *engine, int timeout_ms);
+
 /* 输入拼音串；失败返回 NULL。 */
 WowtypeCandidates *wowtype_engine_input(WowtypeEngineHandle *engine, const char *input);
 

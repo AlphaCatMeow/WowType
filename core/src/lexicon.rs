@@ -790,6 +790,15 @@ pub struct UserLexicon {
     snapshot: RwLock<Arc<MemoryLexicon>>,
 }
 
+/// 用户词库存盘的内容（[`UserLexicon::save_tsv`]）：注释行 + 一行一个 `拼音<TAB>词<TAB>频次`。
+pub fn user_dict_text(words: &[(String, String, f64)]) -> String {
+    let mut out = String::from("# 用户词库\n");
+    for (pinyin, word, freq) in words {
+        out.push_str(&format!("{}\t{}\t{}\n", pinyin, word, *freq as i64));
+    }
+    out
+}
+
 /// 自定义词默认频次：和最常用的词差不多，所以排在同音词前面。
 pub const CUSTOM_WORD_FREQ: f64 = 5_000_000.0;
 
@@ -864,11 +873,7 @@ impl UserLexicon {
     /// 把用户词写成 TSV（与 lexicon 格式一致）。空的也写（只有注释行）：
     /// 用户把学到的词都删掉以后，旧文件不能留着，不然重启又回来了。
     pub fn save_tsv<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let words = self.words();
-        let mut out = String::from("# 用户词库\n");
-        for (pinyin, word, freq) in words {
-            out.push_str(&format!("{}\t{}\t{}\n", pinyin, word, freq as i64));
-        }
+        let out = user_dict_text(&self.words());
         // 输入法进程随时可能被系统杀掉：写一半的用户词库会把学到的词全弄丢
         crate::fsutil::write_atomic(path.as_ref(), out.as_bytes())
             .with_context(|| format!("写入用户词库失败: {}", path.as_ref().display()))

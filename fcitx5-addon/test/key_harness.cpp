@@ -323,6 +323,10 @@ void runCases(Instance &instance) {
         check(took && preedit(ic.get()) == "ka" && ic->committed.empty() && ic->passed.empty() &&
                   !after.empty(),
               "Ctrl+Delete 吃掉，编辑区不动：" + preedit(ic.get()) + " / " + join(after));
+        // 存盘在核心的后台线程上（按键的线程不等磁盘）：等它写出来，最多 3 秒
+        for (int i = 0; dictPath && i < 300 && !std::filesystem::exists(dictPath, ec); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
         std::ifstream in(dictPath ? dictPath : "");
         const std::string dict((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         check(dictPath && in.is_open() && dict.find("\t" + word + "\t") == std::string::npos,

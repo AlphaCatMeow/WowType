@@ -72,6 +72,26 @@ public final class Engine {
         wowtype_engine_save_history(handle, path) == 0
     }
 
+    /// 在后台存用户词库、输入习惯（ABI 1.11）：只抄一份数据就返回，写文件（两次 fsync）在核心的存盘线程上。
+    /// 返回交出去了没有。
+    @discardableResult
+    public func saveUserDictAsync(_ path: String) -> Bool {
+        wowtype_engine_save_user_dict_async(handle, path) == 0
+    }
+
+    @discardableResult
+    public func saveHistoryAsync(_ path: String) -> Bool {
+        wowtype_engine_save_history_async(handle, path) == 0
+    }
+
+    /// 等后台存盘写完：timeout 秒，nil 一直等，0 只看一眼。返回 nil 是都写完了（或者还在写、等不到 timeout）、
+    /// 上次问过以后交的都写成了；写失败了返回原因（只报一次）。
+    public func waitSaved(timeout: Double? = nil) -> String? {
+        let ms = timeout.map { Int32(max(0, min($0 * 1000, Double(Int32.max)))) } ?? -1
+        guard wowtype_engine_save_wait(handle, ms) < 0 else { return nil }
+        return wowtype_last_error().map { String(cString: $0) } ?? "unknown"
+    }
+
     /// 自定义词（custom.tsv）：替换上一次载入的，文件不存在就清空。返回条数，-1 出错。
     @discardableResult
     public func loadCustomWords(_ path: String) -> Int {

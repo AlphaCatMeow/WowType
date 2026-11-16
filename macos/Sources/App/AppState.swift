@@ -255,8 +255,8 @@ final class AppState {
             NSLog("WowType: 安装包里没有 lexicon.tsv")
             return
         }
-        // 换词库：新引擎要读学习数据，先把旧引擎学到的存下来（载入途中学的就丢了，最多几秒）
-        save(force: true)
+        // 换词库：新引擎要读学习数据，先把旧引擎学到的存下来、等写完（载入途中学的就丢了，最多几秒）
+        save(force: true, wait: true)
         loading = true
         let stamp = FileStamp(lexicon)
         let start = Date()
@@ -400,20 +400,25 @@ final class AppState {
         save()
     }
 
-    func save(force: Bool = false) {
-        guard let engine, force || commitsSinceSave > 0 else { return }
-        try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
-        let dictSaved = engine.saveUserDict(userDictPath)
-        if !dictSaved {
-            NSLog("WowType: 保存用户词库失败")
+    /// 存用户词库和输入习惯。在核心的后台线程上写（ABI 1.11），这里（主线程，也是按键的线程）不等磁盘；
+    /// wait 时等写完再返回（退出、换词库前：新引擎要读这两个文件）。
+    func save(force: Bool = false, wait: Bool = false) {
+        guard let engine else { return }
+        // 上次后台写失败了现在才知道：记下来，这次接着存（写的都是整份，存成了就补上了，和 Linux 一样）
+        if let error = engine.waitSaved(timeout: 0) {
+            NSLog("WowType: 保存用户词库或输入习惯失败：%@", error)
+            commitsSinceSave = max(commitsSinceSave, 1)
         }
-        let historySaved = engine.saveHistory(historyPath)
-        if !historySaved {
-            NSLog("WowType: 保存输入习惯失败")
+        if force || commitsSinceSave > 0 {
+            try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+            let dictQueued = engine.saveUserDictAsync(userDictPath)
+            let historyQueued = engine.saveHistoryAsync(historyPath)
+            if dictQueued && historyQueued {
+                commitsSinceSave = 0
+            }
         }
-        // 两样都存上了才清零：存失败的那批下次接着存（和 Linux 一样）
-        if dictSaved && historySaved {
-            commitsSinceSave = 0
+        if wait, let error = engine.waitSaved() {
+            NSLog("WowType: 保存用户词库或输入习惯失败：%@", error)
         }
     }
 }

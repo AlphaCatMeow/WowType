@@ -22,6 +22,7 @@ pub mod nnlm;
 pub mod preedit;
 pub mod rank;
 pub mod recent_emoji;
+pub mod saver;
 pub mod session;
 pub mod session_ffi;
 pub mod shuangpin;
@@ -216,6 +217,8 @@ pub struct Engine {
     new_words: RwLock<HashMap<String, learn::NewWord>>,
     /// 最近的学习改动（[`Engine::undo_learning`] 用）。
     journal: Mutex<learn::Journal>,
+    /// 后台存盘（[`Engine::save_user_dict_async`]）。引擎释放时先写完。
+    saver: saver::Saver,
 }
 
 impl Engine {
@@ -239,6 +242,7 @@ impl Engine {
             wubi: RwLock::new(None),
             new_words: RwLock::new(HashMap::new()),
             journal: Mutex::new(learn::Journal::default()),
+            saver: saver::Saver::default(),
         }
     }
 
@@ -605,26 +609,64 @@ impl Engine {
     }
 
     /// 把用户输入习惯（词的热度、词搭配、候选新词）存到 TSV。热度已经衰减得几乎没有的不写。
+    /// 在调用的线程上写完才返回（要等 fsync）；按键的线程上用 [`Engine::save_history_async`]。
     pub fn save_history<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
-        let text = self.history_text()?;
+        // 后台还排着、正在写的旧数据先写完，别等这次写好以后再盖上去
+        self.saver.flush();
+        let (history, pairs, new_words) = self.history_snapshot()?;
+        let text = crate::learn::history_text(&history, &pairs, &new_words, now_ms());
         crate::fsutil::write_atomic(path.as_ref(), text.as_bytes())
     }
 
-    /// 输入习惯存盘的内容（[`learn::history_text`]）。
-    fn history_text(&self) -> Result<String> {
+    /// 在后台存输入习惯：这里只在锁里抄一份，排成文字、写文件（两次 fsync）在存盘的线程上做。
+    /// 连着几次还没写的合并成一次。[`Engine::save_wait`] 等写完。
+    pub fn save_history_async<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
+        let (history, pairs, new_words) = self.history_snapshot()?;
+        let now = now_ms();
+        self.saver.submit(
+            path.as_ref().to_path_buf(),
+            Box::new(move || Ok(crate::learn::history_text(&history, &pairs, &new_words, now))),
+        );
+        Ok(())
+    }
+
+    /// 在后台存用户词库，见 [`Engine::save_history_async`]。
+    pub fn save_user_dict_async<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
+        let words = self.lexicon.words();
+        self.saver.submit(
+            path.as_ref().to_path_buf(),
+            Box::new(move || Ok(crate::lexicon::user_dict_text(&words))),
+        );
+        Ok(())
+    }
+
+    /// 等后台存盘写完：timeout 是 None 时一直等（进程退出、换词库前），Some(0) 只看一眼。
+    /// 写失败的原因只报一次。引擎释放时也会等写完。
+    pub fn save_wait(&self, timeout: Option<std::time::Duration>) -> saver::SaveStatus {
+        self.saver.wait(timeout)
+    }
+
+    /// 输入习惯的一份拷贝（在锁里抄，存盘用）。
+    #[allow(clippy::type_complexity)]
+    fn history_snapshot(
+        &self,
+    ) -> Result<(HashMap<String, HistoryEntry>, UserPairs, HashMap<String, learn::NewWord>)> {
         let history = self
             .history
             .read()
-            .map_err(|_| anyhow::anyhow!("history lock poisoned"))?;
+            .map_err(|_| anyhow::anyhow!("history lock poisoned"))?
+            .clone();
         let pairs = self
             .pairs
             .read()
-            .map_err(|_| anyhow::anyhow!("pairs lock poisoned"))?;
+            .map_err(|_| anyhow::anyhow!("pairs lock poisoned"))?
+            .clone();
         let new_words = self
             .new_words
             .read()
-            .map_err(|_| anyhow::anyhow!("new words lock poisoned"))?;
-        Ok(crate::learn::history_text(&history, &pairs, &new_words, now_ms()))
+            .map_err(|_| anyhow::anyhow!("new words lock poisoned"))?
+            .clone();
+        Ok((history, pairs, new_words))
     }
 
     /// 读回 [`Engine::save_history`] 存的输入习惯，返回条数。
@@ -908,7 +950,9 @@ impl Engine {
         self.lexicon.words()
     }
 
+    /// 存用户词库（在调用的线程上写完才返回）；按键的线程上用 [`Engine::save_user_dict_async`]。
     pub fn save_user_dict<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
+        self.saver.flush();
         self.lexicon.save_tsv(path)
     }
 
@@ -3163,6 +3207,42 @@ mod tests {
         e.record_selection("妮好");
         assert!(!e.forget_word("妮好"));
         assert_eq!(e.history_count("妮好"), 1);
+    }
+
+    #[test]
+    fn async_save_writes_in_background() {
+        let e = engine("ni hao\t你好\t10\n");
+        e.add_user_word("wo te", "我特", 5000.0).unwrap();
+        e.record_selection("我特");
+        let dir = std::env::temp_dir().join(format!("wowtype-async-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (dict, history) = (dir.join("user.tsv"), dir.join("history.tsv"));
+        e.save_user_dict_async(&dict).unwrap();
+        e.save_history_async(&history).unwrap();
+        assert_eq!(e.save_wait(None), saver::SaveStatus::Done);
+        let again = engine("ni hao\t你好\t10\n");
+        assert_eq!(again.load_user_dict(&dict).unwrap(), 1);
+        assert!(again.load_history(&history).unwrap() >= 1);
+        assert_eq!(again.history_count("我特"), 1);
+
+        // 后台排着旧的、接着同步存新的：同步的先等旧的写完，文件里是新的
+        e.remove_user_word("我特");
+        e.save_user_dict_async(&dict).unwrap();
+        e.add_user_word("wo te", "沃特", 5000.0).unwrap();
+        e.save_user_dict(&dict).unwrap();
+        let text = std::fs::read_to_string(&dict).unwrap();
+        assert!(text.contains("沃特") && !text.contains("我特"), "{text}");
+
+        // 写不了的报一次错
+        e.save_history_async(dir.join("没有这个目录/history.tsv")).unwrap();
+        assert!(matches!(e.save_wait(None), saver::SaveStatus::Failed(_)));
+        assert_eq!(e.save_wait(Some(std::time::Duration::ZERO)), saver::SaveStatus::Done);
+
+        // 引擎释放时先写完
+        e.save_history_async(&history).unwrap();
+        drop(e);
+        assert!(std::fs::read_to_string(&history).unwrap().contains("我特"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
