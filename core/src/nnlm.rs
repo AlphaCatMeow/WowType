@@ -310,6 +310,27 @@ impl Nnlm {
         total
     }
 
+    /// 接在 prefix 后面、下一个字是 ch 的 log 概率（只算一步，同一个前缀算过就是查表）。
+    /// 联想用它按「接得上」排候选词：只看词的第一个字，几十个候选也只算一次前向。
+    pub fn next_char_logprob(&self, prefix: &[u32], ch: char) -> f32 {
+        if prefix.is_empty() || prefix.len() >= MAX_POS {
+            return 0.0;
+        }
+        let Ok(mut cache) = self.cache.lock() else {
+            return 0.0;
+        };
+        cache.clock += 1;
+        self.ensure(&mut cache, prefix);
+        let Some(state) = cache.states.get(prefix) else {
+            return 0.0;
+        };
+        let lp = self.logit(self.token(ch), &state.y) - state.lse;
+        if cache.states.len() > CACHE_CAP {
+            cache.evict();
+        }
+        lp
+    }
+
     /// 下一个字的 log 概率分布里最大的几个（调试用）。
     pub fn top_next(&self, prefix: &[u32], k: usize) -> Vec<(char, f32)> {
         let Ok(mut cache) = self.cache.lock() else {

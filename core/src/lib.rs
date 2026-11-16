@@ -132,6 +132,14 @@ pub const MERGED_PAIR_SCORE: f64 = 1.5;
 pub const COMPOSED_WORD_MAX_CHARS: usize = 4;
 
 /// 能拿来联想的词：都是字母、数字、汉字（没有标点、符号、`</s>` 这类记号），不是单个英文字母。
+/// 有字级神经语言模型时，联想先从词级模型取这么多个后续词（差不多是前一个词的全部后续词），
+/// 按字级模型给第一个字的概率留下 [`ASSOCIATE_RESCORE`] 个，再算整词的概率排出一页。
+const ASSOCIATE_POOL: usize = 2000;
+/// 见 [`ASSOCIATE_POOL`]：整词的概率每个要算一两步前向（约 1 ms 一步），留得太多上屏时会卡。
+const ASSOCIATE_RESCORE: usize = 12;
+/// 字级模型认为「下一个字是这个词的第一个字」的 log 概率低于这个（约 1/400）就不拿来联想（学到的搭配不受限）。
+const ASSOCIATE_MIN_LOGPROB: f64 = -6.0;
+
 fn associable(word: &str) -> bool {
     let n = word.chars().count();
     n > 0 && word.chars().all(char::is_alphanumeric) && !(n == 1 && word.is_ascii())
@@ -1021,19 +1029,57 @@ impl Engine {
             }
         }
         let just_plain = self.lexicon_form(just);
+        let nnlm = self.nnlm.read().ok().and_then(|m| m.clone());
+        let learned: Vec<String> = self
+            .pairs
+            .read()
+            .map(|p| p.next_words(keys.first().map_or("", String::as_str), now_ms()))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, heat)| *heat >= learn::MIN_PICK_HEAT)
+            .map(|(w, _)| w)
+            .collect();
         for key in &keys {
-            let mut out: Vec<String> = Vec::new();
-            for (word, _) in self.predict_next(key, limit.saturating_mul(2)) {
-                if out.len() >= limit {
-                    break;
-                }
-                if !associable(&word) || word == *key || word == just || word == just_plain || out.contains(&word) {
+            // 有字级模型时多取一些再按它重排（见 ASSOCIATE_POOL）
+            let pool = if nnlm.is_some() { ASSOCIATE_POOL.max(limit) } else { limit.saturating_mul(2) };
+            let mut out: Vec<(String, f64)> = Vec::new();
+            for (word, score) in self.predict_next(key, pool) {
+                if !associable(&word) || word == *key || word == just || word == just_plain {
                     continue;
                 }
-                out.push(word);
+                if out.iter().any(|(w, _)| *w == word) {
+                    continue;
+                }
+                out.push((word, score));
             }
+            if let Some(model) = &nnlm {
+                // 词级模型给的是 ln(P(词|前词) / P(词))，按它排偏向罕见的固定搭配（你好 -> 久放、谢谢 -> 抬爱）；
+                // 字级模型给的是真正的条件概率：按「光标前的字接这个词的第一个字」重排，学到的搭配照旧在前
+                // 先按第一个字的概率粗筛（一次前向，之后每个词只是一次点积），再给留下的算整词的概率
+                let context = model.context_tokens(before);
+                let mut scored: Vec<(String, f64, bool)> = out
+                    .into_iter()
+                    .map(|(w, _)| {
+                        let first = w.chars().next().unwrap_or(' ');
+                        let r = f64::from(model.next_char_logprob(&context, first));
+                        let mine = learned.contains(&w);
+                        (w, r, mine)
+                    })
+                    .filter(|(_, r, mine)| *mine || *r >= ASSOCIATE_MIN_LOGPROB)
+                    .collect();
+                scored.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.total_cmp(&a.1)));
+                scored.truncate(ASSOCIATE_RESCORE);
+                // 整词的 log 概率按字数的平方根折算：不全按总和（总偏向单字）也不全按平均（总偏向长词）
+                for (w, r, _) in scored.iter_mut() {
+                    let n = w.chars().count().max(1) as f64;
+                    *r = model.score(&context, w) / n.sqrt();
+                }
+                scored.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.total_cmp(&a.1)));
+                out = scored.into_iter().map(|(w, r, _)| (w, r)).collect();
+            }
+            out.truncate(limit);
             if !out.is_empty() {
-                return out;
+                return out.into_iter().map(|(w, _)| w).collect();
             }
         }
         Vec::new()
