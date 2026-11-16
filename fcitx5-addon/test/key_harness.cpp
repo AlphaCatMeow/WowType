@@ -2105,14 +2105,24 @@ void runCases(Instance &instance) {
         fresh(ic.get());
         type(ic.get(), "ceshiciku<sp>");
         check(ic->committed == "测试词库", "只改别的设置时词库不动，实际 " + ic->committed);
-        // 用户词库、输入习惯的文件在、却读不出来（这里写成不是 UTF-8 的）：下面重新载入以后，第一次存之前
-        // 先把原文件改名留成 <原名>.bad-<时间戳>，不拿只有这次运行里学到的内容把它盖掉
+        // 用户词库、输入习惯的文件在、却读不出来：下面重新载入以后，第一次存之前先把原来的改名留成
+        // <原名>.bad-<时间戳>，不拿只有这次运行里学到的内容把它盖掉。
+        // 夹着坏字节的文件核心现在只跳过坏行、照常读得出来（核心有测试），这里用同名的目录造一个
+        // 真读不出来的（root 跑也读不出来，不靠权限位），目录里放个文件，留底以后核对它还在
         const std::filesystem::path userDict = std::getenv("WOWTYPE_USER_DICT");
         const std::filesystem::path historyFile = userDict.parent_path() / "history.tsv";
-        const std::string garbage = "ni hao\t你好\t1\n\xff\xfe\xfd 坏了\n";
+        const std::string garbage = "ni hao\t你好\t1\n";
         const auto slurp = [](const std::filesystem::path &file) {
             std::ifstream in(file, std::ios::binary);
             return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        };
+        const auto unreadable = [&](const std::filesystem::path &path) {
+            std::filesystem::remove_all(path);
+            std::filesystem::create_directories(path);
+            std::ofstream(path / "kept", std::ios::binary) << garbage;
+        };
+        const auto keptInside = [&](const std::filesystem::path &dir) {
+            return std::filesystem::is_directory(dir) && slurp(dir / "kept") == garbage;
         };
         const auto backups = [](const std::filesystem::path &file) {
             std::vector<std::filesystem::path> found;
@@ -2128,15 +2138,15 @@ void runCases(Instance &instance) {
         // 攒着的先存掉（失去焦点就存）：重新载入之前就不会再存一次、把下面写的坏文件换掉
         ic->focusOut();
         ic->focusIn();
-        std::ofstream(userDict, std::ios::binary) << garbage;
-        std::ofstream(historyFile, std::ios::binary) << garbage;
+        unreadable(userDict);
+        unreadable(historyFile);
         // 词库文件被换掉（更新了词库包），路径没变：reloadConfig 时也重新载入
         std::ofstream(dictFile) << "ping guo\t平锅\t1000000\nce shi ci ku\t测试词库\t100\n"
                                    "geng xin le\t更新了\t100\n";
         addon->reloadConfig();
         const bool reloaded = waitFor("gengxinle", "更新了");
         check(reloaded, "词库文件更新后重新载入：" + join(page(ic.get())));
-        check(slurp(userDict) == garbage && slurp(historyFile) == garbage && backups(userDict).empty() &&
+        check(keptInside(userDict) && keptInside(historyFile) && backups(userDict).empty() &&
                   backups(historyFile).empty(),
               "读不出来的用户词库、输入习惯：还没到存的时候原样留着");
         for (int round = 1; round <= 2; ++round) {
@@ -2149,14 +2159,14 @@ void runCases(Instance &instance) {
             const auto historyKept = backups(historyFile);
             const std::string dictNow = slurp(userDict);
             const std::string historyNow = slurp(historyFile);
-            check(dictKept.size() == 1 && slurp(dictKept[0]) == garbage && historyKept.size() == 1 &&
-                      slurp(historyKept[0]) == garbage,
+            check(dictKept.size() == 1 && keptInside(dictKept[0]) && historyKept.size() == 1 &&
+                      keptInside(historyKept[0]),
                   "读不出来的用户词库、输入习惯存之前改名留成 .bad-<时间戳>，只留一次（第 " +
                       std::to_string(round) + " 次存）：" + std::to_string(dictKept.size()) + " / " +
                       std::to_string(historyKept.size()) + " 份");
-            check(!dictNow.empty() && dictNow.find('\xff') == std::string::npos &&
+            check(!dictNow.empty() && std::filesystem::is_regular_file(userDict) &&
                       historyNow.find("更新了") != std::string::npos &&
-                      historyNow.find('\xff') == std::string::npos,
+                      std::filesystem::is_regular_file(historyFile),
                   "新学到的另存成好的文件（第 " + std::to_string(round) + " 次存）");
         }
         fresh(ic.get());
