@@ -9,10 +9,12 @@
 //! 分词用词库：每段汉字取词频乘积最大的切法（最长 8 个字一个词）。
 //! 句号、问号、叹号、分号、换行之后算句首（前一个词是 `<s>`）；逗号等只断开、不算句首。
 //!
-//! 整词内部的搭配也记：切出来的多字词（我要、不知道）在不许用它自己的前提下再切一次（我 | 要、不 | 知道），
-//! 内部相邻两段也记一次搭配。不这样做的话，词库里有「我要」「我会」「我觉得」，整词总是赢，
-//! （我, 要）这类最常见的搭配一次都数不到：先上屏「我」再打 yao 时，「腰」比「要」分还高。
-//! `--no-split-compounds` 关掉。
+//! `--split-compounds`（默认关）：整词内部的搭配也记，切出来的多字词（我要、不知道）在不许用它自己的前提下
+//! 再切一次（我 | 要、不 | 知道），内部相邻两段也记一次搭配。本意是让（我, 要）这类被整词盖住的搭配也有计数，
+//! 但实测（2026-11-17，LCCC + 维基，scripts/eval.sh）得不偿失：日常整句 +3.6、上文 +0.9，常用词 -3.2、
+//! 截断精确词 -10.8、简拼 -1.5，回归集挂两条（jieran、qianhouduan）。拼凑路径（截 | 然）被抬得和整词一样高，
+//! 整句挤掉了整词；搭配上限放到 800 万也一样，不是名额的问题。「先上屏『我』再打 yao」那种情况，
+//! 解码时已经有合词保底（lib.rs 的 MERGED_PAIR_SCORE）。
 //!
 //! 选项：`--threads N`、`--min-count N`、`--max-bigrams N`、`--min-unigram N`、
 //! `--max-chars N`（只读前 N 个字，试跑用）、`--save-counts 文件`（把计数存下来）、
@@ -248,7 +250,7 @@ fn main() {
     let mut max_chars = u64::MAX;
     let mut config = BuildConfig::default();
     let mut save_counts: Option<String> = None;
-    let mut split_compounds = true;
+    let mut split_compounds = false;
     let mut from_counts: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
@@ -268,7 +270,7 @@ fn main() {
             "--min-unigram" => config.min_unigram = take().parse().unwrap_or(20),
             "--save-counts" => save_counts = Some(take()),
             "--from-counts" => from_counts = Some(take()),
-            "--no-split-compounds" => split_compounds = false,
+            "--split-compounds" => split_compounds = true,
             "-h" | "--help" => {
                 println!("用法：wowtype-lmbuild --lexicon lexicon.tsv [--s2t s2t.tsv] --out words.lm 语料...");
                 return;
