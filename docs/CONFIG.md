@@ -267,8 +267,8 @@ macOS 还没有的功能不列）。窗口只改它认识的键，文件里的�
 - 自定义词在同一个目录的 `custom.tsv`，格式和 [Linux 的](#自定义词)一样；菜单里「自定义词…」打开设置窗口的自定义词页
   （加词时自动填拼音，能删、导入、导出），保存后下一次按键时生效。
 - `AutoSpace` 只在应用告诉输入法光标前是什么字时才加（很多应用不告诉，这时不猜）。
-- [互译](#互译)用法和 Linux 一样（单按 Shift 中 → 英 → 译 → 中，原文在候选框顶上，译文写在输入框里）。在 `wowtype.conf` 里写
-  `Translate=True` 和 `TranslateBaseUrl`、`TranslateModel`（设置窗口的「文件」菜单能用文本编辑打开它）；API Key 用菜单里的「设置互译 API Key…」填，
+- [互译](#互译)用法和 Linux 一样（单按 Shift 中 → 英 → 译 → 中，原文在候选框顶上，译文写在输入框里）。在设置窗口的「翻译」页打开互译、
+  填接口地址和模型（也可以直接改 `wowtype.conf` 里的 `Translate`、`TranslateBaseUrl`、`TranslateModel`）；API Key 也在那一页填，
   存在同一个目录的 `translate.key`（0600，只有自己能读），不写进 `wowtype.conf`。系统开着安全输入（密码框）时照常打中文，不翻译。
 - 本地模型（`TranslateLocal=True`）：和 Linux 一样一键下载。设置窗口「翻译」页选「本地模型（离线）」，点「下载」，
   确认许可后模型（1.13 GB）下到数据目录的 `models/`（`TranslateLocalModel` 写了位置就下到那里），下完校验 SHA256，断了再点会接着下；好了那一行写「已就绪」。

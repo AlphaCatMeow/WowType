@@ -21,6 +21,9 @@ inline std::string_view bundledDataMarker(std::string_view fileName) {
     if (fileName == "english.txt") {
         return "# Rime dictionary"; // 雾凇的英文词表原样拼接
     }
+    if (fileName == "s2t.tsv") {
+        return "# 由 tools/opencc2tsv.py 生成"; // 简繁对照表
+    }
     if (fileName == "wubi86.tsv") {
         return "a\t工\t99454797"; // scripts/make-wubi.sh 从 rime-wubi 生成的码表，没有注释行，认第一条
     }

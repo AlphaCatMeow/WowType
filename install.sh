@@ -146,8 +146,15 @@ macos_install() { # <只打印计划：0 / 1>
 
   say "安装到 ~/Library/Input Methods（只装给当前用户）"
   installer -pkg "$tmp/$package" -target CurrentUserHomeDirectory
-  say "装好了。菜单栏的输入法里选 WowType 就能用。"
-  echo "菜单栏里没有的话：系统设置 → 键盘 → 输入法 → 编辑 → +，在「简体中文」里添加 WowType；还没有就注销重新登录一次。"
+  # 安装包的 postinstall 会登记并打开输入法，失败了也不报错：这里再确认一次，没打开就说实话、把面板打开
+  local bin="$HOME/Library/Input Methods/WowType.app/Contents/MacOS/WowType"
+  if [[ -x "$bin" ]] && "$bin" --enable >/dev/null 2>&1; then
+    say "装好了。菜单栏的输入法里选 WowType 就能用。"
+  else
+    warn "装好了，但没能自动把 WowType 加进输入法。"
+    echo "已为你打开「系统设置 → 键盘」：输入法 → 编辑 → +，在「简体中文」里添加 WowType；列表里没有就注销重新登录一次。"
+    open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension" 2>/dev/null || true
+  fi
 }
 
 select_platform() {
@@ -283,7 +290,7 @@ install_packages() {
       ;;
     dnf)
       "${SUDO[@]}" dnf install -y "${paths[@]}" \
-        fcitx5-configtool fcitx5-gtk3 fcitx5-gtk4 fcitx5-qt5 fcitx5-qt6 \
+        fcitx5-configtool fcitx5-gtk3 fcitx5-gtk4 fcitx5-qt5 fcitx5-qt6 fcitx5-autostart \
         python3-gobject gtk4 libadwaita gobject-introspection
       ;;
   esac

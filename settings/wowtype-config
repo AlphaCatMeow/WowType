@@ -72,6 +72,7 @@ BUNDLED_DATA_MARKERS = {
     "lexicon.tsv": "# 由 tools/rime2tsv.py 生成",
     "english.txt": "# Rime dictionary",
     "wubi86.tsv": "a\t工\t99454797",
+    "s2t.tsv": "# 由 tools/opencc2tsv.py 生成",
 }
 # 发布过的官方 words.lm 的字节数（二进制文件没有标记可看），和插件的 kOfficialLmSizes 一样
 OFFICIAL_LM_SIZES = (38455852,)  # lm-2026.11.09
@@ -1236,10 +1237,13 @@ def add_to_group_cli(restart):
     if known is None:
         print(profile_add_wowtype())
         return 0
-    if not known:
-        if not restart:
-            print("fcitx5 还没载入 WowType，要先重启 fcitx5")
-            return 3
+    if not known and not restart:
+        print("fcitx5 还没载入 WowType，要先重启 fcitx5")
+        return 3
+    if restart:
+        # 认得也重启：升级时 fcitx5 里跑着的是旧插件，不重启新版不生效
+        # （以前认得就不重启，安装脚本却照样说「刚重启了 fcitx5」）
+        known = False
         restart_fcitx_sync()
         for _ in range(60):  # 最多等 15 秒
             time.sleep(0.25)
@@ -1858,22 +1862,43 @@ def background_check():
         return 0
     state["checked"] = time.time()
     write_update_state(state)
-    if not is_newer(release) or state.get("notified") == release["tag"]:
+    if not is_newer(release):
+        # 已经是最新版：应用内更新下载的安装包用不上了（每版三十多 MB），清掉
+        shutil.rmtree(UPDATE_DIR, ignore_errors=True)
         return 0
+    if state.get("notified") == release["tag"]:
+        return 0
+    # 先记下来：通知要等用户点了或关了才返回，这期间每小时一次的检查不该再弹一条
     state["notified"] = release["tag"]
     write_update_state(state)
+
+    def forget_notified():
+        # 通知没发出去（没装 notify-send、通知服务不在）：别当成提醒过了，下次检查再试
+        state.pop("notified", None)
+        write_update_state(state)
     # NixOS、Manjaro、源码安装等没法一键装，通知里别说「一键安装」
     manager, _distro, _arch, reason = update_platform()
     one_click = not reason and package_version(manager) is not None
     hint = "一键安装" if one_click else "看怎么更新"
+    title = f"WowType {release['version']} 可以更新了"
+    body = f"当前是 {current_version()}。打开设置可以看更新内容，{hint}。"
+    base = ["notify-send", "--app-name=WowType", "--icon=wowtype"]
     try:
-        chosen = subprocess.run(
-            ["notify-send", "--app-name=WowType", "--icon=wowtype",
-             "--action=open=查看更新", "--action=default=查看更新",
-             f"WowType {release['version']} 可以更新了",
-             f"当前是 {current_version()}。打开设置可以看更新内容，{hint}。"],
-            capture_output=True, text=True, timeout=24 * 3600).stdout.strip()
+        done = subprocess.run(
+            [*base, "--action=open=查看更新", "--action=default=查看更新", title, body],
+            capture_output=True, text=True, timeout=24 * 3600)
+        if done.returncode != 0:
+            # 老版本的 notify-send 不认 --action：发一条不带按钮的
+            done = subprocess.run([*base, title, body + "在应用菜单里打开「WowType 设置」。"],
+                                  capture_output=True, text=True, timeout=60)
+            if done.returncode != 0:
+                forget_notified()
+            return 0
+        chosen = done.stdout.strip()
+    except subprocess.TimeoutExpired:
+        return 0
     except (OSError, subprocess.SubprocessError):
+        forget_notified()
         return 0
     if chosen in ("open", "default"):
         os.execv(sys.executable, [sys.executable, os.path.abspath(__file__), "--page", "update"])

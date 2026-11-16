@@ -2406,6 +2406,19 @@ bool WowtypeEngine::pollVoice() {
         } else {
             showVoice(ic, "🎙 " + text, {});
         }
+#ifdef WOWTYPE_CONFIG_TOOL
+        // 没下载模型：提示只有几秒、点不了，直接把设置界面的「语音」页打开（那里有下载按钮）。
+        // 一次运行里只开一次，不想用语音的人误按语音键不会被反复打扰；测试里不开
+        if (static bool opened = false;
+            !opened && wowtype_voice_model_state(voice_) == WOWTYPE_VOICE_MODEL_MISSING &&
+            !std::getenv("WOWTYPE_NO_UPDATE_CHECK")) {
+            opened = true;
+            std::error_code ec;
+            if (std::filesystem::exists(WOWTYPE_CONFIG_TOOL, ec)) {
+                fcitx::startProcess({WOWTYPE_CONFIG_TOOL, "--page", "voice"});
+            }
+        }
+#endif
         // 没下载模型的提示要去设置里操作，多留一会儿让人看清
         voiceErrorUntil_ = fcitx::now(CLOCK_MONOTONIC) +
                            (wowtype_voice_model_state(voice_) == WOWTYPE_VOICE_MODEL_MISSING
