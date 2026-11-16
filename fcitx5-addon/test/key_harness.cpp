@@ -2230,6 +2230,31 @@ void runTranslateCase(Instance &instance, std::function<void()> done) {
                      return ic->committed.empty() && preedit(ic).empty() && inlineText(ic).empty() &&
                             page(ic).empty();
                  }});
+    // 「译」里选的词进了原文、没有上屏，引擎也学到了：失去焦点时照样存用户词库和输入习惯
+    // （以前只在上屏时数，只在「译」里打字的话一条都不存）
+    s.push_back({"只在「译」里选了词：失去焦点时也存用户词库",
+                 [reset](HarnessInputContext *ic) {
+                     reset(ic);
+                     // 前面上屏攒着的先存掉（失去焦点就存），再把文件删了：下面只在「译」里选一次词
+                     ic->focusOut();
+                     ic->focusIn();
+                     const std::filesystem::path dict = std::getenv("WOWTYPE_USER_DICT");
+                     std::error_code ec;
+                     std::filesystem::remove(dict, ec);
+                     std::filesystem::remove(dict.parent_path() / "history.tsv", ec);
+                     type(ic, "nihao<sp>");
+                     check(ic->committed.empty() && preedit(ic) == "你好", "互译：选的词进了原文，没上屏");
+                     ic->focusOut();
+                     ic->focusIn();
+                 },
+                 [](HarnessInputContext *ic) {
+                     const std::filesystem::path dict = std::getenv("WOWTYPE_USER_DICT");
+                     std::ifstream in(dict.parent_path() / "history.tsv");
+                     const std::string history((std::istreambuf_iterator<char>(in)),
+                                               std::istreambuf_iterator<char>());
+                     return ic->committed.empty() && std::filesystem::exists(dict) &&
+                            history.find("你好") != std::string::npos;
+                 }});
     s.push_back({"数字进原文；打拼音时原文框里带着前面的原文",
                  [reset](HarnessInputContext *ic) {
                      reset(ic);

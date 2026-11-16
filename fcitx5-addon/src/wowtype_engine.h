@@ -508,6 +508,9 @@ private:
     std::string segmentedRemaining(WowtypeState *state);
     /// 会话上屏以后：上屏 frame->commit、清空外壳的状态；frame->learned 时攒着存用户词库。
     void finishCommit(fcitx::InputContext *ic, WowtypeState *state, const WowtypeFrame *frame);
+    /// 会话这次调用里引擎学到了选词（frame->learned）就记一次，返回记了没有。会话给的每个 frame 都要过
+    /// 一遍（finishCommit 里也是它）：「译」里选的词进了原文、没有要上屏的字，也是学到了。
+    bool countLearned(const WowtypeFrame *frame);
     /// 上屏已选的词 + 还没选的原始输入（切输入法、打到一半切英文），原始输入也记一次选词。
     void commitInput(fcitx::InputContext *ic, WowtypeState *state);
     /// 选中光标所在的候选；没有候选时上屏原始输入（交给会话按一次空格）。
@@ -548,7 +551,7 @@ private:
     /// lexicon_ 载入时的 (大小, 修改时间)：同一个路径的文件被换掉（更新了词库包）也要重载。
     std::pair<std::uintmax_t, long long> lexiconStamp_{0, 0};
     fcitx::FactoryFor<WowtypeState> factory_;
-    /// 距离上次保存用户词库的上屏次数。
+    /// 距离上次保存用户词库，引擎学到了几次（上屏、「译」里选词进原文、忘掉学错的词）。
     int unsavedCommits_ = 0;
 
     WowtypeConfig config_;

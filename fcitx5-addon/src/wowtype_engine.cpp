@@ -1240,17 +1240,22 @@ void WowtypeEngine::maybeSaveUserDict(bool force) {
     }
 }
 
+bool WowtypeEngine::countLearned(const WowtypeFrame *frame) {
+    if (!frame || !frame->learned || !core_) {
+        return false;
+    }
+    ++unsavedCommits_;
+    return true;
+}
+
 void WowtypeEngine::finishCommit(fcitx::InputContext *ic, WowtypeState *state,
                                  const WowtypeFrame *frame) {
     // 会话已经清空编辑区、记过选词和上文、补好了空格；这里上屏、攒着存用户词库
     const std::string text = frame && frame->commit ? frame->commit : "";
-    const bool learned = frame && frame->learned;
+    const bool learned = countLearned(frame);
     if (ic && !text.empty()) {
         // 会话已经补好了空格；互译时攒原文也是会话做的，这里上屏的是译文、原文或不在互译时的字
         ic->commitString(text);
-    }
-    if (learned && core_ && !text.empty()) {
-        ++unsavedCommits_;
     }
     // 会话上屏时已经清好了它上屏的那部分，这里从不 reset 会话（reset 会把还在打的丢掉）：只丢掉抄的候选，
     // 会话还在打字就重新抄（五笔顶字：首选上屏，新打的字母开始下一个码；离开「译」：拼音留着接着打）
@@ -1395,13 +1400,22 @@ void WowtypeEngine::applySessionFrame(fcitx::InputContext *ic, WowtypeState *sta
         updateInputPanel(ic, state);
         return;
     }
+    // 没有要上屏的字也可能学到了：「译」里选的词进了原文，不在 frame->commit 里。也记一次、攒够了存，
+    // 不然只在「译」里打字的话，失去焦点、退出时一条都不存（frame 在下一次调会话前有效，先读出来）
+    const bool learned = countLearned(frame);
     if (!state->composing()) {
         state->forgetCandidates();
         updateInputPanel(ic, state);
+        if (learned) {
+            maybeSaveUserDict(false);
+        }
         return;
     }
     const bool wasExpanded = state->expanded_;
     const bool recopied = syncView(state);
+    if (learned) {
+        maybeSaveUserDict(false);
+    }
     if (recopied || wasExpanded || state->expanded_) {
         updateInputPanel(ic, state);
         return;
@@ -1786,8 +1800,12 @@ void WowtypeEngine::commitCandidate(fcitx::InputContext *ic,
     if (frame->commit) {
         finishCommit(ic, state, frame);
     } else {
-        // 句首词进了已选栈，剩下的拼音继续选
+        // 句首词进了已选栈，剩下的拼音继续选；「译」里是选的词进了原文（没有要上屏的字，学到了照样记）
+        const bool learned = countLearned(frame);
         refreshCandidates(state);
+        if (learned) {
+            maybeSaveUserDict(false);
+        }
     }
     updateInputPanel(ic, state);
 }
@@ -2081,6 +2099,8 @@ void WowtypeEngine::followSessionMode(fcitx::InputContext *ic, WowtypeState *sta
     const bool committed = frame->commit != nullptr;
     if (committed) {
         finishCommit(ic, state, frame);
+    } else {
+        countLearned(frame);
     }
     switchMode(ic, state, mode == WOWTYPE_MODE_ENGLISH, mode == WOWTYPE_MODE_TRANSLATE, true);
     if (committed || state->composing()) {
@@ -2115,6 +2135,8 @@ void WowtypeEngine::syncMode(fcitx::InputContext *ic, WowtypeState *state) {
         if (frame && frame->commit && ic) {
             finishCommit(ic, state, frame);
             updateInputPanel(ic, state);
+        } else {
+            countLearned(frame);
         }
     };
     if (want == WOWTYPE_MODE_TRANSLATE) {
