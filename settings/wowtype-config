@@ -734,16 +734,9 @@ class Fcitx:
         self.call("SetConfig", GLib.Variant("(sv)", (uri, raw)),
                   done=lambda value: done and done(value is not None))
 
-    def add_to_group(self, group, layout, items, done):
-        items = list(items) + [("wowtype", "")]
-        self.call("SetInputMethodGroupInfo", GLib.Variant("(ssa(ss))", (group, layout, items)),
-                  done=lambda value: done(value is not None))
-
     def set_hotkeys(self, lists, done=None):
         """改 fcitx5 全局快捷键里的几个按键列表 {选项: [按键…]}，别的不动，立即生效。"""
-        raw = GLib.Variant("a{sv}", {"Hotkey": GLib.Variant(
-            "a{sv}", {option: key_list_variant(keys) for option, keys in lists.items()})})
-        self.call("SetConfig", GLib.Variant("(sv)", (GLOBAL_URI, raw)),
+        self.call("SetConfig", GLib.Variant("(sv)", (GLOBAL_URI, hotkey_config_variant(lists))),
                   done=lambda value: done and done(value is not None))
 
 
@@ -791,6 +784,12 @@ def key_list(value):
 
 def key_list_variant(keys):
     return GLib.Variant("a{sv}", {str(i): GLib.Variant("s", k) for i, k in enumerate(keys)})
+
+
+def hotkey_config_variant(lists):
+    """{选项: [按键…]} → fcitx5 全局配置 SetConfig 要的值（只含这几项，fcitx5 按部分配置合并）。"""
+    return GLib.Variant("a{sv}", {"Hotkey": GLib.Variant(
+        "a{sv}", {option: key_list_variant(keys) for option, keys in lists.items()})})
 
 
 def bare_shift(key):
@@ -1288,12 +1287,13 @@ def system_keyboard_layout():
     return f"{layout}-{variant}" if variant else layout
 
 
-def profile_add_wowtype(path=PROFILE_FILE):
-    """fcitx5 没在跑时直接改它的配置文件 profile，把 WowType 加进第一个分组。
+def profile_add_wowtype(path=None):
+    """fcitx5 没在跑时直接改它的配置文件 profile（默认 PROFILE_FILE），把 WowType 加进第一个分组。
 
     没有 profile（fcitx5 还没运行过）就新建一个：系统键盘布局 + WowType。
     fcitx5 退出时会把内存里的分组写回 profile，所以只能在它没在跑时改。返回说明文字。
     """
+    path = path or PROFILE_FILE
     try:
         with open(path, encoding="utf-8") as f:
             text = f.read()
@@ -1331,19 +1331,23 @@ def profile_add_wowtype(path=PROFILE_FILE):
     return f"已把 WowType 加进输入法列表「{first}」（原来的存成 profile.bak-wowtype）"
 
 
-def add_to_group_cli(restart):
+def add_to_group_cli(restart, say=print):
     """安装脚本用（wowtype-config --add-to-group [--restart]）：把 WowType 加进当前输入法分组。
 
     fcitx5 在跑：认得 WowType 就经 D-Bus 加；不认得（刚装完）时带 --restart 先让它重启，
-    否则返回 3。fcitx5 没在跑：直接改 profile。成功（含本来就在）返回 0。
+    否则返回 3。fcitx5 没在跑：直接改 profile。第一次配置 fcitx5 时顺手让出左 Shift
+    （free_left_shift_first_time）。成功（含本来就在）返回 0。
     """
+    first = fcitx_first_time()
     known = fcitx_knows_wowtype()
     if known is None:
-        print(profile_add_wowtype())
+        say(profile_add_wowtype())
+        if first:
+            free_left_shift_first_time(False, say)
         return 0
     if not known:
         if not restart:
-            print("fcitx5 还没载入 WowType，要先重启 fcitx5")
+            say("fcitx5 还没载入 WowType，要先重启 fcitx5")
             return 3
         restart_fcitx_sync()
         for _ in range(60):  # 最多等 15 秒
@@ -1352,21 +1356,265 @@ def add_to_group_cli(restart):
             if known:
                 break
         if not known:
-            print("重启 fcitx5 以后还是找不到 WowType，请注销重新登录后在 fcitx5 配置里添加")
+            say("重启 fcitx5 以后还是找不到 WowType，请注销重新登录后在 fcitx5 配置里添加")
             return 1
-        print("已重启 fcitx5")
+        say("已重启 fcitx5")
     group = fcitx_call_sync("CurrentInputMethodGroup", None, "(s)").unpack()[0]
     info = fcitx_call_sync("InputMethodGroupInfo", GLib.Variant("(s)", (group,)), "(sa(ss))")
     layout, items = info.unpack()
     if any(name == "wowtype" for name, _ in items):
-        print(f"WowType 已经在输入法列表「{group}」里")
+        say(f"WowType 已经在输入法列表「{group}」里")
         return 0
     items = list(items) + [("wowtype", "")]
     if fcitx_call_sync("SetInputMethodGroupInfo",
                        GLib.Variant("(ssa(ss))", (group, layout, items))) is None:
-        print("添加失败，请在 fcitx5 配置里手动添加 WowType")
+        say("添加失败，请在 fcitx5 配置里手动添加 WowType")
         return 1
-    print(f"已把 WowType 加进输入法列表「{group}」")
+    say(f"已把 WowType 加进输入法列表「{group}」")
+    if first:
+        free_left_shift_first_time(True, say)
+    return 0
+
+
+# ---------------------------------------------------------------- 一键设置
+#
+# 不走 install.sh、直接装 .deb / .rpm / Arch 包的用户：wowtype-config --setup 或设置第一页的「一键设置」
+# 把 install.sh 以前做的几步做完：切输入法框架（im-config）、把 WowType 加进输入法列表、必要时重启 fcitx5。
+# install.sh 现在也是调它。
+
+def fcitx_user_config_file():
+    return os.path.join(_xdg("XDG_CONFIG_HOME", "~/.config"), "fcitx5", "config")
+
+
+def fcitx_first_time():
+    """用户还没有 fcitx5 的配置（输入法列表 profile、全局配置 config 都没有）：第一次配置 fcitx5。"""
+    return not os.path.exists(PROFILE_FILE) and not os.path.exists(fcitx_user_config_file())
+
+
+def fcitx_config_with_hotkeys(text, lists):
+    """fcitx5 全局配置文件的原文里，把 {选项: [按键…]} 这几个快捷键换掉，别的行原样留着。
+
+    写法和 fcitx5 存的一样（parse_fcitx_hotkey 读）：空列表是 [Hotkey] 下的「选项=」，
+    非空是 [Hotkey/选项] 下的 0=、1=…"""
+    drop = {f"Hotkey/{option}" for option in lists}
+    out, section = [], None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1]
+        elif section == "Hotkey" and stripped.partition("=")[0].strip() in lists:
+            continue
+        if section in drop:
+            continue
+        out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    empty = [option for option, keys in lists.items() if not keys]
+    if empty:
+        if "[Hotkey]" not in (line.strip() for line in out):
+            out += ([""] if out else []) + ["[Hotkey]"]
+        at = next(i for i, line in enumerate(out) if line.strip() == "[Hotkey]") + 1
+        out[at:at] = [f"{option}=" for option in empty]
+    for option, keys in lists.items():
+        if keys:
+            out += ([""] if out else []) + [f"[Hotkey/{option}]"] + [f"{i}={k}" for i, k in enumerate(keys)]
+    return "\n".join(out) + "\n"
+
+
+def free_left_shift_first_time(running, say=print):
+    """第一次配置 fcitx5 时（fcitx_first_time），把 fcitx5 默认占着的左 Shift（「临时切换输入法」AltTriggerKeys）
+    让给 WowType，不然单按左 Shift 切不了中英文。只在这一次做，已有配置的用户不动；设置「输入」页的开关能还回去
+    （和那个开关一样记在 state 的 fcitx_shift_freed 里）。
+
+    running：fcitx5 在跑就经 D-Bus 改（fcitx5 自己存文件）；没在跑就直接写 ~/.config/fcitx5/config。返回改了没有。"""
+    toggle = read_config()[0].get("ShiftToggle", "Both")
+    if "Shift_L" not in SHIFT_SIDES.get(toggle, ()):
+        return False
+    path = None
+    if running:
+        value = fcitx_call_sync("GetConfig", GLib.Variant("(s)", (GLOBAL_URI,)), "(va(sa(sssva{sv})))")
+        hotkey = None if value is None else value.unpack()[0].get("Hotkey")
+        if not isinstance(hotkey, dict):
+            return False
+    else:
+        hotkey, path = saved_fcitx_hotkey()
+    keys = key_list(hotkey.get("AltTriggerKeys"))
+    if "Shift_L" not in keys:
+        return False
+    keys.remove("Shift_L")
+    lists = {"AltTriggerKeys": keys}
+    if running:
+        if fcitx_call_sync("SetConfig", GLib.Variant("(sv)", (GLOBAL_URI, hotkey_config_variant(lists)))) is None:
+            return False
+    else:
+        base = ""
+        if path:  # 系统的默认配置（/etc/xdg/fcitx5/config）：用户的文件会整个盖掉它，别的项照抄
+            try:
+                with open(path, encoding="utf-8") as f:
+                    base = f.read()
+            except OSError:
+                pass
+        try:
+            write_atomic(fcitx_user_config_file(), fcitx_config_with_hotkeys(base, lists))
+        except OSError:
+            return False
+    freed = [list(k) for k in read_state().get("fcitx_shift_freed", [])]
+    if ["AltTriggerKeys", "Shift_L"] not in freed:
+        update_state(fcitx_shift_freed=freed + [["AltTriggerKeys", "Shift_L"]])
+    log("第一次配置 fcitx5：把「临时切换输入法」的左 Shift 让给 WowType")
+    say("左 Shift 让给了 WowType（单按切中英文），切换输入法用 Ctrl+空格；"
+        "想还给 fcitx5，到「WowType 设置」的「输入」页关掉")
+    return True
+
+
+SETUP_OK, SETUP_FAILED, SETUP_RELOGIN, SETUP_RESTARTED, SETUP_UNFINISHED = 0, 1, 2, 3, 4
+
+
+def im_config_active():
+    """im-config 的当前设置（用户设过的，没设过用系统的）；没有 im-config 或读不出来是 None。"""
+    tool = shutil.which("im-config")
+    if not tool:
+        return None
+    try:
+        lines = subprocess.run([tool, "-m"], capture_output=True, text=True, timeout=10).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # 第 1 行系统的设置，第 2 行当前用户的（没设过是 missing）
+    active = lines[1].strip() if len(lines) > 1 else ""
+    if active in ("", "missing"):
+        active = lines[0].strip() if lines else ""
+    return active or None
+
+
+def own_im_framework():
+    """系统自己管输入法框架、不该去动的：deepin（默认就是 fcitx5，经 deepin-im）。"""
+    return read_os_release().get("ID", "").lower() == "deepin"
+
+
+def setup_action(known, im_active):
+    """一键设置该做什么。known 是 fcitx_knows_wowtype() 的结果；im_active 是能用 im-config 切时它现在的设置，否则 None。
+
+    add       fcitx5 在跑、认得 WowType：加进输入法列表
+    restart   在跑、不认得（刚装完还没载入新插件）：重启它再加
+    im-config 没在跑，框架不是 fcitx5（Ubuntu 默认 IBus）：im-config -n fcitx5、写好输入法列表，注销重新登录
+    profile   没在跑，框架已经是 fcitx5（或者没有 im-config、不让改）：写好输入法列表，等 fcitx5 下次启动"""
+    if known:
+        return "add"
+    if known is False:
+        return "restart"
+    if im_active is not None and im_active != "fcitx5":
+        return "im-config"
+    return "profile"
+
+
+def setup_question(action, im_active):
+    """这一步要先问用户的话（不用问是 None）。"""
+    if action == "im-config":
+        return f"现在的输入法框架是「{im_active}」，切换到 fcitx5 吗？（要注销重新登录一次）"
+    if action == "restart":
+        return "fcitx5 正在运行，要重启一次才能载入 WowType。现在重启它并把 WowType 加进输入法列表吗？" + RESTART_NOTE
+    return None
+
+
+def framework_hint(im_allowed):
+    """fcitx5 没在跑、也没有 im-config 可用时，告诉用户怎么让桌面启动 fcitx5。"""
+    if not im_allowed or own_im_framework() or shutil.which("im-config"):
+        return None
+    return f"请在桌面设置中启用 Fcitx 5 并注销重新登录；Wayland / X11 的配置见 {INSTALL_GUIDE}"
+
+
+def run_setup(action, confirmed, first=False, say=print, allow_restart=True, hint=None):
+    """按 setup_action 做（confirmed：setup_question 问过、用户答应了）。返回 SETUP_*：
+
+    SETUP_OK 现在就能用；SETUP_RESTARTED 刚重启了 fcitx5（Chromium / Electron 程序要重开）；
+    SETUP_RELOGIN 要注销重新登录；SETUP_UNFINISHED 用户没答应或不让重启，还差一步；SETUP_FAILED 出错。"""
+    if action == "restart" and not (confirmed and allow_restart):
+        say("没重启 fcitx5。之后重启它（wowtype-config --restart-fcitx）或注销再登录，"
+            "再运行 wowtype-config --setup，或在「WowType 设置」第一页点「一键设置」")
+        return SETUP_UNFINISHED
+    if action in ("add", "restart"):
+        if add_to_group_cli(action == "restart", say) != 0:
+            return SETUP_FAILED
+        return SETUP_RESTARTED if action == "restart" else SETUP_OK
+    code = SETUP_RELOGIN
+    if action == "im-config":
+        if not confirmed:
+            say("没切换输入法框架，WowType 要在 fcitx5 下才能用")
+            code = SETUP_UNFINISHED
+        elif subprocess.run(["im-config", "-n", "fcitx5"], stdin=subprocess.DEVNULL).returncode == 0:
+            log("一键设置：im-config -n fcitx5")
+            say("已把输入法框架切到 fcitx5（im-config）")
+        else:
+            say("im-config 切换失败，请手动运行：im-config -n fcitx5，然后注销重新登录")
+            code = SETUP_UNFINISHED
+    elif hint:
+        say(hint)
+    try:
+        say(profile_add_wowtype())
+    except (OSError, RuntimeError) as e:
+        say(str(e))
+        return SETUP_FAILED
+    if first:
+        free_left_shift_first_time(False, say)
+    return code
+
+
+def ask_terminal(question, yes=False):
+    """命令行里问一句，默认「是」；没有终端（或 --yes）时直接按「是」（和 install.sh 一样）。"""
+    if yes or not sys.stdin.isatty():
+        return True
+    try:
+        answer = input(f"{question} [Y/n] ").strip()
+    except EOFError:
+        return True
+    return not answer or answer[0] in "Yy是"
+
+
+def setup_cli(args):
+    """wowtype-config --setup [--yes] [--no-im-config] [--no-restart]：见 run_setup，退出码是它的 SETUP_*。
+
+    环境变量 WOWTYPE_YES、WOWTYPE_NO_IM_CONFIG、WOWTYPE_NO_RESTART 和对应的选项一样（install.sh 也认这几个）。"""
+    yes = "--yes" in args or bool(os.environ.get("WOWTYPE_YES"))
+    im_allowed = not ("--no-im-config" in args or os.environ.get("WOWTYPE_NO_IM_CONFIG"))
+    allow_restart = not ("--no-restart" in args or os.environ.get("WOWTYPE_NO_RESTART"))
+    first = fcitx_first_time()
+    known = fcitx_knows_wowtype()
+    im_active = im_config_active() if im_allowed and known is None and not own_im_framework() else None
+    action = setup_action(known, im_active)
+    question = setup_question(action, im_active)
+    confirmed = (question is None or (action == "restart" and not allow_restart)
+                 or ask_terminal(question, yes))
+    code = run_setup(action, confirmed, first, lambda text: print(f"WowType：{text}"),
+                     allow_restart, framework_hint(im_allowed))
+    log(f"一键设置（命令行）：{action}，结果 {code}")
+    return code
+
+
+def setup_hint(known, in_group):
+    """装完还差哪一步（给 --notify-setup 的通知）：(标题, 正文)，什么都不差是 None。"""
+    if known and in_group:
+        return None
+    where = "打开应用菜单里的「WowType 设置」，"
+    if known:
+        return "WowType 已安装，还没加进输入法列表", where + "在第一页点「添加」。"
+    if known is False:
+        return "WowType 已安装，要重启一次输入法", where + "在第一页点「重启并添加」。" + RESTART_NOTE
+    return ("WowType 已安装，还差一步",
+            where + "在第一页点「一键设置」：切到 fcitx5 输入法框架、写好输入法列表，然后注销重新登录。")
+
+
+def notify_setup_cli():
+    """wowtype-config --notify-setup：deb 的 postinst 以已登录的图形会话用户身份调它。
+    还差哪一步就发一条通知（不带按钮，不等，GNOME 上点通知会打开设置），不改任何设置。"""
+    known = fcitx_knows_wowtype()
+    in_group = False
+    if known:
+        group = fcitx_call_sync("CurrentInputMethodGroup", None, "(s)")
+        info = group and fcitx_call_sync("InputMethodGroupInfo", GLib.Variant("(s)", group.unpack()), "(sa(ss))")
+        in_group = bool(info) and any(name == "wowtype" for name, _ in info.unpack()[1])
+    hint = setup_hint(known, in_group)
+    if hint:
+        notify(*hint)
     return 0
 
 
@@ -2597,6 +2845,88 @@ def restart_self_test():
     assert not restart_needed(None, "0.4.1")  # 插件没在跑、总线连不上：说不清，不提醒
     assert not restart_needed("0.4.0", "@VERSION@") and not restart_needed("", "@VERSION@")  # 源码直接跑
     assert restart_needed("0.4.1~git1.a", "0.4.1~git2.b")
+
+
+def setup_self_test():
+    """一键设置的分支判断，第一次配置时让出左 Shift（只动临时目录，不连 fcitx5）。"""
+    global PROFILE_FILE, STATE_FILE, CONFIG_FILE, LOG_FILE
+    import tempfile
+    assert setup_action(True, None) == "add" and setup_action(True, "ibus") == "add"
+    assert setup_action(False, None) == "restart"
+    assert setup_action(None, "ibus") == "im-config" and setup_action(None, "default") == "im-config"
+    assert setup_action(None, "fcitx5") == "profile" and setup_action(None, None) == "profile"
+    assert setup_question("add", None) is None and setup_question("profile", None) is None
+    assert "ibus" in setup_question("im-config", "ibus") and "Chromium" in setup_question("restart", None)
+    assert setup_hint(True, True) is None
+    assert "「添加」" in setup_hint(True, False)[1] and "「重启并添加」" in setup_hint(False, False)[1]
+    assert "「一键设置」" in setup_hint(None, False)[1]
+    # fcitx5 全局配置：换掉 AltTriggerKeys，别的原样
+    text = ("[Hotkey]\nTriggerKeys=\nEnumerateWithTriggerKeys=True\n\n[Hotkey/AltTriggerKeys]\n0=Shift_L\n\n"
+            "[Behavior]\nActiveByDefault=False\n")
+    out = fcitx_config_with_hotkeys(text, {"AltTriggerKeys": []})
+    hotkey = parse_fcitx_hotkey(out)
+    assert hotkey["AltTriggerKeys"] == "" and hotkey["TriggerKeys"] == "", out
+    assert "EnumerateWithTriggerKeys=True" in out and "[Behavior]\nActiveByDefault=False" in out, out
+    again = fcitx_config_with_hotkeys(out, {"AltTriggerKeys": ["Shift_R"]})
+    assert key_list(parse_fcitx_hotkey(again)["AltTriggerKeys"]) == ["Shift_R"], again
+    assert "AltTriggerKeys=" not in again, again
+    assert fcitx_config_with_hotkeys("", {"AltTriggerKeys": []}) == "[Hotkey]\nAltTriggerKeys=\n"
+    saved = (PROFILE_FILE, STATE_FILE, CONFIG_FILE, LOG_FILE, os.environ.get("XDG_CONFIG_HOME"),
+             os.environ.get("XDG_CONFIG_DIRS"))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["XDG_CONFIG_HOME"] = os.path.join(tmp, "config")
+            os.environ["XDG_CONFIG_DIRS"] = os.path.join(tmp, "etc")
+            PROFILE_FILE = os.path.join(tmp, "config", "fcitx5", "profile")
+            STATE_FILE = os.path.join(tmp, "state.json")
+            CONFIG_FILE = os.path.join(tmp, "config", "fcitx5", "conf", "wowtype.conf")
+            LOG_FILE = "0"
+            user_config = fcitx_user_config_file()
+            # 第一次：新建输入法列表，左 Shift 让给 WowType，记下来（「输入」页的开关能还回去）
+            assert fcitx_first_time()
+            lines = []
+            assert run_setup("profile", True, True, lines.append, hint="启用 Fcitx 5") == SETUP_RELOGIN
+            assert lines[0] == "启用 Fcitx 5" and "新建" in lines[1] and "左 Shift" in lines[2], lines
+            assert "Name=wowtype" in open(PROFILE_FILE, encoding="utf-8").read()
+            assert saved_fcitx_hotkey() == (parse_fcitx_hotkey("[Hotkey]\nAltTriggerKeys=\n"), user_config)
+            assert read_state()["fcitx_shift_freed"] == [["AltTriggerKeys", "Shift_L"]]
+            assert not fcitx_first_time()
+            # 已有配置：不再动快捷键
+            with open(user_config, "w", encoding="utf-8") as f:
+                f.write("[Hotkey/AltTriggerKeys]\n0=Shift_L\n")
+            lines = []
+            assert run_setup("profile", True, fcitx_first_time(), lines.append) == SETUP_RELOGIN
+            assert lines == ["WowType 已经在输入法列表「Default」里"], lines
+            assert open(user_config, encoding="utf-8").read() == "[Hotkey/AltTriggerKeys]\n0=Shift_L\n"
+            # 没答应切框架：不跑 im-config，输入法列表照样写好，还差一步
+            os.unlink(PROFILE_FILE)
+            os.unlink(user_config)
+            os.unlink(STATE_FILE)
+            # 系统有默认配置（/etc/xdg/fcitx5/config）：用户的文件会盖掉它，别的项照抄过来
+            os.makedirs(os.path.join(tmp, "etc", "fcitx5"))
+            with open(os.path.join(tmp, "etc", "fcitx5", "config"), "w", encoding="utf-8") as f:
+                f.write("[Hotkey/TriggerKeys]\n0=Super+space\n\n[Hotkey/AltTriggerKeys]\n0=Shift_L\n1=Shift_R\n")
+            lines = []
+            assert run_setup("im-config", False, True, lines.append) == SETUP_UNFINISHED
+            assert "没切换" in lines[0] and os.path.exists(PROFILE_FILE), lines
+            hotkey = saved_fcitx_hotkey()[0]
+            assert key_list(hotkey["AltTriggerKeys"]) == ["Shift_R"] and key_list(hotkey["TriggerKeys"]) == ["Super+space"]
+            # 单按 Shift 只用右边的：左 Shift 不用让
+            for path in (PROFILE_FILE, user_config, STATE_FILE):
+                os.unlink(path)
+            write_config({**DEFAULTS, "ShiftToggle": "Right"}, [])
+            assert not free_left_shift_first_time(False, lines.append)
+            assert not os.path.exists(user_config)
+            # 不让重启 / 没答应重启：什么都不做（不连 fcitx5）
+            assert run_setup("restart", True, False, lines.append, allow_restart=False) == SETUP_UNFINISHED
+            assert run_setup("restart", False, False, lines.append) == SETUP_UNFINISHED
+    finally:
+        PROFILE_FILE, STATE_FILE, CONFIG_FILE, LOG_FILE = saved[:4]
+        for name, value in (("XDG_CONFIG_HOME", saved[4]), ("XDG_CONFIG_DIRS", saved[5])):
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def config_write_self_test():
@@ -4269,15 +4599,13 @@ class SettingsWindow(Adw.ApplicationWindow):
         return button
 
     def refresh_status(self):
-        def done(info):
+        """第一页「输入法」：fcitx5 在不在跑、认不认得 WowType、在不在输入法列表里；差哪一步，按钮就做哪一步
+        （和 wowtype-config --setup 一样，见 setup_action）。"""
+        def got_group(info):
             if info is None:
-                self.status_row.set_title("没检测到 fcitx5")
-                self.status_row.set_subtitle("先启动 fcitx5，设置会在它下次启动时生效")
-                self.status_button.set_visible(False)
-                self.group_info = None
+                show(None)
                 return
-            group, layout, items = info
-            self.group_info = info
+            group, _layout, items = info
             if any(name == "wowtype" for name, _ in items):
                 self.status_row.set_title("WowType 已在输入法列表里")
                 self.status_row.set_subtitle("用 Ctrl+空格（或你设的快捷键）切换到 WowType")
@@ -4286,18 +4614,77 @@ class SettingsWindow(Adw.ApplicationWindow):
                 self.status_row.set_title("WowType 还没加到输入法列表")
                 self.status_row.set_subtitle(
                     GLib.markup_escape_text(f"加到「{group}」里就能切换过去用"))
+                self.status_button.set_label("添加")
                 self.status_button.set_visible(True)
-        self.fcitx.group_info(done)
+
+        def show(known):
+            im_active = im_config_active() if known is None and not own_im_framework() else None
+            action = setup_action(known, im_active)
+            self.setup_state = (action, im_active)
+            if action == "add":
+                self.fcitx.group_info(got_group)
+                return
+            if action == "restart":
+                self.status_row.set_title("fcitx5 还没载入 WowType")
+                subtitle = "刚装完要重启一次 fcitx5 才能用"
+                label = "重启并添加"
+            else:
+                self.status_row.set_title("fcitx5 没在运行")
+                subtitle = (f"输入法框架是「{im_active}」，一键切到 fcitx5（要注销重新登录）"
+                            if action == "im-config" else "一键写好输入法列表，fcitx5 下次启动时生效")
+                label = "一键设置"
+            self.status_row.set_subtitle(GLib.markup_escape_text(subtitle))
+            self.status_button.set_label(label)
+            self.status_button.set_visible(True)
+
+        self.fcitx.call("AvailableInputMethods", None, "(a(ssssssb))", lambda value: show(
+            None if value is None else any(item[0] == "wowtype" for item in value.unpack()[0])))
 
     def on_add_to_group(self, _button):
-        if not self.group_info:
-            return
-        group, layout, items = self.group_info
+        action, im_active = getattr(self, "setup_state", ("add", None))
+        question = setup_question(action, im_active)
+        if question:
+            self.confirm("一键设置", question, "切换" if action == "im-config" else "重启并添加",
+                         lambda: self.start_setup(action))
+        else:
+            self.start_setup(action)
 
-        def done(ok):
-            self.toast("已添加，可以切换到 WowType 了" if ok else "添加失败")
-            self.refresh_status()
-        self.fcitx.add_to_group(group, layout, items, done)
+    def start_setup(self, action):
+        """一键设置（run_setup，要等 fcitx5 重启、跑 im-config，放到线程里）。"""
+        self.status_button.set_sensitive(False)
+        self.status_row.set_subtitle("正在设置…")
+        first = fcitx_first_time()
+        hint = framework_hint(True)
+
+        def work():
+            lines = []
+            try:
+                code = run_setup(action, True, first, lines.append, True, hint)
+            except Exception as e:  # noqa: BLE001
+                code = SETUP_FAILED
+                lines.append(str(e))
+            GLib.idle_add(self.setup_done, action, code, lines)
+        threading.Thread(target=work, daemon=True).start()
+
+    def setup_done(self, action, code, lines):
+        self.status_button.set_sensitive(True)
+        log(f"一键设置：{action}，结果 {code}")
+        if code == SETUP_OK:
+            self.toast("已添加，可以切换到 WowType 了")
+        else:
+            heading = {SETUP_RESTARTED: "fcitx5 已重启，WowType 已添加",
+                       SETUP_RELOGIN: "注销并重新登录后就能用了",
+                       SETUP_UNFINISHED: "还差一步"}.get(code, "没设置好")
+            body = "\n".join(lines)
+            if code == SETUP_RESTARTED:
+                body += "\n" + RESTART_NOTE
+            dialog = AlertDialog(heading=heading, body=body)
+            dialog.add_response("ok", "好")
+            dialog.present(self)
+        self.refresh_status()
+        self.refresh_restart_hint()
+        self.refresh_shift_conflict()
+        return GLib.SOURCE_REMOVE
 
     def confirm(self, heading, body, yes_label, on_yes, no_label="取消"):
         """问一句，点了 yes_label 才 on_yes()。"""
@@ -5540,6 +5927,10 @@ if __name__ == "__main__":
         sys.exit(startup_tasks())
     if "--check-update" in sys.argv:  # 旧版插件叫的是这个
         sys.exit(startup_tasks())
+    if "--setup" in sys.argv:
+        sys.exit(setup_cli(sys.argv[1:]))
+    if "--notify-setup" in sys.argv:
+        sys.exit(notify_setup_cli())
     if "--add-to-group" in sys.argv:
         sys.exit(add_to_group_cli("--restart" in sys.argv))
     if "--restart-fcitx" in sys.argv:
@@ -5586,6 +5977,7 @@ if __name__ == "__main__":
         translate_engine_self_test()
         config_write_self_test()
         restart_self_test()
+        setup_self_test()
         voice_model_self_test()
         lexicon_self_test()
         # fcitx5 默认配置：左 Shift 是「临时切换输入法」

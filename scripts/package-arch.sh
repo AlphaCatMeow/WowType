@@ -104,14 +104,15 @@ cat > "$work/wowtype.install" <<'INSTALL'
 post_install() {
   cat <<'EOF'
 ==> WowType 已安装。
-  把 WowType 加进 fcitx5 的输入法列表：wowtype-config --add-to-group
-  （或 fcitx5-configtool → 添加「WowType 拼音」）
-  设置界面需要 python-gobject、gtk4、libadwaita，在应用菜单「WowType 设置」。
-  Arch 上没有 im-config，别照 Ubuntu 教程跑它。
+  用普通用户运行 wowtype-config --setup（或打开应用菜单的「WowType 设置」点第一页的「一键设置」），
+  把 WowType 加进 fcitx5 的输入法列表，必要时重启 fcitx5。
+  Arch 上没有 im-config，别照 Ubuntu 教程跑它；fcitx5 还没在跑的话，在桌面设置里让它自启动。
 EOF
 }
 post_upgrade() {
-  post_install
+  cat <<'EOF'
+==> WowType 已更新：重启 fcitx5（或注销重新登录）后生效，WowType 也会发通知提醒。
+EOF
 }
 INSTALL
 

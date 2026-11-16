@@ -11,6 +11,7 @@
 #   2. 用 apt-get / pacman / dnf 安装（含 fcitx5、GTK 4 / libadwaita）
 #   3. 输入法框架不是 fcitx5 时，用 im-config 切到 fcitx5（之后要注销重新登录一次）
 #   4. 把 WowType 加进 fcitx5 的输入法列表（fcitx5 正在运行时会先重启它一次）
+#   3、4 两步是 wowtype-config --setup 做的（直接装包的用户在「WowType 设置」第一页点「一键设置」也是它）
 #
 # 再跑一遍就是升级到最新版。发行版和源码安装说明见 docs/INSTALL.md。
 #
@@ -365,50 +366,27 @@ main() {
   say "安装（需要时会要求输入密码）"
   install_packages
 
-  # 输入法框架。deepin 默认就是 fcitx5（经 deepin-im），不去动它
-  local relogin=""
-  local -a mode=()
-  if [[ "$distro" == deepin* ]]; then
-    :
-  elif [[ -z "${WOWTYPE_NO_IM_CONFIG:-}" ]] && command -v im-config >/dev/null &&
-     mapfile -t mode < <(im-config -m 2>/dev/null) && [[ ${#mode[@]} -gt 0 ]]; then
-    # im-config -m：第 1 行系统设置，第 2 行当前用户的设置（没设过是 missing）
-    local active=${mode[1]:-}
-    [[ -z "$active" || "$active" == missing ]] && active=${mode[0]:-}
-    if [[ "$active" != fcitx5 ]]; then
-      if confirm "现在的输入法框架是「${active:-未知}」，切换到 fcitx5 吗？（要注销重新登录一次）"; then
-        if im-config -n fcitx5; then
-          relogin=1
-          say "已把输入法框架切到 fcitx5（im-config）"
-        else
-          warn "im-config 切换失败，请手动运行：im-config -n fcitx5，然后注销重新登录"
-        fi
-      else
-        warn "没切换输入法框架，WowType 要在 fcitx5 下才能用"
-      fi
-    fi
-  elif [[ -z "${WOWTYPE_NO_IM_CONFIG:-}" ]]; then
-    if [[ "$manager" == apt-get ]]; then
-      warn "没法自动确认输入法框架。请安装 im-config，运行 im-config -n fcitx5 后注销重新登录"
-    else
-      warn "请在桌面设置中启用 Fcitx 5 并注销重新登录；Wayland / X11 配置见 https://github.com/$REPO/blob/main/docs/INSTALL.md"
-    fi
-  fi
-
-  # 加进输入法列表
-  local restarted=""
+  # 输入法框架、输入法列表交给 wowtype-config --setup（直接装包的用户在设置第一页点「一键设置」是同一套）：
+  #   fcitx5 没在跑：输入法框架不是 fcitx5 时问一句再 im-config -n fcitx5，写好 fcitx5 的输入法列表，要注销重新登录
+  #   在跑但还没载入 WowType：问一句再重启 fcitx5，加进输入法列表；在跑也认得：直接加
+  # 问话从终端读（from_tty）；WOWTYPE_YES / WOWTYPE_NO_IM_CONFIG / WOWTYPE_NO_RESTART 照旧。
+  # deepin 默认就是 fcitx5（经 deepin-im），不去动输入法框架
+  local relogin="" restarted="" code=0
+  local -a setup=(--setup)
+  [[ -n "${WOWTYPE_YES:-}" ]] && setup+=(--yes)
+  [[ -n "${WOWTYPE_NO_IM_CONFIG:-}" || "$distro" == deepin* ]] && setup+=(--no-im-config)
+  [[ -n "${WOWTYPE_NO_RESTART:-}" ]] && setup+=(--no-restart)
   if ! command -v wowtype-config >/dev/null || ! wowtype-config --self-test >/dev/null 2>&1; then
     warn "设置界面用不了（缺 PyGObject / GTK 4 / libadwaita？），请在「Fcitx 5 配置」里手动添加 WowType"
-  elif command -v pgrep >/dev/null && pgrep -x fcitx5 >/dev/null; then
-    if [[ -n "${WOWTYPE_NO_RESTART:-}" ]] || ! confirm "fcitx5 正在运行，重启它并把 WowType 加进输入法列表吗？"; then
-      warn "没重启 fcitx5。之后重启它（wowtype-config --restart-fcitx）或注销再登录，再在「WowType 设置」第一页点「添加」"
-    elif wowtype-config --add-to-group --restart; then
-      restarted=1
-    else
-      warn "没加上，请在「WowType 设置」第一页点「添加」"
-    fi
   else
-    wowtype-config --add-to-group || warn "没加上，请在「WowType 设置」第一页点「添加」"
+    from_tty wowtype-config "${setup[@]}" || code=$?
+    case "$code" in
+      0) ;;
+      2) relogin=1 ;;   # 切了输入法框架或 fcitx5 没在跑
+      3) restarted=1 ;; # 刚重启了 fcitx5
+      4) ;;             # 用户没答应或不让重启，wowtype-config 已经说了还差哪一步
+      *) warn "没设置好，请在「WowType 设置」第一页点「一键设置」" ;;
+    esac
   fi
 
   if [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]] && command -v gnome-extensions >/dev/null &&

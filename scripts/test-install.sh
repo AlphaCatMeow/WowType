@@ -35,6 +35,8 @@ case "$name" in
     printf '%s' "$name" >> "$FIXTURE_LOG"
     printf ' %q' "$@" >> "$FIXTURE_LOG"
     printf '\n' >> "$FIXTURE_LOG"
+    # wowtype-config --setup 的退出码：0 好了、2 要注销重新登录、3 刚重启了 fcitx5、4 还差一步、1 出错
+    [[ "$name $*" != "wowtype-config --setup"* ]] || exit "${FIXTURE_SETUP_EXIT:-0}"
     ;;
   *) printf '意外命令：%s\n' "$name" >&2; exit 1 ;;
 esac
@@ -47,6 +49,7 @@ done
 test_arch=x86_64
 test_version=v0.3.8
 test_system=Linux
+test_no_switch=1
 count=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 pass() { count=$((count + 1)); printf 'ok %s - %s\n' "$count" "$*"; }
@@ -62,7 +65,7 @@ run() {
     WOWTYPE_SYSTEM="$test_system" WOWTYPE_OS_RELEASE="$work/os-release" WOWTYPE_ARCH="$test_arch" \
     WOWTYPE_VERSION="$test_version" WOWTYPE_REPO=Gloridust/WowType \
     WOWTYPE_BASE_URL="file://$work/assets" WOWTYPE_YES=1 \
-    WOWTYPE_NO_IM_CONFIG=1 WOWTYPE_NO_RESTART=1 XDG_CURRENT_DESKTOP= \
+    WOWTYPE_NO_IM_CONFIG="$test_no_switch" WOWTYPE_NO_RESTART="$test_no_switch" XDG_CURRENT_DESKTOP= \
     bash "$root/install.sh" "$@"
 }
 reset() {
@@ -72,6 +75,8 @@ reset() {
   test_arch=x86_64
   test_version=v0.3.8
   test_system=Linux
+  test_no_switch=1
+  unset FIXTURE_SETUP_EXIT
   printf '%s\n' "$1" > "$work/os-release"
 }
 asset() {
@@ -180,7 +185,7 @@ assert_log 'fcitx5-config-qt fcitx5-frontend-all im-config'
 assert_log 'python3-gi gir1.2-gtk-4.0 gir1.2-adw-1'
 assert_log 'wowtype_0.3.8_ubuntu24.04_amd64.deb'
 assert_log 'wowtype-data-rime-ice_20260101_all.deb'
-assert_log 'wowtype-config --add-to-group'
+assert_log 'wowtype-config --setup --yes --no-im-config --no-restart'
 pass 'APT installs verified local packages and legacy data'
 
 reset $'ID=ubuntu\nVERSION_ID=22.04'
@@ -196,9 +201,30 @@ asset wowtype_0.3.8_deepin25_amd64.deb
 run > "$work/output" 2>&1 || fail "apt install deepin: $(cat "$work/output")"
 assert_log 'wowtype_0.3.8_deepin25_amd64.deb'
 assert_log 'fcitx5-frontend-all python3-gi'
-if grep -Eq 'im-config|fcitx5-config-qt' "$work/commands"; then fail 'deepin 不该装 im-config、fcitx5-config-qt'; fi
-assert_log 'wowtype-config --add-to-group'
+if grep -Eq '(^| )im-config( |$)|fcitx5-config-qt' "$work/commands"; then fail 'deepin 不该装 im-config、fcitx5-config-qt'; fi
+assert_log 'wowtype-config --setup --yes --no-im-config --no-restart'
 pass 'deepin keeps its own IM framework and config tool'
+
+# 输入法框架、输入法列表交给 wowtype-config --setup：不设 WOWTYPE_NO_* 时不带对应的选项，退出码决定最后的提示
+reset $'ID=ubuntu\nVERSION_ID=24.04'
+asset wowtype_0.3.8_ubuntu24.04_amd64.deb
+test_no_switch=
+export FIXTURE_SETUP_EXIT=2
+run > "$work/output" 2>&1 || fail "setup relogin: $(cat "$work/output")"
+grep -Eq '^wowtype-config --setup --yes$' "$work/commands" || fail "--setup 的选项不对：$(cat "$work/commands")"
+grep -Fq '注销并重新登录' "$work/output" || fail "缺少注销提示：$(cat "$work/output")"
+FIXTURE_SETUP_EXIT=3 run > "$work/output" 2>&1 || fail "setup restarted: $(cat "$work/output")"
+grep -Fq 'Chromium/Electron' "$work/output" || fail "缺少重启提示：$(cat "$work/output")"
+FIXTURE_SETUP_EXIT=1 run > "$work/output" 2>&1 || fail "setup failed 时安装不该失败：$(cat "$work/output")"
+grep -Fq '一键设置' "$work/output" || fail "缺少一键设置提示：$(cat "$work/output")"
+pass 'Setup is delegated to wowtype-config --setup'
+
+reset $'ID=deepin\nVERSION_ID=25\nVERSION_CODENAME=crimson'
+asset wowtype_0.3.8_deepin25_amd64.deb
+test_no_switch=
+run > "$work/output" 2>&1 || fail "deepin setup: $(cat "$work/output")"
+grep -Eq '^wowtype-config --setup --yes --no-im-config$' "$work/commands" || fail "deepin 不该切输入法框架：$(cat "$work/commands")"
+pass 'deepin setup never switches the IM framework'
 
 reset 'ID=arch'
 asset wowtype-0.3.8-1-x86_64.pkg.tar.zst
