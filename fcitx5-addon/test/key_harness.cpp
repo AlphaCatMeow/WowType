@@ -3097,6 +3097,104 @@ void runDataFileCase() {
     check(!wowtype::isStaleBundledCopy(root / "user" / "wubi86.tsv", root / "system" / "wubi86.tsv",
                                        "wubi86.tsv"),
           "自己做的五笔码表照旧优先");
+
+    // 版本标记（docs/DATA.md「数据版本标记」）
+    check(wowtype::compareDataVersions("2026.11.9", "2026.11.10") < 0 &&
+              wowtype::compareDataVersions("2026.11.14", "2026.11.14.0") == 0 &&
+              wowtype::compareDataVersions("2026.11.09", "2026.11.9") == 0 &&
+              wowtype::compareDataVersions("2026.11.14.1", "2026.11.14") > 0,
+          "数据版本逐段按数字比，缺的段算 0");
+    {
+        const auto m = wowtype::parseDataMarker("# wowtype-data: lexicon.tsv 2026.11.14.5 rime-ice abc (2026-11-14)\n");
+        check(m && m->name == "lexicon.tsv" && m->version == "2026.11.14.5" &&
+                  m->source == "rime-ice abc (2026-11-14)",
+              "读出标记的名字、版本、来源");
+        check(!wowtype::parseDataMarker("# wowtype-data: lexicon.tsv 2026-11-14.5") &&
+                  !wowtype::parseDataMarker("# wowtype-data: lexicon.tsv") &&
+                  !wowtype::parseDataMarker("# wowtype-data:lexicon.tsv 1"),
+              "版本不是点分隔的数字、缺版本的标记不算");
+        std::string far(wowtype::kDataMarkerScanBytes, 'x');
+        far += "\n# wowtype-data: lexicon.tsv 1\n";
+        check(!wowtype::scanDataMarker(far), "4096 字节以后的标记不算");
+    }
+    const auto marked = [](const std::string &name, const std::string &version, const std::string &rest) {
+        return "# 由 tools/rime2tsv.py 生成，来源：rime_ice.dict.yaml\n# wowtype-data: " + name + " " + version +
+               " rime-ice\n" + rest;
+    };
+    const auto stale = [&root](const char *name) {
+        return wowtype::isStaleBundledCopy(root / "user" / name, root / "system" / name, name);
+    };
+    write(system, marked("lexicon.tsv", "2026.11.20.0", "ni hao\t你好\t2\n"), 2);
+    write(user, marked("lexicon.tsv", "2026.11.14.5", "ni hao\t你好\t1\n"), 0);
+    check(stale("lexicon.tsv"), "带标记、版本比安装包旧的是旧副本（不看修改时间）");
+    write(user, marked("lexicon.tsv", "2026.11.20.0", "ni hao\t你好\t1\n"), 0);
+    check(stale("lexicon.tsv"), "带标记、版本和安装包一样的也是旧副本");
+    write(user, marked("lexicon.tsv", "2026.11.20.1", "ni hao\t你好\t1\n"), 30);
+    check(!stale("lexicon.tsv"), "带标记、版本比安装包新的是自己更新的，照旧优先（不看修改时间）");
+    write(user, marked("lexicon-wanxiang", "2026.12.01.0", "ni hao\t你好\t1\n"), 30);
+    check(!stale("lexicon.tsv"), "标记名字和文件名不一样（别的词库）照旧优先");
+    write(user, stock, 7);
+    check(stale("lexicon.tsv"), "没有标记的老自带词库，安装包带标记时照老办法认出旧副本");
+    write(system, stock, 2);
+    write(user, marked("lexicon.tsv", "2026.11.14.5", "ni hao\t你好\t1\n"), 7);
+    check(!stale("lexicon.tsv"), "带标记、安装包那份没有标记（老安装包）时用用户目录的");
+    check(wowtype::dataFileVersion(user, "lexicon.tsv") == "2026.11.14.5" &&
+              wowtype::dataFileVersion(system, "lexicon.tsv").empty(),
+          "数据文件的版本：带标记的读标记，没有的是空");
+    write(root / "system" / "wubi86.tsv", "# wowtype-data: wubi86.tsv 2023.10.25.1 rime-wubi\na\t工\t99454797\n", 2);
+    write(root / "user" / "wubi86.tsv", "# wowtype-data: wubi86.tsv 2023.10.25.0 rime-wubi\na\t工\t99454797\n", 0);
+    check(stale("wubi86.tsv"), "五笔码表按版本认旧副本");
+    write(root / "system" / "english.txt", "# Rime dictionary\n# wowtype-data: english.txt 2026.11.20.0 x\nhello\n", 2);
+    write(root / "user" / "english.txt", "# Rime dictionary\nhello\n", 0);
+    check(!stale("english.txt"), "没有标记的英文词表比安装包新：照老办法，用户目录的优先");
+
+    // words.lm：词表 1 号词是标记（WTLM 版本 1，<s> 和标记两个词，没有搭配）
+    const auto wtlm = [](const std::string &marker) {
+        std::string out = "WTLM";
+        const auto u32 = [&out](std::uint32_t v) {
+            for (int i = 0; i < 4; ++i) {
+                out.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
+            }
+        };
+        u32(1);
+        u32(2);
+        u32(0);
+        out += "\x03<s>";
+        out.push_back(static_cast<char>(marker.size()));
+        out += marker;
+        for (int i = 0; i < 2 + 3; ++i) {
+            u32(0); // 两个回退分 + 三个起点
+        }
+        return out;
+    };
+    write(root / "system" / "words.lm", wtlm("wowtype-data: words.lm 2026.11.20.0 lm-2026.11.20"), 2);
+    write(root / "user" / "words.lm", wtlm("wowtype-data: words.lm 2026.11.20.0 lm-2026.11.20"), 0);
+    check(wowtype::dataFileVersion(root / "user" / "words.lm", "words.lm") == "2026.11.20.0",
+          "words.lm 词表里的标记读得出来");
+    check(stale("words.lm"), "和安装包同一版的 words.lm 是旧副本");
+    write(root / "user" / "words.lm", wtlm("wowtype-data: words.lm 2026.12.01.0 自己训的"), 7);
+    check(!stale("words.lm"), "版本比安装包新的 words.lm 照旧优先");
+    write(root / "user" / "words.lm", "lm", 7);
+    std::filesystem::resize_file(root / "user" / "words.lm", wowtype::kOfficialLmSizes[0]);
+    check(wowtype::dataFileVersion(root / "user" / "words.lm", "words.lm") == "2026.11.09",
+          "没有标记的 lm-2026.11.09 按字节数认出版本");
+    check(stale("words.lm"), "拷进来的老官方 words.lm 让给带标记的新版");
+    write(root / "system" / "words.lm", "lm2", 2);
+    std::filesystem::resize_file(root / "system" / "words.lm", wowtype::kOfficialLmSizes[0]);
+    write(root / "user" / "words.lm", wtlm("wowtype-data: words.lm 2026.11.20.0 lm-2026.11.20"), 7);
+    check(!stale("words.lm"), "自己下的新版 words.lm 比安装包带的 lm-2026.11.09 新，照旧优先");
+    write(root / "user" / "words.lm", wtlm("wowtype-data: words.lm 2026.11.01.0 更早的"), 7);
+    check(stale("words.lm"), "带标记但比安装包的 lm-2026.11.09 旧的 words.lm 是旧副本");
+
+    // nnlm.bin（WowType 自己的字级神经语言模型，WTNN）：前 4096 字节里一串以 \0 结束的标记
+    const auto wtnn = [](const std::string &marker) {
+        return std::string("WTNN\x01\0\0\0", 8) + marker + std::string(1, '\0') + std::string(64, '\xff');
+    };
+    write(root / "system" / "nnlm.bin", wtnn("wowtype-data: nnlm.bin 2026.11.20.0 nnlm-2026.11.20"), 2);
+    write(root / "user" / "nnlm.bin", wtnn("wowtype-data: nnlm.bin 2026.11.19.0 nnlm-2026.11.19"), 0);
+    check(stale("nnlm.bin"), "nnlm.bin 同样按版本认旧副本");
+    write(root / "user" / "nnlm.bin", std::string("WTNN\x01\0\0\0", 8) + std::string(64, '\xff'), 7);
+    check(!stale("nnlm.bin"), "没有标记的 nnlm.bin（自己训的）照旧优先");
     fs::remove_all(root);
 }
 

@@ -80,7 +80,7 @@ std::string userDataDir() {
 }
 
 /// 按顺序找第一个存在的文件：环境变量 > 用户数据目录 > 系统目录。
-/// 用户目录里那份是老版本按说明拷进来的自带数据、比安装包带的旧时让给系统目录（见 isStaleBundledCopy）。
+/// 用户目录里那份是安装包自带数据的旧副本（版本不比系统目录的新，见 isStaleBundledCopy）时让给系统目录。
 std::string findDataFile(const char *envName, const std::string &fileName) {
     if (const char *env = std::getenv(envName); env && *env) {
         return env;
@@ -90,12 +90,24 @@ std::string findDataFile(const char *envName, const std::string &fileName) {
     const std::string system = std::string(kSystemDataDir) + "/" + fileName;
     if (!user.empty() && std::filesystem::exists(user + "/" + fileName, ec)) {
         const std::string mine = user + "/" + fileName;
+        const std::string mineVersion = wowtype::dataFileVersion(mine, fileName);
+        const std::string systemVersion = wowtype::dataFileVersion(system, fileName);
+        const auto versionNote = [](const std::string &version) {
+            return version.empty() ? std::string("没有版本标记") : "版本 " + version;
+        };
         if (wowtype::isStaleBundledCopy(mine, system, fileName)) {
-            WLOG_I() << "WowType: " << mine << " 是老版本拷进来的自带数据，比安装包带的旧，改用 " << system
-                     << "（这份没在用，可以删掉）";
+            WLOG_I() << "WowType: " << mine << "（" << versionNote(mineVersion)
+                     << "）是安装包自带数据的旧副本，改用 " << system << "（" << versionNote(systemVersion)
+                     << "；用户目录那份没在用，可以删掉）";
             return system;
         }
-        // 用户自己放的（训练的 words.lm、自己做的词库）照旧优先；比安装包带的旧时提一句
+        // 用户自己放的（训练的 words.lm、自己做的词库、自己下的新数据）照旧优先
+        if (wowtype::readDataMarker(mine)) {
+            WLOG_I() << "WowType: 用 " << mine << "（" << versionNote(mineVersion) << "），安装包带的是 "
+                     << versionNote(systemVersion);
+            return mine;
+        }
+        // 没有标记的：比安装包带的旧时提一句
         std::error_code userEc;
         std::error_code systemEc;
         const auto userTime = std::filesystem::last_write_time(mine, userEc);
