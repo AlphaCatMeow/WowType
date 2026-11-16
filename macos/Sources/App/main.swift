@@ -27,7 +27,7 @@ func selfTest() -> Bool {
     print("WowType \(appVersion)，核心接口版本 \(Engine.abiVersion)")
     print("资源目录 \(AppState.shared.resourceDir.path)")
     print("数据目录 \(AppState.shared.supportDir.path)")
-    for name in ["lexicon.tsv", "english.txt", "words.lm", "s2t.tsv", "wubi86.tsv"] {
+    for name in ["lexicon.tsv", "english.txt", "words.lm", "s2t.tsv", "wubi86.tsv", "nnlm.bin"] {
         print("  \(name)：\(AppState.shared.resource(name) == nil ? "没有" : "有")")
     }
     let start = Date()

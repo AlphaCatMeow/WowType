@@ -33,9 +33,9 @@ extension SettingsModel {
         alert.messageText = "卸载 WowType？"
         let apps = Installer.installedApps().map { ($0.path as NSString).abbreviatingWithTildeInPath }
         let data = (supportDir.path as NSString).abbreviatingWithTildeInPath
-        alert.informativeText = "会关掉 WowType 输入法、从系统里去掉，删掉"
-            + (apps.isEmpty ? " WowType.app" : "：\n" + apps.joined(separator: "\n"))
-            + "\n\n自定义词、学到的词和设置留在 \(data)，以后重新安装接着用；不要了可以自己删掉。"
+        let list: String = apps.isEmpty ? " WowType.app" : "：\n" + apps.joined(separator: "\n")
+        alert.informativeText = "会关掉 WowType 输入法、从系统里去掉，删掉\(list)\n\n"
+            + "自定义词、学到的词和设置留在 \(data)，以后重新安装接着用；不要了可以自己删掉。"
         alert.addButton(withTitle: "卸载")
         alert.addButton(withTitle: "取消")
         if #available(macOS 11.0, *) {
