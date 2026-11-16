@@ -104,12 +104,13 @@ BuildRequires:  gcc-c++
 BuildRequires:  fcitx5-devel
 BuildRequires:  alsa-lib-devel
 Requires:       fcitx5
-# 设置界面要 PyGObject + GTK 4 + libadwaita；不装也不影响打字
-Recommends:     python3-gobject
-Recommends:     gtk4
-Recommends:     libadwaita
+# 设置界面要 PyGObject + GTK 4 + libadwaita：缺了的话应用菜单里点「WowType 设置」没反应，
+# 插件在后台叫的 wowtype-config --startup（检查更新、默认主题、提醒重启输入法）也跑不了
+Requires:       python3-gobject
+Requires:       gtk4
+Requires:       libadwaita
 # PyGObject 载入 Gtk 时要 cairo-1.0.typelib，在这个包里
-Recommends:     gobject-introspection
+Requires:       gobject-introspection
 # emoji 候选要彩色 emoji 字体才画得出来
 Recommends:     google-noto-color-emoji-fonts
 # 互译用 curl 发请求
@@ -118,8 +119,8 @@ Recommends:     curl
 %description
 拼音输入法：长句、半成品输入、按错键纠错、按用户习惯学习。
 自带雾凇拼音（rime-ice）词库、词级语言模型和五笔 86 码表（rime-wubi）。
-装完运行 wowtype-config --add-to-group（或在 fcitx5 配置里添加「WowType 拼音」），
-设置在应用菜单「WowType 设置」里。
+装完运行 wowtype-config --setup（或打开应用菜单的「WowType 设置」点「一键设置」），
+把 WowType 加进 fcitx5 的输入法列表。
 
 %prep
 %setup -q -c -n wowtype-src
@@ -177,8 +178,8 @@ install -Dm644 dist/data/WUBI-LICENSE $lic/LICENSE.rime-wubi
 
 %post
 if [ "$1" -eq 1 ]; then
-  echo "WowType 已安装。把它加进 fcitx5 的输入法列表：wowtype-config --add-to-group"
-  echo "（或 fcitx5-configtool → 添加「WowType 拼音」），然后重启 fcitx5。"
+  echo "WowType 已安装。用普通用户运行 wowtype-config --setup（或打开「WowType 设置」点第一页的「一键设置」），"
+  echo "它会把 WowType 加进 fcitx5 的输入法列表，必要时重启 fcitx5。"
 fi
 
 %changelog

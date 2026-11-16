@@ -53,10 +53,11 @@ pkgdesc='WeChat-style pinyin input method for fcitx5, with bundled dictionaries 
 arch=('x86_64')
 url='https://github.com/Gloridust/WowType'
 license=('MIT' 'Apache-2.0' 'GPL-3.0-only' 'CC-BY-SA-4.0' 'Unicode-3.0' 'LGPL-3.0-only')
-depends=('fcitx5' 'alsa-lib' 'gcc-libs' 'glibc' 'python')
+# 设置界面（python-gobject、gtk4、libadwaita）和 GTK / Qt 程序里打字要的 fcitx5-gtk、fcitx5-qt 都是硬依赖
+depends=('fcitx5' 'fcitx5-gtk' 'fcitx5-qt' 'alsa-lib' 'gcc-libs' 'glibc' 'python'
+         'python-gobject' 'gtk4' 'libadwaita')
 makedepends=('rust' 'cmake' 'extra-cmake-modules' 'pkgconf')
-optdepends=('python-gobject: settings app' 'gtk4: settings app' 'libadwaita: settings app'
-            'noto-fonts-emoji: color emoji in candidates' 'curl: translate mode')
+optdepends=('noto-fonts-emoji: color emoji in candidates' 'curl: translate mode')
 # makepkg handles ELF stripping and byte-sized .PKGINFO/.MTREE/.BUILDINFO.
 # Avoid a second debug package in the CI release artifacts.
 options=('!debug')
@@ -111,14 +112,15 @@ cat > "$work/wowtype.install" <<'INSTALL'
 post_install() {
   cat <<'EOF'
 ==> WowType 已安装。
-  把 WowType 加进 fcitx5 的输入法列表：wowtype-config --add-to-group
-  （或 fcitx5-configtool → 添加「WowType 拼音」）
-  设置界面需要 python-gobject、gtk4、libadwaita，在应用菜单「WowType 设置」。
-  Arch 上没有 im-config，别照 Ubuntu 教程跑它。
+  用普通用户运行 wowtype-config --setup（或打开应用菜单的「WowType 设置」点第一页的「一键设置」），
+  把 WowType 加进 fcitx5 的输入法列表，必要时重启 fcitx5。
+  Arch 上没有 im-config，别照 Ubuntu 教程跑它；fcitx5 还没在跑的话，在桌面设置里让它自启动。
 EOF
 }
 post_upgrade() {
-  post_install
+  cat <<'EOF'
+==> WowType 已更新：重启 fcitx5（或注销重新登录）后生效，WowType 也会发通知提醒。
+EOF
 }
 INSTALL
 

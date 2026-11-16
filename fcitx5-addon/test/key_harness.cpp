@@ -2606,9 +2606,10 @@ void runTranslateCase(Instance &instance, std::function<void()> done) {
 /// 外部命令切模式（#98）：经会话总线调 org.wowtype.Input1。addon-test.sh 起了私有总线才跑。
 /// 插件的总线和这里的总线挂在同一个事件循环上，所以只能异步调。
 struct ModeCall {
-    std::string arg; // SetMode 的参数；空表示调 Mode
+    std::string arg; // SetMode 的参数；空表示调 Mode（或下面的 method）
     std::function<void(HarnessInputContext *)> before;
     std::function<void(HarnessInputContext *, const std::string &reply, bool error)> after;
+    std::string method = {}; // 不带参数的别的方法（Version）
 };
 
 struct ModeCase {
@@ -2632,8 +2633,9 @@ void nextModeCall(ModeCase *c) {
     if (call.before) {
         call.before(c->ic.get());
     }
+    const std::string method = !call.method.empty() ? call.method : call.arg.empty() ? "Mode" : "SetMode";
     auto msg = c->bus->createMethodCall("org.wowtype.Input", "/org/wowtype/Input", "org.wowtype.Input1",
-                                        call.arg.empty() ? "Mode" : "SetMode");
+                                        method.c_str());
     if (!call.arg.empty()) {
         msg << call.arg;
     }
@@ -2701,6 +2703,8 @@ void runModeCase(Instance &instance, std::function<void()> done) {
                          check(error, "外部命令：没配翻译服务时切不到 translate：" + reply);
                      }});
     calls.push_back({"", [](HarnessInputContext *ic) { fresh(ic); }, expect("报错以后模式不变", "zh")});
+    // 设置界面拿它和装好的版本比，判断升级后要不要重启输入法
+    calls.push_back({"", nullptr, expect("Version 是插件的版本", WOWTYPE_ADDON_VERSION), "Version"});
     nextModeCall(c);
 }
 

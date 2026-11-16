@@ -32,7 +32,7 @@ done
 
 for f in lexicon.tsv words.lm english.txt; do
   if [[ ! -s "$DATA/$f" ]]; then
-    echo "数据目录 $DATA 里没有 $f（要 scripts/make-data.sh 的输出）" >&2
+    echo "数据目录 ${DATA} 里没有 ${f}（要 scripts/make-data.sh 的输出）" >&2
     exit 1
   fi
 done
@@ -78,7 +78,7 @@ if (( update )); then
     exit 1
   fi
   cp "$tmp/baseline.tsv" "$BASELINE"
-  echo "基线已更新：$BASELINE（提交时把上面的对比表贴进提交说明）" >&2
+  echo "基线已更新：${BASELINE}（提交时把上面的对比表贴进提交说明）" >&2
   exit 0
 fi
 exit "$status"

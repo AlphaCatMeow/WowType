@@ -236,8 +236,11 @@ KDE Wayland 使用其虚拟键盘设置，避免重复启动。
 添加输入法：
 
 ```bash
-wowtype-config --add-to-group --restart
+wowtype-config --setup
 ```
+
+（或者打开「WowType 设置」，点第一页的「一键设置」。fcitx5 还没在跑时它会在有 im-config 的系统上问你要不要切到 fcitx5，
+fcitx5 在跑但还没载入 WowType 时问你要不要重启它。）
 
 或打开 `fcitx5-configtool`，取消“仅显示当前语言”，搜索并添加 WowType。
 按 `Ctrl+Space` 切换，输入 `nihao`。重启 Fcitx 5 后，Chromium / Electron 程序可能需要退出后重新打开。

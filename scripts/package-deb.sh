@@ -78,6 +78,39 @@ data_copyright() { # <数据目录>：copyright 里词库那几段
   sed 's/^$/./; s/^/ /' "$1/WUBI-LICENSE"
 }
 
+# 安装包的 postinst：第一次装（不是升级）时，给每个已登录图形会话的用户跑一次 wowtype-config --notify-setup，
+# 还差一步（没切到 fcitx5、fcitx5 还没载入 WowType、没加进输入法列表）就发一条通知，告诉他到「WowType 设置」
+# 点「一键设置」。只发通知、不改任何用户设置；哪一步不行就跳过，不让安装失败。
+# 升级时不发：正在跑的插件每小时叫一次 wowtype-config --startup，它会提醒重启输入法。
+write_postinst() { # <路径>
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<'POSTINST'
+#!/bin/sh
+set -e
+if [ "$1" = configure ] && [ -z "$2" ] && command -v loginctl >/dev/null 2>&1 &&
+   command -v runuser >/dev/null 2>&1; then
+  seen=" "
+  for session in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+    type=$(loginctl show-session "$session" -p Type --value 2>/dev/null || true)
+    case "$type" in x11|wayland) ;; *) continue ;; esac
+    uid=$(loginctl show-session "$session" -p User --value 2>/dev/null || true)
+    case "$uid" in ''|0|*[!0-9]*) continue ;; esac
+    case "$seen" in *" $uid "*) continue ;; esac
+    seen="$seen$uid "
+    bus="/run/user/$uid/bus"
+    user=$(getent passwd "$uid" | cut -d: -f1)
+    home=$(getent passwd "$uid" | cut -d: -f6)
+    [ -S "$bus" ] && [ -n "$user" ] && [ -n "$home" ] || continue
+    timeout 20 runuser -u "$user" -- env HOME="$home" XDG_RUNTIME_DIR="/run/user/$uid" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" /usr/bin/wowtype-config --notify-setup \
+      </dev/null >/dev/null 2>&1 || true
+  done
+fi
+exit 0
+POSTINST
+  chmod 755 "$1"
+}
+
 check_data() { # <数据目录>
   for f in lexicon.tsv english.txt words.lm LICENSE SOURCE.txt VERSION DATA-MANIFEST; do
     [[ -f "$1/$f" ]] || { echo "缺 $1/${f}，先跑 scripts/make-data.sh" >&2; exit 1; }
@@ -147,22 +180,25 @@ EOF
   data_copyright "$data"
   } > "$doc/copyright"
 
+  write_postinst "$stage/DEBIAN/postinst"
+
   # 运行时依赖交给 dpkg-shlibdeps 从 .so 里算（libfcitx5core、libstdc++ 等）
   mkdir -p "$work/debian"
   printf 'Source: wowtype\n\nPackage: wowtype\nArchitecture: any\n' > "$work/debian/control"
   shlibs=$(cd "$work" && dpkg-shlibdeps -O "${elfs[@]}" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')
-  depends="${shlibs:+$shlibs, }fcitx5"
+  # 设置界面（PyGObject + GTK 4 + libadwaita）是硬依赖：缺了的话应用菜单里点「WowType 设置」没反应，
+  # 插件在后台叫的 wowtype-config --startup（检查更新、默认主题、提醒重启输入法）也跑不了
+  depends="${shlibs:+$shlibs, }fcitx5, python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1"
 
-  # 设置界面要 PyGObject + GTK 4 + libadwaita；不装也不影响打字
   # emoji 要彩色 emoji 字体才画得出来（桌面版系统一般都装了）；互译用 curl 发请求
-  RECOMMENDS="python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1, fonts-noto-color-emoji, curl" \
+  RECOMMENDS="fonts-noto-color-emoji, curl" \
   REPLACES="wowtype-data-rime-ice" \
   DEB_FILE="wowtype_${version}_${distro}_$(dpkg --print-architecture).deb" \
   build_deb wowtype "$debver" "$(dpkg --print-architecture)" "$depends" \
     "WeChat-style pinyin input method for fcitx5" \
 "拼音输入法：长句、半成品输入、按错键纠错、按用户习惯学习。
 自带雾凇拼音（rime-ice）词库、词级语言模型和五笔 86 码表（rime-wubi）。
-装完在 fcitx5 配置里添加「WowType」，设置在应用菜单「WowType 设置」里。"
+装完打开应用菜单的「WowType 设置」点第一页的「一键设置」（或运行 wowtype-config --setup）。"
   ;;
 
 data)
