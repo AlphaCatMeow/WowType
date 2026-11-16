@@ -1464,20 +1464,30 @@ impl Engine {
                 _ => break,
             }
         }
-        // 词在前、单字在后。换一种切法才对得上的：词夹在常用字和生僻字之间，单字放最后
+        // 长尾按 TailTier 分层排：层与层之间按层，同一层里保持束搜索给的顺序
         let single = |c: &Candidate| c.text.chars().count() == 1;
-        let (chars, words): (Vec<_>, Vec<_>) = heads.into_iter().partition(single);
-        let (rare_chars, chars): (Vec<_>, Vec<_>) = chars.into_iter().partition(is_rare_char);
-        let (other_chars, other_words): (Vec<_>, Vec<_>) =
-            other_splits.into_iter().partition(single);
-        for mut candidate in whole
+        let mut tail: Vec<(TailTier, Candidate)> = whole
             .into_iter()
-            .chain(words)
-            .chain(chars)
-            .chain(other_words)
-            .chain(rare_chars)
-            .chain(other_chars)
-        {
+            .map(|c| (TailTier::Whole, c))
+            .collect();
+        for c in heads {
+            let tier = match (single(&c), is_rare_char(&c)) {
+                (false, _) => TailTier::HeadWord,
+                (true, false) => TailTier::HeadChar,
+                (true, true) => TailTier::RareChar,
+            };
+            tail.push((tier, c));
+        }
+        for c in other_splits {
+            let tier = if single(&c) {
+                TailTier::OtherSplitChar
+            } else {
+                TailTier::OtherSplitWord
+            };
+            tail.push((tier, c));
+        }
+        tail.sort_by_key(|(tier, _)| *tier); // 稳定排序：同一层里的先后不变
+        for (_, mut candidate) in tail {
             if result.len() >= max {
                 break;
             }
@@ -2549,6 +2559,28 @@ fn abbrev_graph(
         },
     );
     graph.has_complete_path().then_some(graph)
+}
+
+/// 翻页长尾（[`Engine::append_more_candidates`] 补在前几页后面的）分几层，按这里的先后排。
+///
+/// 整套候选的层次（从前往后）：束搜索的整句 / 整词（[`protect_exact_input`]、[`compose_candidates`] 定先后，
+/// 用户选过的提前），整个输入对得上的词库同音词（插在束搜索的整词后面），句首候选，然后是这里的长尾。
+/// 输入框里显示的切法是用户看着打的那一种：整句不对时接下来多半是按它一个字一个字选，所以它的常用字排在
+/// 换一种切法才对得上的词（ling li | an jie 的「凌厉」）前面。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum TailTier {
+    /// 用完整个输入、束搜索没留下的（纠错、补全出来的整词等）
+    Whole,
+    /// 按显示的切法、从开头起的多字词
+    HeadWord,
+    /// 按显示的切法、第一个音节的常用字
+    HeadChar,
+    /// 换一种切法才对得上的多字词（houxuanci 的「后续」= hou xu | an ci）
+    OtherSplitWord,
+    /// 第一个音节的生僻字（频次小于 1，见 [`crate::lexicon::LexEntry::is_rare`]）
+    RareChar,
+    /// 换一种切法才对得上的单字
+    OtherSplitChar,
 }
 
 /// 长尾里的生僻字（[`crate::lexicon::LexEntry::is_rare`]：频次不到 1 的单字）。
