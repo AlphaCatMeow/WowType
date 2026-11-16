@@ -111,15 +111,16 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../core/data/s2t.tsv")
     )
 endif()
 
-# 真实词库、英文词表、词级语言模型、五笔码表：scripts/make-data.sh、make-wubi.sh 生成在 dist/data，
+# 真实词库、英文词表、词级语言模型、整句增强模型、五笔码表：scripts/make-data.sh、make-wubi.sh 生成在 dist/data，
 # 有就一起装进系统数据目录（OPTIONAL：安装时没有就跳过，插件退到 demo 词典）。
 # 以前源码安装要自己把它们拷进 ~/.local/share/wowtype/，那份拷贝以后会一直挡在新版数据前面。
 # 各发行版的打包脚本自己放这几个文件（同样的位置），这里多装一遍不碍事；不想要就 -DWOWTYPE_DATA_DIR=
 set(WOWTYPE_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../dist/data" CACHE PATH
-    "Directory with lexicon.tsv, english.txt, words.lm, wubi86.tsv and DATA-MANIFEST (scripts/make-data.sh output); empty to skip")
+    "Directory with lexicon.tsv, english.txt, words.lm, nnlm.bin, wubi86.tsv and DATA-MANIFEST (scripts/make-data.sh output); empty to skip")
 if(WOWTYPE_DATA_DIR)
     # DATA-MANIFEST：各数据文件的名字、版本、来源（docs/DATA.md「数据版本标记」）
-    foreach(_wowtype_data lexicon.tsv english.txt words.lm wubi86.tsv DATA-MANIFEST)
+    # nnlm.bin：WowType 自己训的整句增强模型（make-data.sh 下载到了才有）
+    foreach(_wowtype_data lexicon.tsv english.txt words.lm nnlm.bin wubi86.tsv DATA-MANIFEST)
         install(FILES "${WOWTYPE_DATA_DIR}/${_wowtype_data}"
             DESTINATION "${CMAKE_INSTALL_DATADIR}/wowtype" OPTIONAL)
     endforeach()
