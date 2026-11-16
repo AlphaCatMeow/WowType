@@ -133,6 +133,8 @@ public struct WowtypeConfig: Equatable {
     /// 单按 Shift 只在中 ↔ 英之间切；两个一样时算进出「译」
     public var toggleKey: Shortcut?
     public var translateModeKey: Shortcut?
+    /// 自动检查更新：输入法每天最多查一次 GitHub 上的新版本（有新版时输入法菜单里多一项），设置窗口打开时也查
+    public var checkUpdate = true
     /// 词库文件，空串用安装包里的雾凇词库；文件不在也用自带的
     public var lexicon = ""
     /// 候选字号（磅），只有 macOS 有：Linux 上字号跟着 fcitx5 主题
@@ -269,7 +271,7 @@ public struct WowtypeConfig: Equatable {
         "Traditional",
         "PunctuationStyle", "DateTime", "Calculator", "EmojiSuggest", "AutoSpace", "AutoSpaceLetters",
         "AutoSpaceDigits", "Lexicon", "Toolbar", "ClipboardHistory", "Voice", "VoiceKey", "VoiceCopy", "EmojiKey",
-        "ToggleKey", "TranslateModeKey",
+        "ToggleKey", "TranslateModeKey", "CheckUpdate",
         "Translate", "TranslateTarget", "TranslateBaseUrl", "TranslateModel", "TranslateFormal", "TranslateLocal",
         "TranslateLocalModel", "TranslateLlamaServer", "TranslateIdleMinutes",
     ]
@@ -290,6 +292,7 @@ public struct WowtypeConfig: Equatable {
         "AutoSpace": \.autoSpace, "AutoSpaceLetters": \.autoSpaceLetters, "AutoSpaceDigits": \.autoSpaceDigits,
         "Toolbar": \.toolbar, "ClipboardHistory": \.clipboardHistory, "Voice": \.voice, "VoiceCopy": \.voiceCopy,
         "Translate": \.translate, "TranslateFormal": \.translateFormal, "TranslateLocal": \.translateLocal,
+        "CheckUpdate": \.checkUpdate,
     ]
 
     /// 按文件里的写法改一项。不认识的键、认不出的值不管（保持原值）。
@@ -603,6 +606,8 @@ public struct WowtypeConfig: Equatable {
         ToggleKey=\(d.toggleKey?.name ?? "")
         # 进出「译」的快捷键，比如 Control+Shift+Y；留空不用。设了以后单按 Shift 只在中英之间切
         TranslateModeKey=\(d.translateModeKey?.name ?? "")
+        # 自动检查更新：输入法每天最多查一次 GitHub 上的新版本，有新版时输入法菜单里多一项；设置窗口打开时也查
+        CheckUpdate=\(b(d.checkUpdate))
 
         # 词库文件（拼音<TAB>词<TAB>频次），留空用自带的雾凇词库；文件不在也用自带的
         Lexicon=

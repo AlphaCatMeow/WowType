@@ -70,7 +70,8 @@ enum LexiconPackInstaller {
         return file
     }
 
-    private static func get(_ url: URL, timeout: TimeInterval) throws -> Data {
+    /// GET 一个小文件（发布页的 JSON、SHA256SUMS）；UpdateInstaller 也用
+    static func get(_ url: URL, timeout: TimeInterval) throws -> Data {
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.setValue(url.host == "api.github.com" ? "application/vnd.github+json" : "*/*",
                          forHTTPHeaderField: "Accept")

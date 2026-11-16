@@ -166,6 +166,8 @@ class WowTypeInputController: IMKInputController {
         syncComposer(force: true)
         // 剪贴板历史（设置里打开时）：切换输入框时看一眼（和 Linux 一样，另外打开工具栏的剪贴板页时也看）
         AppState.shared.sampleClipboard()
+        // 每天最多查一次有没有新版本（后台，有新版时菜单里多一项）
+        AppState.shared.checkUpdateIfDue()
     }
 
     override func deactivateServer(_ sender: Any!) {
@@ -192,6 +194,12 @@ class WowTypeInputController: IMKInputController {
         let item = NSMenuItem(title: "WowType \(appVersion)", action: nil, keyEquivalent: "")
         item.isEnabled = false
         menu.addItem(item)
+        if AppState.shared.config.checkUpdate, let version = AppState.shared.availableUpdate {
+            let update = NSMenuItem(title: "有新版本 \(version)，下载并安装…", action: #selector(openUpdate),
+                                    keyEquivalent: "")
+            update.target = self
+            menu.addItem(update)
+        }
         menu.addItem(.separator())
         // 设置窗口是另一个进程（SettingsApp）；直接改文件的入口在设置窗口的「文件」菜单里
         for (title, action) in [("WowType 设置…", #selector(openSettings)),
@@ -207,6 +215,11 @@ class WowTypeInputController: IMKInputController {
 
     @objc private func openSettings() {
         SettingsApp.open()
+    }
+
+    /// 新版本在设置窗口「常规」页下载安装（不在输入法进程里装：安装时会停掉输入法自己）
+    @objc private func openUpdate() {
+        SettingsApp.open(page: .general)
     }
 
     @objc private func openCustomWords() {

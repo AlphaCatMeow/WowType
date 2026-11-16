@@ -2065,6 +2065,34 @@ do {
     rmdir(dir)
 }
 
+// MARK: 检查更新（AppUpdate）
+
+do {
+    check(AppUpdate.version(tag: "v0.4.1") == "0.4.1" && AppUpdate.version(tag: "0.4.1") == "0.4.1", "tag 去掉 v")
+    check(AppUpdate.version(tag: "") == nil && AppUpdate.version(tag: "v") == nil && AppUpdate.version(tag: "v1/../x") == nil
+          && AppUpdate.version(tag: "v1 2") == nil && AppUpdate.version(tag: "-1") == nil, "不像版本号的 tag 不认")
+    check(AppUpdate.packageName(version: "0.4.1") == "WowType-0.4.1-macos.pkg", "macOS 安装包的名字")
+    check(AppUpdate.isNewer("0.4.1", than: "0.4.0") && AppUpdate.isNewer("0.10.0", than: "0.9.9")
+          && AppUpdate.isNewer("0.4.0.1", than: "0.4.0"), "新版本")
+    check(!AppUpdate.isNewer("0.4.0", than: "0.4.0") && !AppUpdate.isNewer("0.3.12", than: "0.4.0"), "一样的、旧的不算新版本")
+    check(!AppUpdate.isNewer("0.4.1", than: "dev") && !AppUpdate.isRelease("dev") && AppUpdate.isRelease("0.4.0"),
+          "开发版不提示更新")
+    let state = AppUpdate.State(text: "checked=1700000000\nlatest=v0.4.1\n")
+    check(state == AppUpdate.State(checked: 1_700_000_000, latest: "v0.4.1") && AppUpdate.State(text: state.text) == state,
+          "记的检查状态读写", state.text)
+    check(AppUpdate.State(text: "乱写\nchecked=abc\nlatest=../x\n") == AppUpdate.State(), "写坏的检查状态当没查过")
+    check(!AppUpdate.due(state, now: 1_700_000_000 + 3600) && AppUpdate.due(state, now: 1_700_000_000 + 86_400)
+          && AppUpdate.due(state, now: 1_600_000_000) && AppUpdate.due(AppUpdate.State(), now: 1_700_000_000),
+          "一天最多查一次（时钟往回拨了也查）")
+    // 包名和 install.sh 的 macOS 分支一样（规格目录旁边就是仓库根）
+    let specDir = getenv("WOWTYPE_SPEC_DIR").map { String(cString: $0) } ?? "spec"
+    if let installer = readFile(specDir + "/../install.sh") {
+        check(installer.contains("package=\"WowType-$version-macos.pkg\""), "macOS 安装包的名字和 install.sh 一样")
+    } else {
+        print("skip 对照 install.sh 的包名（没找到 install.sh）")
+    }
+}
+
 // MARK: 设置契约（spec/config.json、spec/lexicon-pack.json；Linux 两端在 scripts/test-config-contract.py 对照）
 
 checkConfigContract()

@@ -200,7 +200,7 @@
      "platforms": ["fcitx5", "settings", "macos"],
      "note": "进出「译」的快捷键（fcitx5 键名），留空不用（#87）：按它进「译」（打到一半的拼音带进去），在「译」里再按回到进来前的模式。设了以后单按 Shift 只在中 ↔ 英之间切；互译没打开、翻译没配好、密码框里这个键交给应用。键名不叫 TranslateKey：macOS 的设置文件模板里不许出现这个词（会当成 API Key）"},
     {"key": "CheckUpdate", "type": "bool", "default": true,
-     "platforms": ["fcitx5", "settings"], "note": "自动检查更新（最多一小时一次）。macOS 还没做"},
+     "platforms": ["fcitx5", "settings", "macos"], "note": "自动检查更新。Linux 切到 WowType 时最多一小时查一次，有新版发桌面通知；macOS 输入法进程每天最多查一次，有新版时输入法菜单里多一项，设置窗口打开时也查"},
     {"key": "Translate", "type": "bool", "default": false,
      "platforms": ["fcitx5", "settings", "macos"], "note": "互译（单按 Shift 或 TranslateModeKey 切到「译」）"},
     {"key": "TranslateTarget", "type": "enum", "default": "en",

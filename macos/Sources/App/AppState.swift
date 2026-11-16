@@ -41,6 +41,11 @@ final class AppState {
     private var missingLexiconLogged: String?
     /// 上一次看系统剪贴板时它的 changeCount（没变就不读）
     private var clipboardChangeCount = -1
+    /// 发布页上比现在装的新的版本（输入法菜单里多一项「下载并安装」）；没有是 nil
+    private(set) var availableUpdate: String?
+    private var updateChecking = false
+    /// 下一次看要不要检查更新的时刻（systemUptime）：最多一小时看一次，没网时也不会每切一次输入框就去连
+    private var nextUpdateLook: TimeInterval = 0
 
     private init() {
         RecentEmoji.shared.path = supportDir.appendingPathComponent("emoji-recent.txt").path
@@ -444,6 +449,38 @@ final class AppState {
             return
         }
         ClipboardHistory.remember(text)
+    }
+
+    /// 切换输入框时调：设置里 CheckUpdate 开着，上次查（输入法或设置窗口查的，记在 update-state）过了一天，
+    /// 就在后台问一次 GitHub 最新正式版，不挡按键。有新版只在输入法菜单里多一项，不弹通知：输入法是后台进程、
+    /// 没有开发者签名，通知要先弹框要授权，打字时弹出来也打扰人；菜单里点一下打开设置窗口，那里下载安装。
+    /// 开发版（dev）、测试（设了 WOWTYPE_DATA_DIR）不查。
+    func checkUpdateIfDue() {
+        let uptime = ProcessInfo.processInfo.systemUptime
+        guard config.checkUpdate, !updateChecking, uptime >= nextUpdateLook, AppUpdate.isRelease(appVersion),
+              ProcessInfo.processInfo.environment["WOWTYPE_DATA_DIR"] == nil
+        else { return }
+        nextUpdateLook = uptime + 3600
+        let dir = supportDir
+        let state = UpdateInstaller.readState(supportDir: dir)
+        noteLatest(state.latest)
+        guard AppUpdate.due(state, now: Int64(Date().timeIntervalSince1970)) else { return }
+        updateChecking = true
+        DispatchQueue.global(qos: .utility).async {
+            let release = try? UpdateInstaller.fetchLatest(supportDir: dir)
+            DispatchQueue.main.async {
+                self.updateChecking = false
+                guard let release else { return }
+                self.noteLatest(release.tag)
+                if let version = self.availableUpdate {
+                    NSLog("WowType: 有新版本 %@（现在 %@）", version, appVersion)
+                }
+            }
+        }
+    }
+
+    private func noteLatest(_ tag: String) {
+        availableUpdate = AppUpdate.version(tag: tag).flatMap { AppUpdate.isNewer($0, than: appVersion) ? $0 : nil }
     }
 
     /// 上屏里有学到的选词（Composer.onCommit 只在 frame->learned 时调）。

@@ -88,8 +88,9 @@ final class SettingsModel: ObservableObject {
     private let bundledLexicon: String?
     /// 安装包里有五笔码表（wubi86.tsv）：没有时「五笔输入」灰掉，说为什么（和 Linux 设置一样）
     let wubiTableAvailable: Bool
-    /// 「输入」页的整句增强模型（SettingsExtras.swift）
+    /// 「输入」页的整句增强模型、「常规」页的更新（SettingsExtras.swift）
     let nnlm: NnlmModel
+    let updater: UpdateModel
 
     /// 文件里现在的设置（上次读或写的）：保存时只写 config 和它不一样的键
     private var saved: WowtypeConfig
@@ -114,6 +115,7 @@ final class SettingsModel: ObservableObject {
         bundledLexicon = state.resource("lexicon.tsv")
         wubiTableAvailable = state.resource("wubi86.tsv") != nil
         nnlm = NnlmModel(supportDir: state.supportDir, bundled: state.resource("nnlm.bin"))
+        updater = UpdateModel(supportDir: state.supportDir)
         configStamp = FileStamp(state.configPath)
         let loaded = WowtypeConfig.parse(readText(state.configPath) ?? "")
         saved = loaded
@@ -121,6 +123,11 @@ final class SettingsModel: ObservableObject {
         customStamp = FileStamp(state.customWordsPath)
         words = CustomWords(text: readText(state.customWordsPath)).entries
         nnlm.toast = { [weak self] text in self?.showToast(text) }
+        updater.beforeInstall = { [weak self] in self?.save() }
+        // 打开设置窗口时查一次更新（设置里关了自动检查就等用户点「检查更新」）
+        if loaded.checkUpdate {
+            updater.check()
+        }
     }
 
     private func quietly(_ body: () -> Void) {

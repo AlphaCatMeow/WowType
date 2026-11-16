@@ -2,7 +2,7 @@
 //
 // 页面、分组、文字照 Linux 的设置界面（settings/wowtype-config 的 build_general / build_input / build_emoji /
 // build_voice / build_translate / build_words），名字和顺序两边一样，选项说明对得上 fcitx5-addon/src/wowtype_engine.h。macOS 还没有的功能
-// （检查更新）不列出来，它的键在 wowtype.conf 里原样留着。
+// 不列出来，它们的键在 wowtype.conf 里原样留着。Linux 单独一页的「更新」在 macOS 是「常规」页里的一组。
 // 每行一个标题，副标题最多一行；说明、注意事项、例子、来源、许可放进 ⓘ（InfoButton）或「更多选项」折叠里。
 // 样子也照 Linux：薄荷绿渐变侧栏、绿色选中块、白色圆角卡片。
 
@@ -223,6 +223,7 @@ private struct GeneralPage: View {
         PrefGroup("外观") {
             StepperRow(title: "候选字号", value: $model.config.candidateFontSize, range: 10...40)
         }
+        UpdateGroup(model: model, updater: model.updater)
         PrefGroup("帮助") {
             ExpanderRow(title: "小技巧") {
                 ActionRow(title: "简拼", subtitle: "bjdx → 北京大学，zhch → 支持")
@@ -252,6 +253,46 @@ private struct GeneralPage: View {
         case (.caret, _): return "↑ ↓ 选词，← → 在拼音里移动光标"
         case (.candidates, true): return "← → 选词，↑ 上一页，↓ 展开更多候选"
         case (.candidates, false): return "↑ ↓ 选词，← → 翻页"
+        }
+    }
+}
+
+/// 「更新」：当前版本 / 有新版本，下载并安装（交给系统的 installer，不要密码），自动检查的开关
+private struct UpdateGroup: View {
+    @ObservedObject var model: SettingsModel
+    @ObservedObject var updater: UpdateModel
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        PrefGroup("更新", info: "从 GitHub 发布页下载这台 Mac 的安装包（WowType-<版本>-macos.pkg），按同一页的 SHA256SUMS 校验，"
+                  + "再交给系统的安装器只装给你自己，不要管理员密码。装的时候输入法和设置窗口会重启一下，装好后设置窗口自动重新打开。\n\n"
+                  + "自动检查：输入法每天最多查一次，有新版本时菜单栏的输入法菜单里多一项；打开设置窗口时也查。",
+                  links: [("发布页", UpdateInstaller.releasesPage)]) {
+            HStack(spacing: 10) {
+                RowLabel(title: updater.title, subtitle: updater.subtitle,
+                         subtitleColor: updater.error != nil ? palette.warning : nil)
+                if let (done, total) = updater.downloadProgress {
+                    ProgressView(value: Double(done), total: Double(max(total, 1)))
+                        .frame(width: 90)
+                    Button("取消") { updater.cancelDownload() }
+                } else if updater.installing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    if updater.error != nil {
+                        Button("打开发布页") { updater.openReleasePage() }
+                    }
+                    if updater.hasUpdate {
+                        Button("下载并安装") { updater.downloadAndInstall() }
+                    } else {
+                        Button("检查更新") { updater.check() }
+                            .disabled(updater.checking)
+                    }
+                }
+            }
+            .rowPadding()
+            RowDivider()
+            SwitchRow(title: "自动检查更新", subtitle: "有新版本时输入法菜单里提示", isOn: $model.config.checkUpdate)
         }
     }
 }

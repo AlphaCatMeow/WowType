@@ -96,3 +96,164 @@ final class NnlmModel: ObservableObject {
         toast(freed > 0 ? "已删除整句增强模型，空出 \(LocalModel.sizeText(freed))" : "已删除")
     }
 }
+
+/// 「常规」页的「更新」：打开设置窗口时（CheckUpdate 开着）查一次 GitHub，有新版给「下载并安装」。
+/// 下载、校验、交给 installer 在 UpdateInstaller 里；装的时候设置窗口会被 pkg 的 preinstall 停掉，装完重新打开时
+/// init 里读到结果显示出来。
+final class UpdateModel: ObservableObject {
+    @Published private(set) var checking = false
+    @Published private(set) var release: LexiconPackInstaller.Release?
+    /// 查、下载、装失败的原因（有它时给「打开发布页」）
+    @Published private(set) var error: String?
+    /// 下载中（已下, 总共）；没在下是 nil
+    @Published private(set) var downloadProgress: (Int64, Int64)?
+    @Published private(set) var installing = false
+    /// 装好了：给用户看的一句话
+    @Published private(set) var installed: String?
+    let supportDir: URL
+    /// 交给 installer 之前调（SettingsModel 设成 save：设置窗口会被停掉，没写的设置先写）
+    var beforeInstall: () -> Void = {}
+    private var control: DownloadControl?
+    private var watch: Timer?
+
+    init(supportDir: URL) {
+        self.supportDir = supportDir
+        // 上一个设置窗口点了「下载并安装」、被 installer 停掉了：这是装完重新打开的
+        if let result = UpdateInstaller.takeResult(supportDir: supportDir) {
+            show(result, restarted: true)
+        }
+    }
+
+    /// 发布页上最新正式版的版本号（查过才有）
+    var latestVersion: String? {
+        release.flatMap { AppUpdate.version(tag: $0.tag) }
+    }
+
+    var hasUpdate: Bool {
+        latestVersion.map { AppUpdate.isNewer($0, than: appVersion) } ?? false
+    }
+
+    var busy: Bool { downloadProgress != nil || installing }
+
+    var title: String {
+        if hasUpdate, let latest = latestVersion { return "有新版本 \(latest)" }
+        return "当前版本 \(appVersion)"
+    }
+
+    var subtitle: String? {
+        if installing { return "正在安装…设置窗口会关掉，装好后自动重新打开" }
+        if let (done, total) = downloadProgress {
+            if done == 0 { return "正在连接…" }
+            return total > 0
+                ? "正在下载：\(LocalModel.sizeText(done)) / \(LocalModel.sizeText(total))（\(LocalModel.percent(done, of: total))%）"
+                : "正在下载：\(LocalModel.sizeText(done))"
+        }
+        if let error { return error }
+        if let installed { return installed }
+        if checking { return "正在检查更新…" }
+        guard let latest = latestVersion else { return nil }
+        if hasUpdate { return "现在是 \(appVersion)，下载后自动安装，不要密码" }
+        if !AppUpdate.isRelease(appVersion) { return "最新正式版 \(latest)，现在装的是开发版" }
+        return "已经是最新版本"
+    }
+
+    func check() {
+        guard !checking, !busy else { return }
+        checking = true
+        error = nil
+        let supportDir = self.supportDir
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let result = Result { try UpdateInstaller.fetchLatest(supportDir: supportDir) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.checking = false
+                switch result {
+                case .success(let release):
+                    self.release = release
+                case .failure(let error as PackError):
+                    self.error = "检查更新失败：\(error.description)"
+                case .failure(let error):
+                    self.error = "检查更新失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func downloadAndInstall() {
+        guard let release, hasUpdate, !busy else { return }
+        let control = DownloadControl()
+        self.control = control
+        error = nil
+        installed = nil
+        downloadProgress = (0, 0)
+        let supportDir = self.supportDir
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result {
+                try UpdateInstaller.download(release, supportDir: supportDir, control: control) { done, total in
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.control === control else { return }
+                        self.downloadProgress = (done, total)
+                    }
+                }
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.control = nil
+                self.downloadProgress = nil
+                switch result {
+                case .success(let pkg):
+                    self.install(pkg)
+                case .failure(let error as DownloadCancelled):
+                    self.error = error.description
+                case .failure(let error as PackError):
+                    self.error = "下载失败：\(error.description)"
+                case .failure(let error):
+                    self.error = "下载失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func cancelDownload() {
+        control?.cancel()
+    }
+
+    /// 出错时给的链接：这个版本的发布页（还没查到是总的发布页）
+    func openReleasePage() {
+        NSWorkspace.shared.open(release.map { UpdateInstaller.releasePage(tag: $0.tag) } ?? UpdateInstaller.releasesPage)
+    }
+
+    private func install(_ pkg: URL) {
+        beforeInstall()
+        do {
+            try UpdateInstaller.launchInstaller(pkg: pkg, supportDir: supportDir)
+        } catch {
+            self.error = "安装没能开始：\(error.localizedDescription)"
+            return
+        }
+        installing = true
+        // 一般这个窗口会被 preinstall 停掉；没被停掉（比如 installer 一开始就失败了）时自己等结果
+        watch?.invalidate()
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            guard let result = UpdateInstaller.takeResult(supportDir: self.supportDir) else { return }
+            timer.invalidate()
+            self.watch = nil
+            self.installing = false
+            self.show(result, restarted: false)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        watch = timer
+    }
+
+    private func show(_ result: (ok: Bool, detail: String), restarted: Bool) {
+        if result.ok {
+            installed = restarted ? "已更新到 \(appVersion)" : "新版本装好了，重新打开设置窗口后生效"
+        } else {
+            error = "安装失败（\(result.detail)），可以到发布页下载安装包自己装"
+        }
+    }
+}
