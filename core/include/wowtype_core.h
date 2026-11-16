@@ -391,8 +391,9 @@ typedef struct {
 /* WowtypeKey.hints（1.10 起）。 */
 #define WOWTYPE_KEY_HINT_NO_AUTO_SPACE (1u << 0) /* 密码框、网址框、邮箱框：不自动补空格 */
 #define WOWTYPE_KEY_HINT_PANEL_OPEN (1u << 1)    /* 外壳开着自己的面板（表情面板、工具栏）：按 Shift 不切中英文 */
-#define WOWTYPE_KEY_HINT_NO_TRANSLATE (1u << 2)  /* 不能翻译的输入框（密码框）：「译」里也照常上屏；选的词、回车上屏的字母串都不学 */
+#define WOWTYPE_KEY_HINT_NO_TRANSLATE (1u << 2)  /* 不能翻译的输入框（密码框）：「译」里也照常上屏 */
 #define WOWTYPE_KEY_HINT_SURROUNDING (1u << 3)   /* 应用告诉了光标周围的文字：prev_char 为 0 是光标前确实没有字 */
+#define WOWTYPE_KEY_HINT_NO_LEARN (1u << 4)      /* 确定是密码框：选的词也不学（回车上屏的原始字母串本来就不学） */
 
 /* 输入模式（1.10 起）。单按 Shift（Shift_L 0xffe1 / Shift_R 0xffe2 的按下、松开都交给会话）
  * 在中 → 英 →（WowtypeSessionConfig.translate_mode 时）译 → 中 之间切换，frame->mode_changed 为 1；

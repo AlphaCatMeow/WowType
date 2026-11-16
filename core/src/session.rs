@@ -129,11 +129,14 @@ pub mod key_hints {
     pub const NO_AUTO_SPACE: u32 = 1 << 0;
     /// 外壳开着自己的面板（表情面板、工具栏）：这时按 Shift 不切中英文。
     pub const PANEL_OPEN: u32 = 1 << 1;
-    /// 不能翻译的输入框（密码框）：「译」里也照常上屏，不攒原文、不往外发；
-    /// 选的词、回车上屏的原始字母串也都不学（不进 history.tsv 和用户词库）。
+    /// 不能翻译的输入框（密码框）：「译」里也照常上屏，不攒原文、不往外发。
     pub const NO_TRANSLATE: u32 = 1 << 2;
     /// 应用告诉了光标周围的文字：[`Key::prev_char`] 是 None 时光标前确实没有字（不是读不到）。
     pub const SURROUNDING: u32 = 1 << 3;
+    /// 密码框：选的词也不学（不进 history.tsv 和用户词库）。回车上屏的原始字母串哪里都不学，不用这个标记。
+    /// 和 NO_TRANSLATE 分开：macOS 只知道系统全局的「安全输入」开没开（终端开了安全键盘输入时所有输入框都算），
+    /// 拿它判断会让学习在所有地方静默停掉。
+    pub const NO_LEARN: u32 = 1 << 4;
 }
 
 /// 互译用的翻译器（[`crate::translate::Translator`]，或外壳自己的实现）。都不阻塞。
@@ -2821,10 +2824,9 @@ impl<'e> Session<'e> {
         self.finish(text);
     }
 
-    /// 密码框之类不该留痕迹的输入框（外壳给的 [`key_hints::NO_TRANSLATE`]）：什么都不学。
-    /// 回车上屏的原始字母串也会记一次选词，在密码框里那就是把密码明文写进 history.tsv。
+    /// 密码框（外壳给的 [`key_hints::NO_LEARN`]）：什么都不学。
     fn sensitive(&self) -> bool {
-        self.hints & key_hints::NO_TRANSLATE != 0
+        self.hints & key_hints::NO_LEARN != 0
     }
 
     /// 记一次选词。上文和算候选时一样（已上屏的字 + 已选的词）。

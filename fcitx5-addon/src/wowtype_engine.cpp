@@ -1403,7 +1403,8 @@ const WowtypeFrame *WowtypeEngine::sessionKey(fcitx::InputContext *ic, WowtypeSt
         hints |= WOWTYPE_KEY_HINT_NO_AUTO_SPACE;
     }
     if (ic && !translatable(ic)) {
-        hints |= WOWTYPE_KEY_HINT_NO_TRANSLATE;
+        // fcitx5 的 Password / Sensitive 是这个输入框自己的能力位，确定是密码框：选的词也不学
+        hints |= WOWTYPE_KEY_HINT_NO_TRANSLATE | WOWTYPE_KEY_HINT_NO_LEARN;
     }
     // 读得到周围文字时会话拿光标前的字核对自己记的上文（在应用里删过、改过就作废）
     const auto prev = prevChar(ic);

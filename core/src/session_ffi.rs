@@ -44,6 +44,7 @@ pub const WOWTYPE_KEY_HINT_NO_AUTO_SPACE: u32 = crate::session::key_hints::NO_AU
 pub const WOWTYPE_KEY_HINT_PANEL_OPEN: u32 = crate::session::key_hints::PANEL_OPEN;
 pub const WOWTYPE_KEY_HINT_NO_TRANSLATE: u32 = crate::session::key_hints::NO_TRANSLATE;
 pub const WOWTYPE_KEY_HINT_SURROUNDING: u32 = crate::session::key_hints::SURROUNDING;
+pub const WOWTYPE_KEY_HINT_NO_LEARN: u32 = crate::session::key_hints::NO_LEARN;
 
 /// 外壳自己的翻译器（C 布局，1.10 起）：macOS 用它把自己的翻译器（测试里是假的）交给会话。
 /// 函数都不阻塞。poll 把这次的原文、译文、出错原因写进三个出参（在下一次 poll 前有效），

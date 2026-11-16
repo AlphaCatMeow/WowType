@@ -2896,15 +2896,29 @@ fn reset_closes_tool_panel() {
     assert_eq!(session.input(), "shuang", "字母进了编辑区，不是面板");
 }
 
-/// 密码框（外壳给 NO_TRANSLATE）里什么都不学：回车上屏的字母串、选的词都不进输入习惯。
+/// 密码框（外壳给 NO_LEARN）里什么都不学：回车上屏的字母串、选的词都不进输入习惯。
+/// 只有 NO_TRANSLATE（macOS 的全局安全输入）时照常学。
 #[test]
 fn password_fields_learn_nothing() {
     use wowtype_core::session::key_hints;
     let engine = forget_engine();
     let secret = |key: Key| Key {
+        hints: key_hints::NO_TRANSLATE | key_hints::NO_LEARN,
+        ..key
+    };
+    let secure_input = |key: Key| Key {
         hints: key_hints::NO_TRANSLATE,
         ..key
     };
+    {
+        let mut session = with(engine);
+        for c in "shuang".chars() {
+            session.key(&secure_input(Key::char(c)));
+        }
+        let frame = session.key(&secure_input(Key::press(keysym::SPACE)));
+        assert!(frame.learned, "只有 NO_TRANSLATE 时照常学");
+        engine.forget_word(&frame.commit.expect("空格上屏"));
+    }
     let mut session = with(engine);
     for c in "shuang".chars() {
         session.key(&secret(Key::char(c)));
