@@ -1069,7 +1069,12 @@ impl Engine {
             }
         }
         // 句首词只留在音节边界上的（不把一个音节拆开）
-        let other_splits = prefix_on_syllable_boundaries(result, normalized, &mut heads);
+        let mut other_splits = prefix_on_syllable_boundaries(result, normalized, &mut heads);
+        if self.config.shuangpin {
+            // 双拼的音节边界由键对定死（ie | il 就是 che | chuang），不能换一种切法：
+            // 换切法的「撤出」[che chu] 只用掉 ie 两个键，选了它会多上屏一个字
+            other_splits.clear();
+        }
         let leading = raw.len() - raw.trim_start().len();
         let mut seen: HashMap<String, ()> = result.iter().map(|c| (c.text.clone(), ())).collect();
         let converter = if self.config.traditional {
@@ -1081,23 +1086,37 @@ impl Engine {
         // 十来条，名额常被纠错、补全出来的高频词占掉（tongde 的「用的、听得、功德」），
         // 词库里打全了就对得上的词（通的、大创、超梦）反而掉到单字后面，只能一个字一个字选。
         // 两个音节的同音词最多三十来个（按使用频率算 90% 的输入不超过 8 个），不会把单字挤得太远。
+        // 原始串/英文候选先拿出来，插完再放回原来的位置（英文词排第 6 的还排第 6）
+        let mut raws: Vec<(usize, Candidate)> = Vec::new();
+        let mut i = 0;
+        while i < result.len() {
+            if is_raw_candidate(&result[i]) {
+                raws.push((i + raws.len(), result.remove(i)));
+            } else {
+                i += 1;
+            }
+        }
         let mut at = result
             .iter()
-            .rposition(|c| {
-                !is_raw_candidate(c) && c.consumed >= raw.len() && c.features.typo_count == 0.0
-            })
+            .rposition(|c| c.consumed >= raw.len() && c.features.typo_count == 0.0)
             .map_or(0, |i| i + 1);
-        // 三个音节以上的同音词还要排在几个词拼出来的整句前面（qidongqi：启动器 在 启动 | 其 前面），
-        // 和 protect_exact_input 对束搜索结果做的一样；用户选过的整句不动
-        let mut stitched = result.iter().position(|c| {
-            !is_raw_candidate(c)
-                && c.consumed >= raw.len()
-                && c.words.len() >= 2
-                && c.features.history_use_count == 0.0
-        });
+        // 三个音节以上的同音词还要排在读音一样、几个词拼出来的整句前面（qidongqi：启动器 在 启动 | 其
+        // 前面），和 protect_exact_input 对束搜索结果做的一样；用户选过的整句不动。
+        // 有音节更少、够常用的整词时（jieran 的「截然」），换切法才对得上的长词（己二胺）不往前提
+        let fewest = fewest_exact_syllables(result)
+            .into_iter()
+            .chain(
+                homophones
+                    .iter()
+                    .filter(|c| c.words[0].freq >= EXACT_PROTECT_MIN_FREQ)
+                    .map(|c| c.pinyin.split_whitespace().count()),
+            )
+            .min();
         for mut candidate in homophones {
-            let long = candidate.pinyin.split_whitespace().count() >= EXACT_LONG_SYLLABLES
-                && candidate.words[0].freq >= EXACT_LONG_MIN_FREQ;
+            let syllables = candidate.pinyin.split_whitespace().count();
+            let long = syllables >= EXACT_LONG_SYLLABLES
+                && candidate.words[0].freq >= EXACT_LONG_MIN_FREQ
+                && fewest.is_none_or(|n| syllables <= n);
             if let Some(conv) = converter.as_ref().filter(|c| !c.is_empty()) {
                 candidate.text = conv.convert(&candidate.text);
             }
@@ -1105,14 +1124,18 @@ impl Engine {
                 continue;
             }
             candidate.consumed = raw.len();
-            match stitched.filter(|&i| long && i < at) {
-                Some(i) => {
-                    result.insert(i, candidate);
-                    stitched = Some(i + 1);
-                }
-                None => result.insert(at, candidate),
-            }
+            let stitched = result[..at].iter().position(|c| {
+                long && c.consumed >= raw.len()
+                    && c.words.len() >= 2
+                    && c.features.history_use_count == 0.0
+                    && same_syllables(c, &candidate)
+            });
+            result.insert(stitched.unwrap_or(at), candidate);
             at += 1;
+        }
+        for (i, c) in raws {
+            let i = i.min(result.len());
+            result.insert(i, c);
         }
         // 超出上限时从后面去掉（原始串/英文候选不动）
         while result.len() > max {
@@ -1793,10 +1816,6 @@ fn letters_to_bytes(raw: &str, letters: usize) -> usize {
 /// （长句）第二名往后的整句只是小改动，价值不如句首词，所以句首词紧跟第一名。
 /// 词频低于这个数的词不受「精确优先」保护（rime-ice 里约排在 20 万名以后，多是生僻或凑出来的条目）。
 const EXACT_PROTECT_MIN_FREQ: f64 = 1000.0;
-/// 补全出来的词的词频是精确词的多少倍以上时，精确词不再强行排到它前面（见 [`protect_exact_input`]）。
-/// 要保护的：种地 / 重点 13 倍、北极 / 北京 18 倍、卡 / 看 20 倍；要放开的：我么 / 我们 716 倍、
-/// 拱卒 / 工作 330 倍、中古 / 中国 282 倍。两组之间没有例子落在 20–280 倍，取 100。
-const EXACT_PROTECT_MAX_RATIO: f64 = 100.0;
 /// 整个输入是一个词、音节数到这个数时，「精确优先」不看词频，几个词拼出来的候选也排它后面。
 const EXACT_LONG_SYLLABLES: usize = 3;
 /// 上面这条规则要的最低词频：只有个位数词频的条目（赤锦腕 1、大李窑 3）多是人名地名，
@@ -1831,10 +1850,15 @@ fn protect_exact_input(candidates: &mut Vec<Candidate>) {
     };
     // 三个音节以上、整个输入正好是词库里的一个词：读音这么长还能对上，同音的词库词平均不到两个，
     // 不看词频也算实在的词（前后端、启动器、候选词在 rime-ice 里都只有占位的词频）
+    // 切法得是最自然的那种：有个音节更少、够常用的精确整词时（jieran 的「截然」jie ran），
+    // 换一种切法才对得上的长词（己二胺 ji er an）不算
+    let fewest = fewest_exact_syllables(candidates);
     let long_word = |c: &Candidate| {
+        let syllables = c.pinyin.split_whitespace().count();
         c.words.len() == 1
             && c.words[0].freq >= EXACT_LONG_MIN_FREQ
-            && c.words[0].pinyin.split_whitespace().count() >= EXACT_LONG_SYLLABLES
+            && syllables >= EXACT_LONG_SYLLABLES
+            && fewest.is_none_or(|n| syllables <= n)
     };
     let solid = |c: &Candidate| {
         is_exact(c)
@@ -1845,15 +1869,20 @@ fn protect_exact_input(candidates: &mut Vec<Candidate>) {
     };
     // 长的整词先提到拼出来的整句前面：fayiban 里 法 | 一般 本身也算「实在的」（最后一个词两个字），
     // 下面按第一个实在的候选当锚点时轮不到「发一版」。用户选过的整句不动
+    // 只压过读音完全一样的拼凑（启动 | 其 = qi dong qi）；分数只抬到刚好高过它，后面的不动
+    // （整段压成等差会让 compose_candidates 按分差去掉硬凑整句的判断失效）
     if let Some(word_at) = candidates.iter().position(|c| is_exact(c) && long_word(c)) {
-        let stitched = candidates[..word_at]
-            .iter()
-            .position(|c| c.words.len() >= 2 && c.features.history_use_count == 0.0);
+        let stitched = candidates[..word_at].iter().position(|c| {
+            c.words.len() >= 2
+                && c.features.history_use_count == 0.0
+                && same_syllables(c, &candidates[word_at])
+        });
         if let Some(at) = stitched {
-            let word = candidates.remove(word_at);
+            let mut word = candidates.remove(word_at);
+            word.score = word.score.max(candidates[at].score + 1e-3);
             candidates.insert(at, word);
-            for i in at.max(1)..candidates.len() {
-                if candidates[i].score >= candidates[i - 1].score {
+            for i in 1..candidates.len() {
+                if candidates[i].score > candidates[i - 1].score {
                     candidates[i].score = candidates[i - 1].score - 1e-3;
                 }
             }
@@ -1867,6 +1896,7 @@ fn protect_exact_input(candidates: &mut Vec<Candidate>) {
     }
     let whole_word = candidates[anchor].words.len() == 1;
     let long_anchor = long_word(&candidates[anchor]);
+    let anchor_pinyin = candidates[anchor].pinyin.clone();
     // 精确结果是几个词拼的（我在 | 种地）时，只管开头一样、只是后面换了词的拼凑结果
     // （我 | 在重点）；一个整词盖住全部输入的（从善如流 vs 从善 | 入理）是更强的证据，不动
     let head_text: String = {
@@ -1878,23 +1908,14 @@ fn protect_exact_input(candidates: &mut Vec<Candidate>) {
     };
     let same_head =
         |c: &Candidate| whole_word || (c.words.len() >= 2 && c.text.starts_with(&head_text));
-    // 补全出来的词比打全了的词常用得多（> EXACT_PROTECT_MAX_RATIO 倍）时，用户多半是少打了一个字母：
-    // wome 打的是「我们」（是「我么」的 716 倍），xianza 是「现在」，dianna 是「电脑」。
-    // 用户选过的精确词照样保护
-    let anchor_freq = candidates[anchor].words.last().map_or(0.0, |w| w.freq);
-    let anchor_picked = candidates[anchor].features.history_count > 0.0;
-    let overwhelming = |c: &Candidate| {
-        !anchor_picked
-            && c.features.prefix_completion > 0.0
-            && c.words
-                .last()
-                .is_some_and(|w| w.freq > anchor_freq.max(1.0) * EXACT_PROTECT_MAX_RATIO)
-    };
     let yields = |c: &Candidate| {
         let corrected = c.features.typo_count > 0.0 || c.features.prefix_completion > 0.0;
         // 长的整词前面，几个词拼出来的都让位（启动 | 其、前后 | 断）；短的整词只压过全是单字拼的
-        (corrected && same_head(c) && !overwhelming(c))
-            || (whole_word && c.words.len() >= 2 && (long_anchor || !c.words.iter().any(multi)))
+        (corrected && same_head(c))
+            || (whole_word
+                && c.words.len() >= 2
+                && ((long_anchor && c.pinyin.split_whitespace().eq(anchor_pinyin.split_whitespace()))
+                    || !c.words.iter().any(multi)))
     };
     if !candidates[..anchor].iter().any(yields) {
         return;
@@ -1921,6 +1942,27 @@ fn protect_exact_input(candidates: &mut Vec<Candidate>) {
         }
     }
     *candidates = keep;
+}
+
+/// 两个候选的音节一样（整词和拼凑出来的整句：启动器 / 启动 | 其）。
+fn same_syllables(a: &Candidate, b: &Candidate) -> bool {
+    a.pinyin.split_whitespace().eq(b.pinyin.split_whitespace())
+}
+
+/// 不靠纠错、补全、整个输入是一个够常用（[`EXACT_PROTECT_MIN_FREQ`]）的词库词的候选里，最少几个音节。
+fn fewest_exact_syllables(candidates: &[Candidate]) -> Option<usize> {
+    candidates
+        .iter()
+        .filter(|c| {
+            c.words.len() == 1
+                && c.words[0].known
+                && c.words[0].freq >= EXACT_PROTECT_MIN_FREQ
+                && c.features.typo_count == 0.0
+                && c.features.prefix_completion == 0.0
+                && c.features.coverage_score >= 1.0
+        })
+        .map(|c| c.pinyin.split_whitespace().count())
+        .min()
 }
 
 /// 用户上次给这串输入选过的候选往前放（微信输入法的 FirstUserCandidateRanker /
@@ -2062,7 +2104,15 @@ fn prefix_on_syllable_boundaries(
         prefix.clear();
         return Vec::new();
     };
-    let syllables: Vec<&str> = top.pinyin.split_whitespace().collect();
+    // 儿化的音节（wanr）按「音节 + r」两段算：第一名是「玩儿」时，wan 的单字（玩、万）照样是句首词
+    let syllables: Vec<&str> = top
+        .pinyin
+        .split_whitespace()
+        .flat_map(|s| match s.strip_suffix('r') {
+            Some(base) if !base.is_empty() && s != "er" => vec![base, "r"],
+            _ => vec![s],
+        })
+        .collect();
     if syllables.len() < 2 {
         prefix.clear();
         return Vec::new();
@@ -3650,27 +3700,52 @@ mod tests {
         }
     }
 
-    /// 少打了一个字母（wome）：补全出来的「我们」比精确的「我么」常用几百倍，排第一；
-    /// 差得不多（种地 / 重点）时照旧精确优先，用户选过的精确词也照旧优先。
+    /// 换一种切法才对得上的长词（jieran 切成 ji er an 的「己二胺」）不能压过自然切法的常用词（截然）。
     #[test]
-    fn far_more_common_completion_beats_rare_exact_word() {
-        let tsv = concat!(
-            "wo men\t我们\t10000000\n",
-            "wo me\t我么\t14000\n",
-            "wo\t我\t9000000\n",
-            "me\t么\t500000\n",
-            "men\t们\t900000\n",
-        );
-        let e = engine(tsv);
-        let wome: Vec<String> = e.input("wome").into_iter().map(|c| c.text).collect();
-        assert_eq!(wome[0], "我们", "{wome:?}");
-        assert!(wome.iter().any(|t| t == "我么"));
-        // 选过「我么」以后它回到第一
-        for _ in 0..3 {
-            e.record_selection_with_pinyin("我么", Some("wo me"));
+    fn long_word_from_another_split_does_not_beat_common_word() {
+        let mut e = engine(concat!(
+            "jie ran\t截然\t52375\n",
+            "jie\t介\t90000\n",
+            "ran\t然\t900000\n",
+            "ji er an\t己二胺\t760\n",
+            "ji\t几\t900000\n",
+            "er\t二\t900000\n",
+            "an\t安\t900000\n",
+        ));
+        e.set_max_candidates(100);
+        let list: Vec<String> = e.input("jieran").into_iter().map(|c| c.text).collect();
+        assert_eq!(list[0], "截然", "{list:?}");
+        let at = |w: &str| list.iter().position(|t| t == w);
+        assert!(at("己二胺") > at("截然"), "{list:?}");
+    }
+
+    /// 双拼的音节边界由键对定死：句首词用掉的键数必须是音节数的两倍，不出换切法的词
+    /// （ie il ce = che chuang ce，「撤出」che chu 只用掉 ie 两个键，选了会多上屏一个字）。
+    #[test]
+    fn shuangpin_heads_never_resplit_syllables() {
+        let mut e = engine(concat!(
+            "che\t车\t900000\n",
+            "che\t撤\t90000\n",
+            "chuang\t窗\t900000\n",
+            "ce\t测\t900000\n",
+            "che chu\t撤出\t50000\n",
+            "chu\t出\t900000\n",
+            "chuang ce\t窗测\t10\n",
+        ));
+        e.set_max_candidates(200);
+        e.set_shuangpin(true);
+        e.set_shuangpin_scheme(crate::shuangpin::Scheme::Xiaohe);
+        let input = "ieilce";
+        for c in e.input(input).iter().filter(|c| c.consumed < input.len()) {
+            assert_eq!(
+                c.consumed,
+                2 * c.pinyin.split_whitespace().count(),
+                "{} [{}] 用掉了 {:?}",
+                c.text,
+                c.pinyin,
+                &input[..c.consumed]
+            );
         }
-        let wome: Vec<String> = e.input("wome").into_iter().map(|c| c.text).collect();
-        assert_eq!(wome[0], "我么", "{wome:?}");
     }
 
     /// 整个输入对得上的词库词（同音词）全部排在句首词和单字前面，不受束搜索名额限制。

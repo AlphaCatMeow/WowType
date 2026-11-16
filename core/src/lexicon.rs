@@ -1478,9 +1478,9 @@ pub fn parse_pinyin_keys(pinyin: &str) -> Result<Vec<SyllableKey>> {
 
     // 单音节优先：xian 必须解析成一个音节，而不是 xi + an。
     if !pinyin.contains([' ', '\t', '\'']) {
-        let syl = Syllable::from_text(pinyin)
+        let key = erhua_token(pinyin)
             .ok_or_else(|| anyhow!("未知音节: {pinyin}（多音节请用空格分隔）"))?;
-        return Ok(vec![SyllableKey::new(syl.id, false)]);
+        return Ok(vec![key]);
     }
 
     let mut keys: Vec<SyllableKey> = Vec::new();
@@ -1497,13 +1497,21 @@ pub fn parse_pinyin_keys(pinyin: &str) -> Result<Vec<SyllableKey>> {
             }
             continue;
         }
-        let syl = Syllable::from_text(token).ok_or_else(|| anyhow!("未知音节: {token}"))?;
-        keys.push(SyllableKey::new(syl.id, false));
+        keys.push(erhua_token(token).ok_or_else(|| anyhow!("未知音节: {token}"))?);
     }
     if keys.is_empty() {
         bail!("拼音不能为空");
     }
     Ok(keys)
+}
+
+/// 一个音节，或者带儿化的音节（wanr、dianr：候选的拼音是按输入拼的，选够次数收进用户词库时就是这样）。
+fn erhua_token(token: &str) -> Option<SyllableKey> {
+    if let Some(syl) = Syllable::from_text(token) {
+        return Some(SyllableKey::new(syl.id, false));
+    }
+    let base = token.strip_suffix('r').filter(|b| !b.is_empty())?;
+    Syllable::from_text(base).map(|syl| SyllableKey::new(syl.id, true))
 }
 
 #[cfg(test)]
@@ -1598,6 +1606,22 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].word, "花儿");
         assert!(lex.lookup(&[hua.query(false)]).is_empty());
+    }
+
+    #[test]
+    fn erhua_pinyin_parses() {
+        let wan = Syllable::from_text("wan").unwrap().id;
+        let dian = Syllable::from_text("dian").unwrap().id;
+        assert_eq!(parse_pinyin_keys("wanr").unwrap(), [SyllableKey::new(wan, true)]);
+        assert_eq!(parse_pinyin_keys("wan r").unwrap(), [SyllableKey::new(wan, true)]);
+        assert_eq!(parse_pinyin_keys("yi dianr").unwrap()[1], SyllableKey::new(dian, true));
+        assert_eq!(parse_pinyin_keys("er").unwrap().len(), 1, "er 本身是个音节");
+        assert!(parse_pinyin_keys("r").is_err());
+        // 收进用户词库以后，wanr 直接查得到
+        let mut lex = MemoryLexicon::new();
+        lex.insert("wanr", "玩儿", 1000.0).unwrap();
+        let q = Syllable::from_text("wan").unwrap().query(true);
+        assert_eq!(lex.lookup(&[q])[0].word, "玩儿");
     }
 
     #[test]
