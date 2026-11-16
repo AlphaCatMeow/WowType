@@ -9,6 +9,12 @@
 #   LICENSE       rime-ice 的许可证（GPL-3.0），随数据一起分发
 #   words.lm      词级语言模型（从 GitHub Release 下载，见下面 LM_URL）
 #   SOURCE.txt    数据来源与版本
+#   VERSION       词库版本（rime-ice 日期 + 修订号，如 2026.11.14.6）
+#   DATA-MANIFEST 数据清单：每个数据文件的名字、版本、sha256、来源（tools/datamark.py manifest），
+#                 装进安装包的系统数据目录；也列上 core/data/s2t.tsv 和同一目录里的 wubi86.tsv（make-wubi.sh）
+#
+# 每个数据文件带版本标记（docs/DATA.md「数据版本标记」）：lexicon.tsv、english.txt 在这里写进头部注释，
+# 版本就是 VERSION；words.lm 的标记在发布模型时就写好了（加标记以前的 lm-2026.11.09 按字节数认）。
 #
 # words.lm 是用 wowtype-lmbuild 从约 5 GB 语料训练的，不在这里重新训练。
 # 想用本机的文件（不下载）：WOWTYPE_LM_FILE=path/to/words.lm scripts/make-data.sh
@@ -115,9 +121,14 @@ rm "$OUT/lexicon.rime.tsv" "$OUT/lexicon.hot.tsv"
 cat "$RIME/en_dicts/en.dict.yaml" "$RIME/en_dicts/en_ext.dict.yaml" > "$OUT/english.txt"
 cp "$RIME/LICENSE" "$OUT/LICENSE"
 
-# 词级语言模型，训练语料与命令见 Release 说明；换模型时同时改 URL 和 sha256，
-# 并把新模型的字节数加进 fcitx5-addon/src/data_files.h 的 kOfficialLmSizes 和 settings/wowtype-config 的
-# OFFICIAL_LM_SIZES（旧的留着）：老用户目录里拷进去的官方模型靠它认出来、让给安装包带的新模型
+# 词级语言模型，训练语料与命令见 Release 说明。换模型时：
+#   1. 训练出的 words.lm 先加版本标记再上传 Release（lm-<日期>），版本比上一版大：
+#        python3 tools/datamark.py stamp words.lm words.lm <日期>.0 --source "lm-<日期>"
+#      （或者在 wowtype-lmbuild 里调 wordlm::set_data_marker，两种写出来逐字节一样）；
+#   2. 同时改下面的 URL 和 sha256（sha256 是加了标记以后的文件的）。
+# 插件和设置界面按标记里的版本认用户目录里的旧副本，不用再往 kOfficialLmSizes（data_files.h）、
+# OFFICIAL_LM_SIZES（wowtype-config）里加字节数：那两张表只为认出加标记以前发布的 lm-2026.11.09
+# （它不会重新生成），以后不动。没有标记的新模型会在下面写清单时报错。
 LM_URL=https://github.com/Gloridust/WowType/releases/download/lm-2026.11.09/words.lm.xz
 LM_SHA256=42cb7c4a7cededa29b1a9ff105530085529fefff96535cc051341ebd51605dbe
 if [[ -n "${WOWTYPE_LM_FILE:-}" ]]; then
@@ -140,6 +151,17 @@ fi
 
 COMMIT=$(git -C "$RIME" rev-parse HEAD 2>/dev/null || echo unknown)
 DATE=$(git -C "$RIME" log -1 --format=%cs 2>/dev/null || date +%F)
+# 词库版本 = rime-ice 日期 + WowType 自己的修订号；只改了热词表等、rime-ice 没变时加 REV，
+# 否则同版本号的包 apt 不会更新、插件也分不出新旧。rime-ice 换新日期时 REV 归 0。
+# 5：默认融进 Tatoeba 语料词频（data/tatoeba-freq.tsv）；数据压缩包里加上五笔码表。
+# 6：数据文件带版本标记（wowtype-data），多了 DATA-MANIFEST；VERSION 全用点分隔（2026.11.14.6）。
+REV=6
+VERSION="${DATE//-/.}.$REV"
+echo "$VERSION" > "$OUT/VERSION"
+# 版本标记：插在第一行注释后面（插件和设置界面按它认用户目录里的旧副本，见 docs/DATA.md）
+python3 tools/datamark.py stamp "$OUT/lexicon.tsv" lexicon.tsv "$VERSION" --source "rime-ice ${COMMIT:0:12} (${DATE})"
+python3 tools/datamark.py stamp "$OUT/english.txt" english.txt "$VERSION" --source "rime-ice ${COMMIT:0:12} (${DATE})"
+
 cat > "$OUT/SOURCE.txt" <<EOF
 数据来源：雾凇拼音 rime-ice（https://github.com/iDvel/rime-ice），许可证 GPL-3.0，见 LICENSE。
 版本：${COMMIT}（${DATE}）
@@ -154,12 +176,11 @@ words.lm 是 WowType 的词级语言模型，由 wowtype-lmbuild 从下列语料
   中文维基百科（https://zh.wikipedia.org/，CC BY-SA 4.0）
 下载地址：$LM_URL
 sha256：$LM_SHA256
+
+各数据文件的版本（文件头的 wowtype-data 标记）和 sha256 见同一目录（安装包里是 /usr/share/wowtype）的 DATA-MANIFEST。
 EOF
-# 词库包版本 = rime-ice 日期 + WowType 自己的修订号；只改了热词表等、rime-ice 没变时加 REV，
-# 否则同版本号的包 apt 不会更新。rime-ice 换新日期时 REV 归 0。
-# 5：默认融进 Tatoeba 语料词频（data/tatoeba-freq.tsv）；数据压缩包里加上五笔码表。
-REV=5
-echo "$DATE.$REV" > "$OUT/VERSION"
+# 数据清单（同一目录里已有 make-wubi.sh 生成的 wubi86.tsv 时一起列上；make-wubi.sh 跑完会再写一遍）
+python3 tools/datamark.py manifest "$OUT" core/data/s2t.tsv
 
 LINES=$(grep -vc '^#' "$OUT/lexicon.tsv" || true)
 echo "词库 $LINES 条 -> $OUT/lexicon.tsv（rime-ice ${DATE}，修订 ${REV}）"
