@@ -290,6 +290,63 @@ install_packages() {
   esac
 }
 
+# GNOME 的候选框靠扩展 Input Method Panel（kimpanel@kde.org）画，活动概览的搜索框里才看得到。
+# 发行版仓库里有它的（Debian 12 / 13 的 gnome-shell-extension-kimpanel，Fedora 45 起）就问一句装上并启用；
+# 仓库里没有的（Ubuntu、Arch 官方仓库、更早的 Fedora）照旧只给链接。有没有按仓库实际查，不按发行版猜。
+KIMPANEL_UUID=kimpanel@kde.org
+KIMPANEL_PKG=gnome-shell-extension-kimpanel
+KIMPANEL_URL=https://extensions.gnome.org/extension/261/kimpanel/
+kimpanel_in_repo() {
+  case "$manager" in
+    apt-get) apt-cache show "$KIMPANEL_PKG" >/dev/null 2>&1 ;;
+    dnf) dnf -q info "$KIMPANEL_PKG" >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+enable_kimpanel() {
+  gnome-extensions enable "$KIMPANEL_UUID" 2>/dev/null && return 0
+  # 刚装的扩展 GNOME Shell 还没扫到（Wayland 下要重新登录），enable 会失败：直接记进启用列表，登录后生效
+  command -v gsettings >/dev/null || return 1
+  local current
+  current=$(gsettings get org.gnome.shell enabled-extensions 2>/dev/null) || return 1
+  [[ "$current" == *"'$KIMPANEL_UUID'"* ]] && return 0
+  if [[ "$current" == "@as []" || "$current" == "[]" ]]; then
+    current="['$KIMPANEL_UUID']"
+  else
+    current="${current%]}, '$KIMPANEL_UUID']"
+  fi
+  gsettings set org.gnome.shell enabled-extensions "$current"
+}
+gnome_kimpanel() {
+  [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]] && command -v gnome-extensions >/dev/null || return 0
+  local installed
+  installed=$(gnome-extensions list 2>/dev/null) || return 0
+  if grep -qx "$KIMPANEL_UUID" <<<"$installed"; then
+    gnome-extensions list --enabled 2>/dev/null | grep -qx "$KIMPANEL_UUID" && return 0
+    if confirm "GNOME 扩展 Input Method Panel 装了但没启用（候选框要靠它显示），现在启用吗？"; then
+      enable_kimpanel && say "已启用 GNOME 扩展 Input Method Panel" ||
+        warn "没启用成功，请在「扩展」应用里打开 Input Method Panel"
+    fi
+    return 0
+  fi
+  if kimpanel_in_repo &&
+     confirm "GNOME 下候选框要靠扩展 Input Method Panel 显示，现在装上（${KIMPANEL_PKG}）并启用吗？"; then
+    local ok=""
+    case "$manager" in
+      apt-get) "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y "$KIMPANEL_PKG" && ok=1 ;;
+      dnf) "${SUDO[@]}" dnf install -y "$KIMPANEL_PKG" && ok=1 ;;
+    esac
+    if [[ -n "$ok" ]] && enable_kimpanel; then
+      say "已装上并启用 GNOME 扩展 Input Method Panel（注销重新登录后生效）"
+      relogin=1
+      return 0
+    fi
+    warn "Input Method Panel 没装好，可以从 ${KIMPANEL_URL} 安装"
+    return 0
+  fi
+  warn "GNOME 下建议装扩展 Input Method Panel（${KIMPANEL_URL}），活动概览的搜索框里才能显示候选框"
+}
+
 main() {
   local plan=0
   case "${1:-}" in
@@ -389,10 +446,7 @@ main() {
     esac
   fi
 
-  if [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]] && command -v gnome-extensions >/dev/null &&
-     ! gnome-extensions list 2>/dev/null | grep -q '^kimpanel@kde.org$'; then
-    warn "GNOME 下建议装扩展 Input Method Panel（https://extensions.gnome.org/extension/261/kimpanel/），活动概览的搜索框里才能显示候选框"
-  fi
+  gnome_kimpanel
 
   echo
   say "WowType $version 装好了"
