@@ -2940,7 +2940,9 @@ fn raw_letters_committed_with_enter_are_not_learned() {
     // 先选一个句首词再回车：词照常上屏，剩下的字母不记
     let mut session = with(engine);
     type_keys(&mut session, "pinge");
-    choose_text(&mut session, "拼");
+    let frame = choose_text(&mut session, "拼");
+    assert!(frame.commit.is_none());
+    assert!(frame.learned, "选句首词进已选栈时学了，要告诉外壳有东西要存");
     let frame = type_keys(&mut session, "<cr>");
     assert_eq!(frame.commit.as_deref(), Some("拼ge"));
     assert_eq!(engine.history_count("ge"), 0);

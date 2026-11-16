@@ -2829,13 +2829,16 @@ impl<'e> Session<'e> {
 
     /// 记一次选词。上文和算候选时一样（已上屏的字 + 已选的词）。
     /// 五笔（连同临时拼音）什么都不学：码位固定，选的词也不该进拼音的选词热度和用户词库。
-    fn learn(&self, word: &str, pinyin: &str) {
+    fn learn(&mut self, word: &str, pinyin: &str) {
         let Some(engine) = self.engine.filter(|_| !self.wubi() && !self.sensitive()) else {
             return;
         };
         let context = self.context.clone() + &self.selected_text();
         engine.set_context(utf8_tail(&context, CONTEXT_BYTES));
         engine.record_selection_with_pinyin(word, Some(pinyin).filter(|p| !p.is_empty()));
+        // 外壳靠它数「有几次学习还没存」：选句首词进已选栈时也学了，之后按 Esc、失去焦点放弃，
+        // 不报的话这次学习不计数，退出时可能不存
+        self.learned = true;
     }
 
     /// 候选在词库里的写法（开着繁体时候选是转换过的），见 [`Engine::lexicon_form`]。
