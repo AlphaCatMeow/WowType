@@ -8,6 +8,8 @@
 #   english.txt   英文词表
 #   LICENSE       rime-ice 的许可证（GPL-3.0），随数据一起分发
 #   words.lm      词级语言模型（从 GitHub Release 下载，见下面 LM_URL）
+#   nnlm.bin      整句增强模型：WowType 自己的字级神经语言模型（WTNN，从 GitHub Release 下载，见下面 NNLM_URL；
+#                 下载不到时只警告，不带它照样出别的文件）
 #   SOURCE.txt    数据来源与版本
 #   VERSION       词库版本（rime-ice 日期 + 修订号，如 2026.11.14.6）
 #   DATA-MANIFEST 数据清单：每个数据文件的名字、版本、sha256、来源（tools/datamark.py manifest），
@@ -18,6 +20,8 @@
 #
 # words.lm 是用 wowtype-lmbuild 从约 5 GB 语料训练的，不在这里重新训练。
 # 想用本机的文件（不下载）：WOWTYPE_LM_FILE=path/to/words.lm scripts/make-data.sh
+# nnlm.bin 是 tools/nnlm/train.py 训出来的（docs/DATA.md「整句增强模型」），也不在这里训。
+# 用本机的（不下载）：WOWTYPE_NNLM_FILE=path/to/nnlm.bin；WOWTYPE_NO_NNLM=1 不带它。
 #
 # 语料词频（默认开，不联网、不要额外的 Python 包）：data/tatoeba-freq.tsv 是从钉死版本的 Tatoeba 中文句子
 # （CC BY 2.0 FR）挖出的词频，按权重 0.3 融进已有词（只改词频，不加词），署名写进 SOURCE.txt。
@@ -166,6 +170,47 @@ if [[ "$actual" != "$LM_SHA256" ]]; then
   exit 1
 fi
 
+# 整句增强模型（nnlm.bin，WTNN）：tools/nnlm/prep_corpus.py 整理语料、tools/nnlm/train.py 训练，
+# xz 压缩后上传 Release（nnlm-<日期>）。换模型时改下面的 URL 和 sha256（sha256 是解压后的 nnlm.bin 的；
+# 版本标记 train.py 导出时就写在文件头里了）。下载不到（比如 Release 还没发）时只警告、不带它，
+# 别的文件照常生成；下载到了但 sha256 对不上就报错退出。
+NNLM_URL=https://github.com/Gloridust/WowType/releases/download/nnlm-2026.11.17/nnlm.bin.xz
+NNLM_SHA256=d50289dfd10c8a4a0da49fc412bdc61a37c6f63ef1a1cbec4bdb74bf5bb7b52b
+rm -f "$OUT/nnlm.bin"
+if [[ "${WOWTYPE_NO_NNLM:-}" == "1" ]]; then
+  echo "不带整句增强模型 nnlm.bin（WOWTYPE_NO_NNLM=1）" >&2
+elif [[ -n "${WOWTYPE_NNLM_FILE:-}" ]]; then
+  cp "$WOWTYPE_NNLM_FILE" "$OUT/nnlm.bin"
+else
+  if ! curl -fsSL --retry 3 -o "$tmp/nnlm.bin.xz" "$NNLM_URL"; then
+    echo "警告：下载不到整句增强模型（${NNLM_URL}），这次不带 nnlm.bin" >&2
+    rm -f "$tmp/nnlm.bin.xz"
+  elif command -v xz >/dev/null; then
+    xz -dc "$tmp/nnlm.bin.xz" > "$OUT/nnlm.bin"
+  else
+    python3 -c 'import lzma, shutil, sys; shutil.copyfileobj(lzma.open(sys.argv[1]), sys.stdout.buffer)' \
+      "$tmp/nnlm.bin.xz" > "$OUT/nnlm.bin"
+  fi
+fi
+NNLM_NOTE=""
+if [[ -f "$OUT/nnlm.bin" ]]; then
+  actual=$(sha256 "$OUT/nnlm.bin")
+  if [[ "$actual" != "$NNLM_SHA256" ]]; then
+    echo "nnlm.bin 的 sha256 对不上（应为 ${NNLM_SHA256}，实际 ${actual}）" >&2
+    rm -f "$OUT/nnlm.bin"
+    exit 1
+  fi
+  NNLM_NOTE="
+nnlm.bin 是 WowType 的整句增强模型（字级神经语言模型，WTNN 格式，3 层 GPT-2、宽 256），
+由 WowType 的 tools/nnlm/train.py 从下列语料训练，许可证 CC BY-SA 4.0：
+  LCCC（https://huggingface.co/datasets/thu-coai/lccc，清华大学 CoAI 组，MIT）
+  中文维基百科（Hugging Face wikimedia/wikipedia 20231101.zh，https://zh.wikipedia.org/，CC BY-SA 4.0）
+许可证全文：https://creativecommons.org/licenses/by-sa/4.0/
+下载地址：$NNLM_URL
+sha256（解压后）：$NNLM_SHA256
+"
+fi
+
 COMMIT=$(git -C "$RIME" rev-parse HEAD 2>/dev/null || echo unknown)
 DATE=$(git -C "$RIME" log -1 --format=%cs 2>/dev/null || date +%F)
 # 词库版本 = rime-ice 日期 + WowType 自己的修订号；只改了热词表等、rime-ice 没变时加 REV，
@@ -194,7 +239,7 @@ words.lm 是 WowType 的词级语言模型，由 wowtype-lmbuild 从下列语料
   中文维基百科（https://zh.wikipedia.org/，CC BY-SA 4.0）
 下载地址：$LM_URL
 sha256：$LM_SHA256
-
+${NNLM_NOTE}
 各数据文件的版本（文件头的 wowtype-data 标记）和 sha256 见同一目录（安装包里是 /usr/share/wowtype）的 DATA-MANIFEST。
 EOF
 # 数据清单（同一目录里已有 make-wubi.sh 生成的 wubi86.tsv 时一起列上；make-wubi.sh 跑完会再写一遍）

@@ -35,7 +35,7 @@
 <p align="center"><img src="docs/images/candidates.png" width="720" alt="在文本编辑器里打 hengxianghouxuanci：横排候选条，第一个是横向候选词，后面是横向、横向后选词……"><br>
 <sub>候选横排，和微信输入法一样：整句只留几个，后面是词，最后是单字</sub></p>
 
-- **整句输入**：`xiangquzijieshangban` 直接出「想去字节上班」；后面跟着句子的前半截，可以先上屏一段，剩下的拼音接着改。
+- **整句输入**：`xiangquzijieshangban` 直接出「想去字节上班」；后面跟着句子的前半截，可以先上屏一段，剩下的拼音接着改。自带 WowType 自己训的整句增强模型（字级神经语言模型），长句的首选更准，开箱即用；也可以导入微信输入法的（[说明](docs/CONFIG.md#数据文件)）。
 - **半成品也有词**：`zhongg` 就有「中国」，不用打全。打全了的拼音正好是个词时，它一定排第一。
 - **按错键能认出来**：按成相邻键、两个键按反、多按或漏按一个键（`zhognguo` → 中国）。本来就打对的输入不受影响。
 - **越用越懂你**：记住你选过的词和常连着用的词（选过一次「我们再讨论」，下次就不会出「我们在讨论」），30 天不用会慢慢淡掉。
@@ -582,4 +582,4 @@ WOWTYPE_VOICE_WAV=说的话.wav WOWTYPE_VOICE_EXPECT=期望的字 scripts/addon-
 
 ## 许可证
 
-代码按 MIT 或 Apache-2.0 双许可证发布，任选其一。安装包里的词库数据遵循 rime-ice 的 GPL-3.0（词频另融进了 Tatoeba 句子统计出的词频，Tatoeba 句子是 CC BY 2.0 FR，署名见 DATA-SOURCE.txt），五笔码表遵循 rime-wubi 的 LGPL-3.0，可选的万象词库包遵循 CC BY 4.0，词级语言模型 `words.lm` 是 CC BY-SA 4.0，编进程序里的 emoji 关键词来自 Unicode CLDR（Unicode License v3）。
+代码按 MIT 或 Apache-2.0 双许可证发布，任选其一。安装包里的词库数据遵循 rime-ice 的 GPL-3.0（词频另融进了 Tatoeba 句子统计出的词频，Tatoeba 句子是 CC BY 2.0 FR，署名见 DATA-SOURCE.txt），五笔码表遵循 rime-wubi 的 LGPL-3.0，可选的万象词库包遵循 CC BY 4.0，词级语言模型 `words.lm` 和整句增强模型 `nnlm.bin`（都用 LCCC 和中文维基训练）是 CC BY-SA 4.0，编进程序里的 emoji 关键词来自 Unicode CLDR（Unicode License v3）。

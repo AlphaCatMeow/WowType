@@ -62,7 +62,8 @@ extension SettingsModel {
     }
 }
 
-/// 「输入」页的「整句增强模型」：从微信输入法导入 nlrgpt2_nnlm.bin（和 Linux 设置的一样）。规矩在 NnlmInstaller。
+/// 「输入」页的「整句增强模型」：安装包自带 WowType 的 nnlm.bin；也能从微信输入法导入 nlrgpt2_nnlm.bin，
+/// 导入了就先用它（和 Linux 设置的一样）。规矩在 NnlmInstaller。
 final class NnlmModel: ObservableObject {
     @Published private(set) var busy = false
     /// 上次没导入成功的原因，再导入时清掉
@@ -70,7 +71,7 @@ final class NnlmModel: ObservableObject {
     /// 导入、删除后加一，让界面重新看文件
     @Published private var revision = 0
     let supportDir: URL
-    /// 安装包里的模型（WowType 以后随包附带；现在没有是 nil）
+    /// 安装包里的模型（WowType 自己训的 nnlm.bin；打包时没带上是 nil）
     let bundled: String?
     /// 提示条（SettingsModel 设成它的 showToast）
     var toast: (String) -> Void = { _ in }
@@ -91,10 +92,10 @@ final class NnlmModel: ObservableObject {
         _ = revision
         if busy { return "正在导入…" }
         if imported {
-            return "已导入微信输入法的模型（\(LocalModel.sizeText(LocalModelInstaller.fileSize(importedPath)))）"
+            return "用的是导入的微信输入法模型（\(LocalModel.sizeText(LocalModelInstaller.fileSize(importedPath)))）"
         }
         if let error { return "没导入：\(error)" }
-        if bundled != nil { return "用安装包里的模型" }
+        if bundled != nil { return "已自带 WowType 的整句增强模型；也可以导入微信输入法的（效果相近）" }
         return "没有：从微信输入法导入后整句候选更准"
     }
 
@@ -151,7 +152,8 @@ final class NnlmModel: ObservableObject {
         let freed = NnlmInstaller.remove(supportDir: supportDir)
         error = nil
         revision += 1
-        toast(freed > 0 ? "已删除整句增强模型，空出 \(LocalModel.sizeText(freed))" : "已删除")
+        let back = bundled != nil ? "，换回 WowType 自带的" : ""
+        toast(freed > 0 ? "已删除导入的模型，空出 \(LocalModel.sizeText(freed))\(back)" : "已删除\(back)")
     }
 }
 

@@ -45,6 +45,10 @@ fi
 if [[ -f "$DATA/DATA-MANIFEST" ]]; then
   cp "$DATA/DATA-MANIFEST" "$src/dist/data/"
 fi
+# 整句增强模型（WowType 自己训的 nnlm.bin，CC BY-SA 4.0）：make-data.sh 下载到了才有，没有就不带
+if [[ -f "$DATA/nnlm.bin" ]]; then
+  cp "$DATA/nnlm.bin" "$src/dist/data/"
+fi
 
 # 各部分的许可证（和 deb 包的 copyright 内容一致）
 cat > "$src/packaging/COPYRIGHT" <<'EOF'
@@ -77,6 +81,17 @@ WowType — https://github.com/Gloridust/WowType
   全文见同目录 LICENSE.rime-wubi（LGPL-3.0 是 GPL-3.0 的附加许可，GPL-3.0 全文见 LICENSE.rime-ice），
   作者见 /usr/share/doc/wowtype/WUBI-AUTHORS，来源和钉死的提交见 /usr/share/doc/wowtype/WUBI-SOURCE.txt。
 EOF
+if [[ -f "$DATA/nnlm.bin" ]]; then
+  cat >> "$src/packaging/COPYRIGHT" <<'EOF'
+
+/usr/share/wowtype/nnlm.bin：
+  WowType 的整句增强模型（字级神经语言模型，WTNN 格式），由 WowType 的 tools/nnlm/train.py
+  从 LCCC 语料（thu-coai，MIT，https://huggingface.co/datasets/thu-coai/lccc）和中文维基百科
+  （Wikipedia contributors，CC BY-SA 4.0，https://zh.wikipedia.org/）训练得到。
+  按知识共享 署名-相同方式共享 4.0 国际许可协议授权：
+  https://creativecommons.org/licenses/by-sa/4.0/legalcode
+EOF
+fi
 
 tar -czf "$work/SOURCES/wowtype-src.tar.gz" -C "$src" .
 rm -rf "$src"
@@ -118,7 +133,7 @@ Recommends:     curl
 
 %description
 拼音输入法：长句、半成品输入、按错键纠错、按用户习惯学习。
-自带雾凇拼音（rime-ice）词库、词级语言模型和五笔 86 码表（rime-wubi）。
+自带雾凇拼音（rime-ice）词库、词级语言模型、整句增强模型和五笔 86 码表（rime-wubi）。
 装完运行 wowtype-config --setup（或打开应用菜单的「WowType 设置」点「一键设置」），
 把 WowType 加进 fcitx5 的输入法列表。
 
@@ -143,6 +158,10 @@ install -m644 dist/data/lexicon.tsv dist/data/english.txt dist/data/words.lm dis
 # 数据清单：各数据文件的名字、版本、来源（docs/DATA.md「数据版本标记」）
 if [ -f dist/data/DATA-MANIFEST ]; then
   install -m644 dist/data/DATA-MANIFEST %{buildroot}%{_datadir}/wowtype/
+fi
+# 整句增强模型：源码包里有才装
+if [ -f dist/data/nnlm.bin ]; then
+  install -m644 dist/data/nnlm.bin %{buildroot}%{_datadir}/wowtype/
 fi
 doc=%{buildroot}%{_docdir}/wowtype
 install -Dm644 README.md $doc/README.md

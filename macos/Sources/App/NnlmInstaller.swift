@@ -4,7 +4,7 @@
 // 从里面找 nlrgpt2_nnlm.bin（zip 用系统的 ditto 解到临时目录），写成临时文件，核心试着解析过（wowtype_nnlm_check）
 // 才换到 ~/Library/Application Support/WowType/wetype/nlrgpt2_nnlm.bin。不看版本号、MD5：解析得了就能用。
 // 输入法看到这个文件变了（AppState.checkForChanges）就在后台重新载入引擎，不用重新登录。
-// 没导入时用安装包里的 nnlm.bin（WowType 以后随包附带自己训的模型，现在还没有）。
+// 没导入时用安装包里的 nnlm.bin（WowType 自己训的整句增强模型，效果和微信输入法的相近）。
 
 import CWowtype
 import Darwin

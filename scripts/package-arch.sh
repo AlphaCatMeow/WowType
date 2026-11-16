@@ -37,6 +37,10 @@ cp "$DATA"/{wubi86.tsv,WUBI-LICENSE,WUBI-SOURCE.txt,WUBI-AUTHORS} "$work/source/
 if [[ -f "$DATA/DATA-MANIFEST" ]]; then
   cp "$DATA/DATA-MANIFEST" "$work/source/dist/data/"
 fi
+# 整句增强模型（WowType 自己训的 nnlm.bin，CC BY-SA 4.0，已在 license 里）：make-data.sh 下载到了才有
+if [[ -f "$DATA/nnlm.bin" ]]; then
+  cp "$DATA/nnlm.bin" "$work/source/dist/data/"
+fi
 if [[ -f "$DATA/VERSION" ]]; then
   cp "$DATA/VERSION" "$work/source/dist/data/"
 fi
@@ -95,6 +99,10 @@ package() {
   # 数据清单：各数据文件的名字、版本、来源（docs/DATA.md「数据版本标记」）
   if [[ -f dist/data/DATA-MANIFEST ]]; then
     install -m644 dist/data/DATA-MANIFEST "$pkgdir/usr/share/wowtype/"
+  fi
+  # 整句增强模型：源码包里有才装
+  if [[ -f dist/data/nnlm.bin ]]; then
+    install -m644 dist/data/nnlm.bin "$pkgdir/usr/share/wowtype/"
   fi
   install -Dm644 README.md "$pkgdir/usr/share/doc/wowtype/README.md"
   install -Dm644 dist/data/SOURCE.txt "$pkgdir/usr/share/doc/wowtype/DATA-SOURCE.txt"

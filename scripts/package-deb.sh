@@ -71,6 +71,20 @@ data_copyright() { # <数据目录>：copyright 里词库那几段
   echo " Attribution-ShareAlike 4.0 International License:"
   echo " https://creativecommons.org/licenses/by-sa/4.0/legalcode"
   echo
+  # 整句增强模型 nnlm.bin（make-data.sh 下载到了才有）
+  if [[ -f "$1/nnlm.bin" ]]; then
+    echo "Files: usr/share/wowtype/nnlm.bin"
+    echo "Copyright: WowType contributors; trained on LCCC (thu-coai, MIT)"
+    echo " and Chinese Wikipedia (Wikipedia contributors, CC BY-SA 4.0)"
+    echo "License: CC-BY-SA-4.0"
+    echo " Character-level neural language model (WTNN) trained by WowType's"
+    echo " tools/nnlm/train.py on the LCCC corpus"
+    echo " (https://huggingface.co/datasets/thu-coai/lccc) and Chinese Wikipedia"
+    echo " (https://zh.wikipedia.org/). Licensed under the Creative Commons"
+    echo " Attribution-ShareAlike 4.0 International License:"
+    echo " https://creativecommons.org/licenses/by-sa/4.0/legalcode"
+    echo
+  fi
   echo "Files: usr/share/wowtype/wubi86.tsv"
   echo "Comment: 五笔 86 码表，转换自 Rime 五笔字型 rime-wubi（https://github.com/rime/rime-wubi），"
   echo " 作者见 WUBI-AUTHORS，来源和钉死的提交见 WUBI-SOURCE.txt"
@@ -148,6 +162,10 @@ engine)
   for f in lexicon.tsv english.txt words.lm wubi86.tsv; do
     install -Dm644 "$data/$f" "$stage/usr/share/wowtype/$f"
   done
+  # 整句增强模型（WowType 自己训的 nnlm.bin，CC BY-SA 4.0）：make-data.sh 下载到了才有，没有就不带
+  if [[ -f "$data/nnlm.bin" ]]; then
+    install -Dm644 "$data/nnlm.bin" "$stage/usr/share/wowtype/nnlm.bin"
+  fi
   # 数据清单：各数据文件的名字、版本、来源（tools/datamark.py manifest，docs/DATA.md「数据版本标记」）
   install -Dm644 "$data/DATA-MANIFEST" "$stage/usr/share/wowtype/DATA-MANIFEST"
   doc="$stage/usr/share/doc/wowtype"
@@ -197,7 +215,7 @@ EOF
   build_deb wowtype "$debver" "$(dpkg --print-architecture)" "$depends" \
     "WeChat-style pinyin input method for fcitx5" \
 "拼音输入法：长句、半成品输入、按错键纠错、按用户习惯学习。
-自带雾凇拼音（rime-ice）词库、词级语言模型和五笔 86 码表（rime-wubi）。
+自带雾凇拼音（rime-ice）词库、词级语言模型、整句增强模型和五笔 86 码表（rime-wubi）。
 装完打开应用菜单的「WowType 设置」点第一页的「一键设置」（或运行 wowtype-config --setup）。"
   ;;
 
@@ -210,10 +228,13 @@ data)
   tarball="$OUT/wowtype-data-rime-ice-$version.tar.gz"
   # 可复现：固定文件顺序、时间和属主，gzip 不写时间戳。内容不变时每次打出来的包
   # sha256 都一样，打包脚本（如 AUR）钉住的校验和不会因为重新发版而失效。
+  # 整句增强模型 nnlm.bin 有就一起打进去（Nix 包从这个压缩包取数据）
+  files=(lexicon.tsv english.txt words.lm LICENSE SOURCE.txt DATA-MANIFEST
+         wubi86.tsv WUBI-LICENSE WUBI-SOURCE.txt WUBI-AUTHORS)
+  [[ -f "$data/nnlm.bin" ]] && files+=(nnlm.bin)
   tar -C "$data" --sort=name --mtime="@${SOURCE_DATE_EPOCH:-0}" \
     --owner=0 --group=0 --numeric-owner -cf - \
-    lexicon.tsv english.txt words.lm LICENSE SOURCE.txt DATA-MANIFEST \
-    wubi86.tsv WUBI-LICENSE WUBI-SOURCE.txt WUBI-AUTHORS | gzip -n >"$tarball"
+    "${files[@]}" | gzip -n >"$tarball"
   echo "$tarball"
   ;;
 

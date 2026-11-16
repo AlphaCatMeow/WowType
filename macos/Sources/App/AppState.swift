@@ -147,7 +147,7 @@ final class AppState {
     }
 
     /// 整句增强模型（字级神经语言模型）：设置窗口导入的微信输入法模型优先，没有再用安装包里的 nnlm.bin
-    /// （WowType 以后随包附带自己训的，现在还没有）；都没有是 nil，整句照常出，只是不用它重排。
+    /// （WowType 自己训的，scripts/make-data.sh 下载到了就随包带上）；都没有是 nil，整句照常出，只是不用它重排。
     func nnlmPath() -> String? {
         let imported = NnlmInstaller.model(in: supportDir).path
         if FileManager.default.fileExists(atPath: imported) {

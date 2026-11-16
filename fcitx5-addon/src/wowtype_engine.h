@@ -368,6 +368,8 @@ struct WowtypeLoaded {
     WowtypeEngineHandle *core = nullptr;
     bool userDictUnread = false;
     bool historyUnread = false;
+    /// 载入的整句增强模型（路径 + 大小 + 修改时间，没载入是空），reloadConfig 按它认模型换没换
+    std::string nnlmStamp;
 };
 
 /// 会话总线上的 org.wowtype.Input：外部命令切中 / 英 / 译（vim 退出插入模式切英文，#98）。
@@ -568,6 +570,8 @@ private:
     /// <原名>.bad-<时间戳> 留着（maybeSaveUserDict），不然会被只有这次运行里学到的内容盖掉。
     bool userDictUnread_ = false;
     bool historyUnread_ = false;
+    /// 正在用的整句增强模型（WowtypeLoaded::nnlmStamp）
+    std::string nnlmStamp_;
     /// core_ / loading_ 用的词库文件，和配置要的词库文件（不一样就该换了）。
     std::string lexicon_;
     std::string wantedLexicon_;
