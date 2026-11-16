@@ -542,7 +542,7 @@ WOWTYPE_VOICE_WAV=说的话.wav WOWTYPE_VOICE_EXPECT=期望的字 scripts/addon-
                                            # （不给 WAV 时跑「没有模型按右 Alt 只提示」）
 ```
 
-改了排序，用 `wowtype-eval` 在几百个用例上对比改前改后（用法见 [docs/ENGINE.md](docs/ENGINE.md#调排序)）。
+改了排序，用 `scripts/eval.sh <数据目录>` 跑仓库里的评测集、和基线对比改前改后（CI 也跑这个，回归集必须全过；见 [tools/eval/README.md](tools/eval/README.md)，`wowtype-eval` 的用法见 [docs/ENGINE.md](docs/ENGINE.md#调排序)）。
 推送 `v*` 标签会自动编译各发行版的安装包并发布到 Releases。
 
 | 目录 | 内容 |
