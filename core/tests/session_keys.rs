@@ -3237,6 +3237,7 @@ fn clicking_an_association() {
     assert_eq!(session.choose(0).commit.as_deref(), Some("世界"));
     assert!(session.association_open(), "接着联想");
     assert!(!session.choose(5).handled, "序号不对");
+    assert!(session.association_open(), "序号不对时联想留着");
 }
 
 /// 学到的搭配也拿来联想（没有词级模型时只有它）。

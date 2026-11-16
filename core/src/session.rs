@@ -962,6 +962,10 @@ impl<'e> Session<'e> {
 
     /// 选第 index 个联想：上屏，和普通选词一样记一次选词（学搭配），接着出下一轮联想。
     fn choose_association(&mut self, index: usize) -> bool {
+        // 序号不对什么也不做（联想留着）
+        if !self.association.as_ref().is_some_and(|a| index < a.items.len()) {
+            return false;
+        }
         let Some(state) = self.association.take() else {
             return false;
         };
