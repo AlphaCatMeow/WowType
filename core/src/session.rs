@@ -129,7 +129,8 @@ pub mod key_hints {
     pub const NO_AUTO_SPACE: u32 = 1 << 0;
     /// 外壳开着自己的面板（表情面板、工具栏）：这时按 Shift 不切中英文。
     pub const PANEL_OPEN: u32 = 1 << 1;
-    /// 不能翻译的输入框（密码框）：「译」里也照常上屏，不攒原文、不往外发。
+    /// 不能翻译的输入框（密码框）：「译」里也照常上屏，不攒原文、不往外发；
+    /// 选的词、回车上屏的原始字母串也都不学（不进 history.tsv 和用户词库）。
     pub const NO_TRANSLATE: u32 = 1 << 2;
     /// 应用告诉了光标周围的文字：[`Key::prev_char`] 是 None 时光标前确实没有字（不是读不到）。
     pub const SURROUNDING: u32 = 1 << 3;
@@ -370,6 +371,10 @@ pub enum Panel {
     /// v + 空格的工具栏（菜单、剪贴板、常用语）：竖排一列，一页 [`TOOL_PAGE`] 个。
     Tool,
 }
+
+/// 编辑区里还没选词的部分最多几个键，见 [`Session::push_input`]。
+/// 日常的整句四五十个字母（实测 51 个字母一个键 16 ms），64 留了余量。
+pub const MAX_PENDING_BYTES: usize = 64;
 
 /// 工具栏一页几个。
 pub const TOOL_PAGE: usize = 9;
@@ -2190,6 +2195,11 @@ impl<'e> Session<'e> {
     }
 
     fn push_input(&mut self, c: char) {
+        // 还没选词的部分最多 MAX_PENDING_BYTES 个键：再长的键吃掉不收。候选是每按一个键重算的，
+        // 一长串只打声母的输入（zhzhzh…）耗时涨得比长度快，56 个字母时一个键要 200 ms
+        if self.remaining().len() >= MAX_PENDING_BYTES && !self.calc_active() {
+            return;
+        }
         let at = self.caret();
         if at < self.input.len() {
             // 光标在拼音中间（#129）：插在光标处，光标跟着往后
@@ -2217,6 +2227,11 @@ impl<'e> Session<'e> {
             self.set_context("");
             self.prev_char = None;
             self.last_char = None;
+            // 工具栏、表情面板跟着编辑区一起收：失去焦点后面板已经看不见了，会话里还开着的话，
+            // 回来打的字母进了表情搜索，空格和数字上屏的是表情，单按 Shift 也切不了中英文
+            self.close_tool();
+            // 按着 Shift 时切走的，回来松开不算「单按 Shift」
+            self.shift.down = None;
         }
         if commit_pending && !self.translation.source.is_empty() {
             self.commit_source();
@@ -2768,7 +2783,7 @@ impl<'e> Session<'e> {
     /// 已选的词 + tail 上屏，记选词，清空。
     fn commit_with(&mut self, tail: &str, tail_pinyin: &str) {
         let text = self.selected_text() + tail;
-        if self.engine.is_some() && !text.is_empty() && !self.wubi() {
+        if self.engine.is_some() && !text.is_empty() && !self.wubi() && !self.sensitive() {
             self.learned = true;
             if !tail.is_empty() {
                 // 带上拼音：选够次数后引擎会自动把这个词收进用户词库
@@ -2801,10 +2816,16 @@ impl<'e> Session<'e> {
         self.finish(text);
     }
 
+    /// 密码框之类不该留痕迹的输入框（外壳给的 [`key_hints::NO_TRANSLATE`]）：什么都不学。
+    /// 回车上屏的原始字母串也会记一次选词，在密码框里那就是把密码明文写进 history.tsv。
+    fn sensitive(&self) -> bool {
+        self.hints & key_hints::NO_TRANSLATE != 0
+    }
+
     /// 记一次选词。上文和算候选时一样（已上屏的字 + 已选的词）。
     /// 五笔（连同临时拼音）什么都不学：码位固定，选的词也不该进拼音的选词热度和用户词库。
     fn learn(&self, word: &str, pinyin: &str) {
-        let Some(engine) = self.engine.filter(|_| !self.wubi()) else {
+        let Some(engine) = self.engine.filter(|_| !self.wubi() && !self.sensitive()) else {
             return;
         };
         let context = self.context.clone() + &self.selected_text();
@@ -2820,7 +2841,7 @@ impl<'e> Session<'e> {
 
     /// 记分几次选出来拼成的词，见 [`Engine::record_composed_word`]。上文是还没选词时的上文。
     fn learn_composed(&self, word: &str, pinyin: &str) {
-        let Some(engine) = self.engine.filter(|_| !self.wubi()) else {
+        let Some(engine) = self.engine.filter(|_| !self.wubi() && !self.sensitive()) else {
             return;
         };
         engine.set_context(utf8_tail(&self.context, CONTEXT_BYTES));

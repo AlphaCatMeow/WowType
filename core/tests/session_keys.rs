@@ -2880,3 +2880,67 @@ fn abandoning_never_commits() {
     assert_eq!(session.translate_source(), "");
     assert_eq!(session.reset(false).commit, None);
 }
+
+/// 失去焦点（`reset(false)`）时工具栏面板跟着收起来：面板已经看不见了，
+/// 回来打的字母不该再进面板。
+#[test]
+fn reset_closes_tool_panel() {
+    use wowtype_core::session::Tool;
+    let mut session = with(forget_engine());
+    let frame = session.open_tool(Tool::Menu);
+    assert_eq!(frame.panel, Panel::Tool);
+    let frame = session.reset(false);
+    assert_eq!(frame.panel, Panel::Normal, "失去焦点后面板还开着");
+    let frame = type_keys(&mut session, "shuang");
+    assert_eq!(frame.panel, Panel::Normal);
+    assert_eq!(session.input(), "shuang", "字母进了编辑区，不是面板");
+}
+
+/// 密码框（外壳给 NO_TRANSLATE）里什么都不学：回车上屏的字母串、选的词都不进输入习惯。
+#[test]
+fn password_fields_learn_nothing() {
+    use wowtype_core::session::key_hints;
+    let engine = forget_engine();
+    let secret = |key: Key| Key {
+        hints: key_hints::NO_TRANSLATE,
+        ..key
+    };
+    let mut session = with(engine);
+    for c in "shuang".chars() {
+        session.key(&secret(Key::char(c)));
+    }
+    let frame = session.key(&secret(Key::press(keysym::RETURN)));
+    assert_eq!(frame.commit.as_deref(), Some("shuang"));
+    assert!(!frame.learned);
+    assert_eq!(engine.history_count("shuang"), 0, "密码框里回车上屏的字母串被记下来了");
+    for c in "shuang".chars() {
+        session.key(&secret(Key::char(c)));
+    }
+    let frame = session.key(&secret(Key::press(keysym::SPACE)));
+    let word = frame.commit.expect("空格上屏第一个候选");
+    assert!(!frame.learned);
+    assert_eq!(engine.history_count(&word), 0, "密码框里选的词被记下来了");
+    // 普通输入框照常学
+    let mut session = with(engine);
+    let frame = type_keys(&mut session, "shuang<cr>");
+    assert!(frame.learned);
+    assert_eq!(engine.history_count("shuang"), 1);
+}
+
+/// 还没选词的部分有长度上限：超出的键吃掉，不进编辑区，也不漏给应用。
+#[test]
+fn pending_input_is_capped() {
+    use wowtype_core::session::MAX_PENDING_BYTES;
+    let mut session = with(forget_engine());
+    for _ in 0..MAX_PENDING_BYTES {
+        assert!(session.key(&Key::char('a')).handled);
+    }
+    assert_eq!(session.input().len(), MAX_PENDING_BYTES);
+    let frame = session.key(&Key::char('a'));
+    assert!(frame.handled, "超出上限的键也是会话的，不交给应用");
+    assert_eq!(session.input().len(), MAX_PENDING_BYTES);
+    // 退格以后还能接着打
+    type_keys(&mut session, "<bs>b");
+    assert!(session.input().ends_with('b'));
+    assert_eq!(session.input().len(), MAX_PENDING_BYTES);
+}
