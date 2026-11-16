@@ -1990,6 +1990,36 @@ void runCases(Instance &instance) {
     tapKey(ic.get(), FcitxKey_Shift_R);  // 回中文
     check(ic->committed == " L" && ic->passed == "i",
           "英文模式汉字后第一个字母补空格，后面的照常交给应用：[" + ic->committed + "] " + ic->passed);
+    // 按下 Shift 还没松开，输入框就被重置（Shift+点鼠标选字）或者失去焦点又回来：再松开不算单按 Shift，
+    // 还是中文；之后单按 Shift 照常切换
+    for (const bool blur : {false, true}) {
+        fresh(ic.get());
+        surround("");
+        KeyEvent press(ic.get(), Key(FcitxKey_Shift_L), false);
+        ic->keyEvent(press);
+        if (blur) {
+            ic->focusOut();
+            ic->focusIn();
+        } else {
+            ic->reset();
+        }
+        KeyEvent release(ic.get(), Key(FcitxKey_Shift_L, KeyState::Shift), true);
+        const bool took = ic->keyEvent(release);
+        type(ic.get(), "nihao<sp>");
+        const bool chinese = ic->committed == "你好";
+        check(!took && chinese,
+              std::string(blur ? "按下 Shift 后失去焦点又回来" : "按下 Shift 后输入框被重置") +
+                  "：再松开不切中英文，实际上屏「" + ic->committed + "」交给应用「" + ic->passed + "」");
+        if (!chinese) {
+            tapKey(ic.get(), FcitxKey_Shift_L); // 切走了就切回来，别带坏后面的用例
+        }
+    }
+    fresh(ic.get());
+    tapKey(ic.get(), FcitxKey_Shift_L);
+    type(ic.get(), "ni");
+    tapKey(ic.get(), FcitxKey_Shift_L);
+    check(ic->committed.empty() && ic->passed == "ni", "之后单按 Shift 照常切到英文再切回来，实际交给应用「" +
+                                                          ic->passed + "」上屏「" + ic->committed + "」");
     fresh(ic.get());
     surround("第 ");
     type(ic.get(), "5");
@@ -2831,6 +2861,25 @@ void runVoiceNoModelCase(Instance &instance, std::function<void()> done) {
                    s.name + "：打字时提示收起，实际 " + s.ic->inputPanel().auxUp().toString());
              type(s.ic.get(), "<esc>");
              std::printf("语音·没有模型：只提示去设置里下载，没有下载\n");
+         }},
+        {54,
+         [](VoiceScript &s) {
+             // 按住语音键时焦点切走：松开的那一下到不了输入法。回来后第一次按语音键照样有反应
+             // （以前被当成还按着时的自动重复吃掉）
+             KeyEvent down(s.ic.get(), Key(FcitxKey_Alt_R), false);
+             s.ic->keyEvent(down);
+             s.ic->focusOut();
+             s.ic->focusIn();
+             check(s.ic->inputPanel().auxUp().empty(),
+                   s.name + "：按住语音键时失去焦点，提示收起，实际 " + s.ic->inputPanel().auxUp().toString());
+             KeyEvent again(s.ic.get(), Key(FcitxKey_Alt_R), false);
+             const bool took = s.ic->keyEvent(again);
+             const std::string aux = s.ic->inputPanel().auxUp().toString();
+             check(took && aux.find("设置") != std::string::npos,
+                   s.name + "：按住语音键时切走焦点，回来后第一次按照样有反应，实际 " + aux);
+             KeyEvent up(s.ic.get(), Key(FcitxKey_Alt_R, KeyState::Alt), true);
+             check(s.ic->keyEvent(up), s.name + "：这次松开也被接住");
+             type(s.ic.get(), "ni<esc>");
          }},
     };
     runVoiceScript(instance, "语音·没有模型", steps, done);

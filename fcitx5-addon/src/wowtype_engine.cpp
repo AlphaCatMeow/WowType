@@ -575,6 +575,9 @@ public:
     }
     void clear() {
         wowtype_session_reset(session_, 0);
+        // 按下了 Shift 还没松开，输入框就被重置、失去焦点（Shift+点鼠标选字、按着 Shift 换窗口）：和按住
+        // Shift 时按了别的键一样报给会话，再松开就不算单按 Shift、不切中英文
+        sessionKey(FcitxKey_VoidSymbol, 0, WOWTYPE_KEY_ACTION_OBSERVE);
         forgetCandidates();
     }
 
@@ -2076,6 +2079,9 @@ void WowtypeEngine::deactivate(const fcitx::InputMethodEntry &entry,
     if (voiceActive() && voiceIc_.get() == event.inputContext()) {
         cancelVoice();
     }
+    // 按住语音键时焦点切走（或者换了输入法）：松开的那一下到不了这里。不清掉的话，回来后第一次按语音键
+    // 会被当成还按着时的自动重复吃掉，没有反应
+    voiceKeyDown_ = false;
     reset(entry, event);
     maybeSaveUserDict(true);
 }
