@@ -67,6 +67,112 @@ LEXICON_CANDIDATES = [
     os.path.join(DATA_DIR, "lexicon.tsv"),
     os.path.join(SYSTEM_DATA_DIR, "lexicon.tsv"),
 ]
+# 安装包系统数据目录里的数据文件（nnlm.bin 是 WowType 自己的字级神经语言模型，WTNN 格式）
+DATA_FILES = ("lexicon.tsv", "english.txt", "words.lm", "nnlm.bin", "wubi86.tsv", "s2t.tsv")
+# 系统数据目录里的数据清单：每行 名字<TAB>版本<TAB>sha256<TAB>来源（tools/datamark.py manifest 生成）
+DATA_MANIFEST = os.path.join(SYSTEM_DATA_DIR, "DATA-MANIFEST")
+
+# ---- 数据版本标记（docs/DATA.md「数据版本标记」）。和插件的 data_files.h、core/src/datamark.rs、
+# tools/datamark.py 同一套规则：文件前 4096 字节里有一串 `wowtype-data: <名字> <版本> [来源]`，
+# 以换行或 \0 结束；文本文件是头部一行注释，words.lm（WTLM 版本 1）是词表的 1 号词。
+# 版本是点分隔的数字，逐段按数字比，缺的段算 0。
+DATA_MARKER_KEY = b"wowtype-data:"
+DATA_MARKER_SCAN = 4096
+_DATA_MARKER_NAME = re.compile(r"[\x21-\x7e]+")
+_DATA_MARKER_VERSION = re.compile(r"[0-9]+(?:\.[0-9]+)*")
+
+
+def parse_data_marker(text):
+    """`... wowtype-data: 名字 版本 [来源]` -> (名字, 版本, 来源)，不合规矩返回 None。"""
+    at = text.find(DATA_MARKER_KEY.decode())
+    if at < 0:
+        return None
+    rest = re.split(r"[\n\r\0]", text[at + len(DATA_MARKER_KEY):], maxsplit=1)[0]
+    if not rest.startswith(" "):
+        return None
+    name, _, rest = rest.lstrip(" ").partition(" ")
+    version, _, source = rest.lstrip(" ").partition(" ")
+    source = source.strip(" \t")
+    if not (_DATA_MARKER_NAME.fullmatch(name) and _DATA_MARKER_VERSION.fullmatch(version)):
+        return None
+    return name, version, source
+
+
+def scan_data_marker(head):
+    """从文件开头的字节里找标记：WTLM 文件看词表 1 号词，别的找以换行或 \\0 结束的那一串。"""
+    head = head[:DATA_MARKER_SCAN]
+    if head.startswith(b"WTLM"):
+        if len(head) < 17 or int.from_bytes(head[4:8], "little") != 1 \
+                or int.from_bytes(head[8:12], "little") < 2:
+            return None
+        at = 17 + head[16]
+        if at >= len(head):
+            return None
+        word = head[at + 1:at + 1 + head[at]]
+        if len(word) != head[at] or not word.startswith(DATA_MARKER_KEY):
+            return None
+        return parse_data_marker(word.decode("utf-8", "replace"))
+    at = head.find(DATA_MARKER_KEY)
+    if at < 0 or not any(head.find(end, at) >= 0 for end in (b"\n", b"\r", b"\0")):
+        return None
+    return parse_data_marker(head[at:].decode("utf-8", "replace"))
+
+
+def read_data_marker(path):
+    try:
+        with open(path, "rb") as f:
+            return scan_data_marker(f.read(DATA_MARKER_SCAN))
+    except OSError:
+        return None
+
+
+def compare_data_versions(a, b):
+    """逐段按数字比，缺的段算 0；返回 -1、0、1。"""
+    x = [int(n) for n in a.split(".")]
+    y = [int(n) for n in b.split(".")]
+    width = max(len(x), len(y))
+    x += [0] * (width - len(x))
+    y += [0] * (width - len(y))
+    return (x > y) - (x < y)
+
+
+def data_file_version(path, name=None):
+    """数据文件的版本：(版本, 说明)，看不出来时返回 None。
+
+    带标记的读标记（名字要和 name 一样，默认是文件名）；没有标记的 words.lm 字节数是加标记以前
+    某一版官方发布的（OFFICIAL_LM_SIZES），就是那一版。"""
+    name = name or os.path.basename(path)
+    marker = read_data_marker(path)
+    if marker:
+        if marker[0] != name:
+            return None
+        return marker[1], marker[2]
+    if name == "words.lm":
+        try:
+            legacy = OFFICIAL_LM_SIZES.get(os.path.getsize(path))
+        except OSError:
+            return None
+        if legacy:
+            return legacy, f"lm-{legacy}，没有标记，按字节数认出"
+    return None
+
+
+def read_data_manifest(path=DATA_MANIFEST):
+    """系统数据目录里的清单：[(名字, 版本, 来源)]，没有清单（老安装包）返回 []。"""
+    rows = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                cols = line.rstrip("\n").split("\t")
+                if line.startswith("#") or len(cols) < 2:
+                    continue
+                rows.append((cols[0], cols[1], cols[3] if len(cols) > 3 else ""))
+    except OSError:
+        pass
+    return rows
+
+
+# ---- 没有标记的老数据（加标记以前发布的）：按老办法认
 # 安装包自带、WowType 自己生成的数据文件的第一行，见 stale_bundled_copy
 BUNDLED_DATA_MARKERS = {
     "lexicon.tsv": "# 由 tools/rime2tsv.py 生成",
@@ -74,29 +180,43 @@ BUNDLED_DATA_MARKERS = {
     "wubi86.tsv": "a\t工\t99454797",
     "s2t.tsv": "# 由 tools/opencc2tsv.py 生成",
 }
-# 发布过的官方 words.lm 的字节数（二进制文件没有标记可看），和插件的 kOfficialLmSizes 一样
-OFFICIAL_LM_SIZES = (38455852,)  # lm-2026.11.09
+# 加标记以前发布的官方 words.lm：字节数 -> 版本，和插件的 kOfficialLmSizes / kOfficialLmVersions 一样。
+# 以后发布的 words.lm 带标记，这张表不用再加
+OFFICIAL_LM_SIZES = {38455852: "2026.11.09"}  # lm-2026.11.09
 
 
 def stale_bundled_copy(user, system):
-    """用户目录里的这份是不是老版本按说明拷进来的自带数据，插件会改用系统目录里安装包带的那份。
+    """用户目录里的这份是不是安装包自带数据的旧副本，插件会改用系统目录里安装包带的那份。
 
-    和插件的 isStaleBundledCopy（fcitx5-addon/src/data_files.h）同一条规则：第一行是 WowType 生成的
-    标准数据，系统目录里也有一份，而且用户目录这份不比系统目录的新（系统目录的时间戳早于 2000 年时
-    看不出新旧，也算）；words.lm 看字节数是不是某一版官方发布的。
+    和插件的 isStaleBundledCopy（fcitx5-addon/src/data_files.h）同一套规则，系统目录里也要有一份：
+    - 用户目录这份带版本标记、名字和文件名一样：版本不比系统目录那份新就是旧副本；比它新（自己下了新数据），
+      或者系统目录那份看不出版本（老安装包），用用户目录的。名字不一样（别的词库）也用用户目录的。
+    - 没有标记（加标记以前发布的数据、或者自己做的）：第一行是 WowType 生成的标准数据，而且不比系统目录的新
+      （系统目录的时间戳早于 2000 年时看不出新旧，也算）；words.lm 看字节数是不是某一版官方发布的。
     0.3.4 以前 README 让大家把词库拷进用户目录，后来安装包自带了，那份却一直优先。"""
     name = os.path.basename(user)
-    marker = BUNDLED_DATA_MARKERS.get(name)
-    if not os.path.isfile(system) or not (marker or name == "words.lm"):
+    if not os.path.isfile(system):
         return False
     try:
         if os.path.samefile(user, system):
             return False
+    except OSError:
+        return False
+    marker = read_data_marker(user)
+    if marker:
+        if marker[0] != name:
+            return False
+        found = data_file_version(system, name)
+        return bool(found) and compare_data_versions(marker[1], found[0]) <= 0
+    legacy = BUNDLED_DATA_MARKERS.get(name)
+    if not (legacy or name == "words.lm"):
+        return False
+    try:
         if name == "words.lm":
             return os.path.getsize(user) in OFFICIAL_LM_SIZES
         with open(user, "rb") as f:
             first = f.readline().decode("utf-8", "replace")
-        if not first.startswith(marker):
+        if not first.startswith(legacy):
             return False
         user_mtime = os.stat(user).st_mtime
         system_mtime = os.stat(system).st_mtime
@@ -1383,6 +1503,21 @@ def _file_line(path):
     return f"  {path}：{size / 1e6:.1f} MB，{stamp}"
 
 
+def _data_version_note(path):
+    """诊断信息里数据文件的版本：「版本 2026.11.14.6（来源）」或「没有版本标记」。"""
+    if not os.path.isfile(path):
+        return ""
+    marker = read_data_marker(path)
+    if marker and marker[0] != os.path.basename(path):
+        # 别的数据（万象词库包的标记名字是 wanxiang/lexicon.tsv）
+        return f"，{marker[0]} 版本 {marker[1]}" + (f"（{marker[2]}）" if marker[2] else "")
+    found = data_file_version(path)
+    if not found:
+        return "，没有版本标记"
+    version, source = found
+    return f"，版本 {version}" + (f"（{source}）" if source else "")
+
+
 def _count_lines(path):
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
@@ -1470,21 +1605,35 @@ def collect_diagnostics():
     label = {"rime-ice": "雾凇（默认）", "wanxiang": "万象", "custom": "自己指定"}[kind]
     add(f"  词库：{label}" + (f"，{path}" if path else ""))
     add(f"  万象词库包：{lexicon_pack_version() or '没装'}")
+    data_files = {os.path.join(folder, name) for folder in (DATA_DIR, SYSTEM_DATA_DIR)
+                  for name in DATA_FILES} | {WANXIANG_LEXICON}
     for path in [*LEXICON_CANDIDATES, WANXIANG_LEXICON, WANXIANG_LEXICON + ".wcache",
                  os.path.join(DATA_DIR, "english.txt"), "/usr/share/wowtype/english.txt",
                  os.environ.get("WOWTYPE_LM", ""),
                  os.path.join(DATA_DIR, "words.lm"), "/usr/share/wowtype/words.lm",
+                 os.environ.get("WOWTYPE_NNLM", ""),
+                 os.path.join(DATA_DIR, "nnlm.bin"), os.path.join(SYSTEM_DATA_DIR, "nnlm.bin"),
                  *WUBI_CANDIDATES,
+                 os.path.join(DATA_DIR, "s2t.tsv"), os.path.join(SYSTEM_DATA_DIR, "s2t.tsv"),
                  os.path.join(DATA_DIR, "lexicon.tsv.wcache"),
                  os.path.join(DATA_DIR, "wetype", "nlrgpt2_nnlm.bin"),
                  VOICE_MODEL_DIR]:
         line = _file_line(path)
         if line:
+            if path in data_files or os.path.basename(path) in DATA_FILES:
+                line += _data_version_note(path)
             system = os.path.join(SYSTEM_DATA_DIR, os.path.basename(path))
             if (path.startswith(DATA_DIR + os.sep) and os.path.isfile(path)
                     and stale_bundled_copy(path, system)):
-                line += "（老版本拷进来的自带数据，比安装包带的旧，插件改用系统目录那份，这份可以删掉）"
+                line += "（安装包自带数据的旧副本，版本不比安装包带的新，插件改用系统目录那份，这份可以删掉）"
             add(line)
+    manifest = read_data_manifest()
+    if manifest:
+        add(f"  数据清单 {DATA_MANIFEST}：")
+        for name, version, source in manifest:
+            add(f"    {name} {version}" + (f"（{source}）" if source else ""))
+    else:
+        add(f"  数据清单 {DATA_MANIFEST}：没有（老安装包）")
     for label, path in (("自定义词", CUSTOM_FILE),
                         ("自动学到的词", os.path.join(DATA_DIR, "user.tsv")),
                         ("输入习惯", os.path.join(DATA_DIR, "history.tsv"))):
@@ -2218,7 +2367,7 @@ def stale_copy_self_test():
         write(user_lm, "lm", 7)
         assert not stale_bundled_copy(user_lm, system_lm), "自己训的 words.lm 照旧优先"
         with open(user_lm, "wb") as f:
-            f.truncate(OFFICIAL_LM_SIZES[0])  # 稀疏文件，不占盘
+            f.truncate(next(iter(OFFICIAL_LM_SIZES)))  # 稀疏文件，不占盘
         assert stale_bundled_copy(user_lm, system_lm)
         user_wubi = os.path.join(root, "user", "wubi86.tsv")
         system_wubi = os.path.join(root, "system", "wubi86.tsv")
@@ -2228,6 +2377,80 @@ def stale_copy_self_test():
         write(user_wubi, "a\t工\t5\n", 7)
         assert not stale_bundled_copy(user_wubi, system_wubi), "自己做的五笔码表照旧优先"
         assert without_stale_copy([]) == [] and without_stale_copy(["", "/x"]) == ["", "/x"]
+
+        # 版本标记：和插件的按键测试（runDataFileCase）同几种情况
+        assert parse_data_marker("# wowtype-data: lexicon.tsv 2026.11.14.5 rime-ice abc (2026-11-14)\n") \
+            == ("lexicon.tsv", "2026.11.14.5", "rime-ice abc (2026-11-14)")
+        assert parse_data_marker("# wowtype-data: lexicon.tsv 2026-11-14.5") is None
+        assert parse_data_marker("# wowtype-data:lexicon.tsv 1") is None
+        assert scan_data_marker(b"x" * DATA_MARKER_SCAN + b"\n# wowtype-data: lexicon.tsv 1\n") is None
+        assert compare_data_versions("2026.11.9", "2026.11.10") < 0
+        assert compare_data_versions("2026.11.14", "2026.11.14.0") == 0
+        assert compare_data_versions("2026.11.09", "2026.11.9") == 0
+
+        def marked(name, version, rest):
+            return (f"# 由 tools/rime2tsv.py 生成，来源：rime_ice.dict.yaml\n"
+                    f"# wowtype-data: {name} {version} rime-ice\n{rest}")
+        os.makedirs(os.path.dirname(system), exist_ok=True)
+        write(system, marked("lexicon.tsv", "2026.11.20.0", "ni hao\t你好\t2\n"), 2)
+        write(user, marked("lexicon.tsv", "2026.11.14.5", "ni hao\t你好\t1\n"), 0)
+        assert stale_bundled_copy(user, system), "版本比安装包旧的是旧副本（不看修改时间）"
+        write(user, marked("lexicon.tsv", "2026.11.20.0", "ni hao\t你好\t1\n"), 0)
+        assert stale_bundled_copy(user, system), "版本和安装包一样的也是旧副本"
+        write(user, marked("lexicon.tsv", "2026.11.20.1", "ni hao\t你好\t1\n"), 30)
+        assert not stale_bundled_copy(user, system), "版本比安装包新的照旧优先"
+        write(user, marked("lexicon-wanxiang", "2026.12.01.0", "ni hao\t你好\t1\n"), 30)
+        assert not stale_bundled_copy(user, system), "标记名字和文件名不一样（别的词库）照旧优先"
+        write(user, stock, 7)
+        assert stale_bundled_copy(user, system), "没有标记的老自带词库照老办法认"
+        write(system, stock, 2)
+        write(user, marked("lexicon.tsv", "2026.11.14.5", "ni hao\t你好\t1\n"), 7)
+        assert not stale_bundled_copy(user, system), "安装包那份没有标记（老安装包）时用用户目录的"
+        assert data_file_version(user) == ("2026.11.14.5", "rime-ice") and data_file_version(system) is None
+        assert _data_version_note(user) == "，版本 2026.11.14.5（rime-ice）"
+        assert _data_version_note(system) == "，没有版本标记"
+        write(system_wubi, "# wowtype-data: wubi86.tsv 2023.10.25.1 rime-wubi\na\t工\t99454797\n", 2)
+        write(user_wubi, "# wowtype-data: wubi86.tsv 2023.10.25.0 rime-wubi\na\t工\t99454797\n", 0)
+        assert stale_bundled_copy(user_wubi, system_wubi), "五笔码表按版本认旧副本"
+
+        def wtlm(marker):  # <s> 和标记两个词、没有搭配的 WTLM 版本 1
+            raw = marker.encode()
+            return (b"WTLM" + (1).to_bytes(4, "little") + (2).to_bytes(4, "little") + bytes(4)
+                    + b"\x03<s>" + bytes([len(raw)]) + raw + bytes(4 * 5))
+
+        def write_bytes(path, data, days_ago):
+            with open(path, "wb") as f:
+                f.write(data)
+            os.utime(path, (now - days_ago * 86400, now - days_ago * 86400))
+        write_bytes(system_lm, wtlm("wowtype-data: words.lm 2026.11.20.0 lm-2026.11.20"), 2)
+        write_bytes(user_lm, wtlm("wowtype-data: words.lm 2026.11.20.0 lm-2026.11.20"), 0)
+        assert data_file_version(user_lm) == ("2026.11.20.0", "lm-2026.11.20")
+        assert stale_bundled_copy(user_lm, system_lm), "和安装包同一版的 words.lm 是旧副本"
+        write_bytes(user_lm, wtlm("wowtype-data: words.lm 2026.12.01.0 自己训的"), 7)
+        assert not stale_bundled_copy(user_lm, system_lm), "版本比安装包新的 words.lm 照旧优先"
+        with open(user_lm, "wb") as f:
+            f.truncate(38455852)
+        assert data_file_version(user_lm)[0] == "2026.11.09", "没有标记的 lm-2026.11.09 按字节数认出版本"
+        assert stale_bundled_copy(user_lm, system_lm), "拷进来的老官方 words.lm 让给带标记的新版"
+        with open(system_lm, "wb") as f:
+            f.truncate(38455852)
+        write_bytes(user_lm, wtlm("wowtype-data: words.lm 2026.11.20.0 lm-2026.11.20"), 7)
+        assert not stale_bundled_copy(user_lm, system_lm), "自己下的新版比安装包的 lm-2026.11.09 新"
+        write_bytes(user_lm, wtlm("wowtype-data: words.lm 2026.11.01.0 更早的"), 7)
+        assert stale_bundled_copy(user_lm, system_lm), "比安装包的 lm-2026.11.09 旧的是旧副本"
+        user_nn = os.path.join(root, "user", "nnlm.bin")
+        system_nn = os.path.join(root, "system", "nnlm.bin")
+        tail = b"\0" + b"\xff" * 64
+        write_bytes(system_nn, b"WTNN\x01\0\0\0wowtype-data: nnlm.bin 2026.11.20.0 nnlm-2026.11.20" + tail, 2)
+        write_bytes(user_nn, b"WTNN\x01\0\0\0wowtype-data: nnlm.bin 2026.11.19.0 nnlm-2026.11.19" + tail, 0)
+        assert stale_bundled_copy(user_nn, system_nn), "nnlm.bin 同样按版本认旧副本"
+        write_bytes(user_nn, b"WTNN\x01\0\0\0" + b"\xff" * 64, 7)
+        assert not stale_bundled_copy(user_nn, system_nn), "没有标记的 nnlm.bin（自己训的）照旧优先"
+        manifest = os.path.join(root, "DATA-MANIFEST")
+        with open(manifest, "w", encoding="utf-8") as f:
+            f.write("# 注释\nlexicon.tsv\t2026.11.14.6\t" + "0" * 64 + "\trime-ice abc\n")
+        assert read_data_manifest(manifest) == [("lexicon.tsv", "2026.11.14.6", "rime-ice abc")]
+        assert read_data_manifest(os.path.join(root, "没有")) == []
 
 
 def lexicon_self_test():

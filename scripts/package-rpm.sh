@@ -42,6 +42,9 @@ cp "$DATA"/{wubi86.tsv,WUBI-LICENSE,WUBI-SOURCE.txt,WUBI-AUTHORS} "$src/dist/dat
 if [[ -f "$DATA/VERSION" ]]; then
   cp "$DATA/VERSION" "$src/dist/data/"
 fi
+if [[ -f "$DATA/DATA-MANIFEST" ]]; then
+  cp "$DATA/DATA-MANIFEST" "$src/dist/data/"
+fi
 
 # 各部分的许可证（和 deb 包的 copyright 内容一致）
 cat > "$src/packaging/COPYRIGHT" <<'EOF'
@@ -136,6 +139,10 @@ for bin in wowtype-check wowtype-show; do
 done
 install -m644 dist/data/lexicon.tsv dist/data/english.txt dist/data/words.lm dist/data/wubi86.tsv \
   %{buildroot}%{_datadir}/wowtype/
+# 数据清单：各数据文件的名字、版本、来源（docs/DATA.md「数据版本标记」）
+if [ -f dist/data/DATA-MANIFEST ]; then
+  install -m644 dist/data/DATA-MANIFEST %{buildroot}%{_datadir}/wowtype/
+fi
 doc=%{buildroot}%{_docdir}/wowtype
 install -Dm644 README.md $doc/README.md
 install -Dm644 dist/data/SOURCE.txt $doc/DATA-SOURCE.txt

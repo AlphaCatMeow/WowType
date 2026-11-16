@@ -234,6 +234,77 @@ jieba 切出来的碎片也会抬（「道菜」1 → 13114，`daocai` 的首选
 都逐字节重现了它。词库包版本 = rime-ice 日期 + REV 5（4 → 5 因为默认词库变了）；发版后
 `.github/scripts/nix-data-pr.sh` 照常开 PR 把 `nix/package.nix` 的 dataVersion 和 hash 改到新的词库包。
 
+### 3.4 数据版本标记
+
+WowType 发布的每个数据文件都带一个机器可读的版本标记，插件、设置界面靠它认出用户目录
+（`~/.local/share/wowtype/`）里的旧副本、在诊断信息里写版本，以后的数据更新提示也按它比新旧。
+
+**标记**是一串 `wowtype-data: <名字> <版本> [来源]`，只在文件的前 4096 字节里找，以换行或 `\0` 结束：
+
+- 名字：在系统数据目录里的文件名（`lexicon.tsv`、`english.txt`、`words.lm`、`nnlm.bin`、`wubi86.tsv`、`s2t.tsv`）。
+  不进系统目录的数据用自己的名字（万象词库包是 `wanxiang/lexicon.tsv`），免得被当成同名文件的另一版。
+- 版本：点分隔的数字，用数据日期加修订号（`2026.11.14.6`）。逐段按数字比（`2026.11.9` < `2026.11.10`），
+  缺的段算 0（`2026.11.14` = `2026.11.14.0`）。同一份数据重新生成、内容变了，版本就要变大。
+- 来源：剩下的整行，给人看（`rime-ice 927e1cf1d3ee (2026-11-11)`、`OpenCC 1.4.1`），程序不比较。
+
+放在哪：
+
+| 文件 | 标记的位置 | 谁写 |
+|---|---|---|
+| `lexicon.tsv`、`english.txt` | 第二行注释 `# wowtype-data: ...`（第一行原来的注释不动） | `scripts/make-data.sh`，版本 = `VERSION` |
+| `wubi86.tsv` | 第一行注释 | `scripts/make-wubi.sh`，版本 = rime-wubi 提交日期 + `WUBI_REV` |
+| `s2t.tsv` | 第二行注释 | 仓库里的 `core/data/s2t.tsv`，生成步骤见 `tools/opencc2tsv.py` |
+| 万象 `lexicon.tsv` | 第二行注释，名字 `wanxiang/lexicon.tsv` | `scripts/make-wanxiang.sh` |
+| `words.lm` | 词表的 1 号词（0 号是 `<s>`），没有搭配、回退分 0 | 发布模型前加（见下） |
+| `nnlm.bin`（`WTNN`） | 文件前 4096 字节里一串以 `\0` 或换行结尾的标记 | 生成它的程序（`core/src/nnlm.rs` 的格式里留位置） |
+
+兼容：
+
+- 文本文件：读词库（`MemoryLexicon::from_tsv_str`）、英文词表（`Engine::load_english_str`）、五笔码表
+  （`WubiTable::from_tsv_str`）、简繁表（`Converter::from_tsv_str`）的代码从 0.4.0 起都把 `#` 开头的行跳过，
+  已发布的 0.4.0 插件读到新数据照常（`core/src/datamark.rs` 的测试、用 v0.4.0 的核心读新生成的数据，条数一样）。
+  标记插在第一行注释之后，0.4.0 插件按第一行认旧副本的老办法也照样管用。
+- `words.lm`：格式版本还是 1，加一个词而已。0.4.0 的 `wordlm.rs`（要求版本是 1、文件末尾不能多字节）读加了标记的文件
+  照常，它只是多了一个输入里永远打不出来的词；新代码读到 1 号词是标记时把它认成标记、不放进查找表。
+  用真实的 `words.lm`（lm-2026.11.09）验证过：加标记前后、新旧两版代码，`<s>` 后 40 个词和它们的搭配分数逐个相同，
+  词数 346126 → 346127，搭配数 400 万不变。不改格式版本是因为改了 0.4.0 会读不了（它只认版本 1），
+  而用户可能只升级数据不升级插件。
+- 加标记以前发布的 `words.lm`（lm-2026.11.09，sha256 `42cb7c4a…`）不会重新生成，没有标记，按字节数（38455852）
+  认出是那一版（`kOfficialLmSizes` / `kOfficialLmVersions`、设置界面的 `OFFICIAL_LM_SIZES`、`core/src/datamark.rs`
+  的 `LEGACY_OFFICIAL_LM`、`tools/datamark.py` 的 `LEGACY_OFFICIAL_LM`）。这几张表只为它留着，以后不用再加。
+
+**旧副本**（插件 `fcitx5-addon/src/data_files.h` 的 `isStaleBundledCopy`、设置界面的 `stale_bundled_copy`，同一套规则，
+各自有测试：按键测试的 `runDataFileCase`、`wowtype-config --self-test`）。用户目录和系统目录都有同名文件时：
+
+1. 用户目录这份带标记、名字和文件名一样：版本 ≤ 系统目录那份 → 旧副本，用系统目录的；版本更新（自己下了新数据）
+   或者系统目录那份看不出版本（老安装包没有标记）→ 用用户目录的。
+2. 带标记但名字不一样（别的数据）→ 用户自己放的，用用户目录的。
+3. 没有标记 → 按加标记以前的老办法：第一行是 WowType 生成的数据（`# 由 tools/rime2tsv.py 生成` 等）而且不比系统目录的新，
+   或者 `words.lm` 的字节数是 lm-2026.11.09 的 → 旧副本；别的（自己做的词库、自己训的模型）用用户目录的。
+
+规则改了要四处一起改：`core/src/datamark.rs`、`fcitx5-addon/src/data_files.h`、`settings/wowtype-config`、`tools/datamark.py`。
+
+**清单** `DATA-MANIFEST`：每行 `名字<TAB>版本<TAB>sha256<TAB>来源`，`#` 开头是注释。`make-data.sh`、`make-wubi.sh`
+跑完时用 `tools/datamark.py manifest <数据目录> core/data/s2t.tsv` 写在数据目录里（列出目录里认识的数据文件和简繁表，
+没有标记的文件报错），各安装包（deb、rpm、Arch、Nix、macOS、`cmake --install`）装进系统数据目录
+（`/usr/share/wowtype/DATA-MANIFEST`，macOS 在 Resources 里），数据压缩包里也有。设置界面的诊断信息列出它。
+
+工具：`tools/datamark.py show <文件>...` 看标记；`stamp <文件> <名字> <版本> [--source 来源]` 加上或换掉标记
+（文本文件、`WTLM` 都行，和 `wordlm::set_data_marker` 写出来逐字节一样）；`--self-test` 自测。
+
+**发布新数据时**：
+
+- 词库、英文词表（rime-ice 更新，或者改了热词表、黑名单、语料词频）：rime-ice 换了日期时 `scripts/make-data.sh` 的
+  `REV` 归 0，日期没变时 `REV` 加一。版本自动写进标记、`VERSION`、`DATA-MANIFEST`。
+- `words.lm`：训练好以后先加标记再上传 Release（`lm-<日期>`），版本要比上一版大：
+  `python3 tools/datamark.py stamp words.lm words.lm <日期>.0 --source "lm-<日期>"`
+  （或者在 `wowtype-lmbuild` 里写完调 `wordlm::set_data_marker`）；然后改 `make-data.sh` 的 `LM_URL` 和
+  `LM_SHA256`（加了标记以后的 sha256）。不用再往 `kOfficialLmSizes` 加字节数。没加标记的模型在写清单时报错。
+- `nnlm.bin`：格式里带上标记（同上），版本规则一样；放进数据目录后清单自动列上。
+- 五笔码表：换 rime-wubi 的提交时 `WUBI_REV` 归 0；只改了 `tools/wubi2tsv.py`、码表内容变了时 `WUBI_REV` 加一。
+- 简繁表：重新生成后按 `tools/opencc2tsv.py` 文档里的最后一步加标记，版本用生成日期。
+- 发版前看一眼 `DATA-MANIFEST`：每个文件都有版本，版本比上一次发布的大（或者内容没变、版本没变）。
+
 ## 4. Cell 词典（`cell_dict.*.zh`）
 
 运行中的 WeType 从

@@ -34,6 +34,9 @@ tar --exclude=target --exclude='build*' -cf - \
   tar -xf - -C "$work/source"
 cp "$DATA"/{lexicon.tsv,english.txt,words.lm,LICENSE,SOURCE.txt} "$work/source/dist/data/"
 cp "$DATA"/{wubi86.tsv,WUBI-LICENSE,WUBI-SOURCE.txt,WUBI-AUTHORS} "$work/source/dist/data/"
+if [[ -f "$DATA/DATA-MANIFEST" ]]; then
+  cp "$DATA/DATA-MANIFEST" "$work/source/dist/data/"
+fi
 if [[ -f "$DATA/VERSION" ]]; then
   cp "$DATA/VERSION" "$work/source/dist/data/"
 fi
@@ -88,6 +91,10 @@ package() {
     install -Dm755 "target/release/$bin" "$pkgdir/usr/bin/$bin"
   done
   install -m644 dist/data/{lexicon.tsv,english.txt,words.lm,wubi86.tsv} "$pkgdir/usr/share/wowtype/"
+  # 数据清单：各数据文件的名字、版本、来源（docs/DATA.md「数据版本标记」）
+  if [[ -f dist/data/DATA-MANIFEST ]]; then
+    install -m644 dist/data/DATA-MANIFEST "$pkgdir/usr/share/wowtype/"
+  fi
   install -Dm644 README.md "$pkgdir/usr/share/doc/wowtype/README.md"
   install -Dm644 dist/data/SOURCE.txt "$pkgdir/usr/share/doc/wowtype/DATA-SOURCE.txt"
   install -Dm644 dist/data/WUBI-SOURCE.txt "$pkgdir/usr/share/doc/wowtype/WUBI-SOURCE.txt"
