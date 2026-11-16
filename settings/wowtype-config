@@ -1413,7 +1413,7 @@ def running_addon_version():
 def restart_needed(running, installed=None):
     """正在跑的插件（running_addon_version 的结果）和装好的不是同一版：要重启输入法。
 
-    从源码直接跑的设置界面（版本是 @VERSION@）不算。"""
+    从源码直接跑的设置界面（版本号还是没替换的占位串，以 @ 开头）不算。"""
     installed = VERSION if installed is None else installed
     if running is None or installed.startswith("@"):
         return False
@@ -3499,7 +3499,10 @@ def restart_self_test():
     assert restart_needed("0.4.0", "0.4.1") and restart_needed("0.4.2", "0.4.1")  # 降级也要重启
     assert restart_needed("", "0.4.1")  # 没有 Version 的旧插件
     assert not restart_needed(None, "0.4.1")  # 插件没在跑、总线连不上：说不清，不提醒
-    assert not restart_needed("0.4.0", "@VERSION@") and not restart_needed("", "@VERSION@")  # 源码直接跑
+    # 源码直接跑（版本号还是占位串）。占位串拼出来写：安装时 configure_file 会把字面上的占位串全换成真实版本号，
+    # 以前这里直接写占位串，装好以后这条断言就变成「新旧版本一样」，自测失败、安装脚本说「设置界面用不了」
+    unconfigured = "@" + "VERSION@"
+    assert not restart_needed("0.4.0", unconfigured) and not restart_needed("", unconfigured)
     assert restart_needed("0.4.1~git1.a", "0.4.1~git2.b")
 
 
