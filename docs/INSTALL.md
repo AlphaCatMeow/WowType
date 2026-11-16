@@ -141,8 +141,9 @@ scripts/make-data.sh "" dist/data
 scripts/make-wubi.sh "" dist/data
 ```
 
-词库脚本下载并转换 rime-ice，合并项目热词，下载经过固定 SHA256 校验的语言模型。
-输出包含 `lexicon.tsv`、`english.txt`、`words.lm` 和许可证、来源信息。
+词库脚本下载并转换 rime-ice，合并项目热词，下载经过固定 SHA256 校验的语言模型和整句增强模型。
+输出包含 `lexicon.tsv`、`english.txt`、`words.lm`、`nnlm.bin` 和许可证、来源信息
+（整句增强模型下载不到时只警告、不带 `nnlm.bin`，见 [DATA.md §3.5](DATA.md#35-wowtype-自己的整句增强模型-nnlmbin)）。
 五笔脚本按钉死的提交下载 rime-wubi（LGPL-3.0），核对 SHA256 后生成五笔码表 `wubi86.tsv`
 和 `WUBI-LICENSE`、`WUBI-AUTHORS`、`WUBI-SOURCE.txt`；各发行版的打包脚本都要这几个文件。
 已有 rime-ice checkout 时可传入其路径，避免重复下载。

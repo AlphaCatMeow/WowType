@@ -230,7 +230,7 @@ Lexicon=
 | `WOWTYPE_S2T` | 简繁对照表，默认 `/usr/share/wowtype/s2t.tsv` |
 | `WOWTYPE_USER_DICT`、`WOWTYPE_HISTORY`、`WOWTYPE_CUSTOM` | 自动学到的词、输入习惯、自定义词的文件路径 |
 | `WOWTYPE_VOICE_MODEL_DIR` | 语音模型目录，默认 `~/.local/share/wowtype/wtlocal`（插件和设置界面都认） |
-| `WOWTYPE_NNLM` | 神经语言模型路径，默认 `~/.local/share/wowtype/wetype/nlrgpt2_nnlm.bin` |
+| `WOWTYPE_NNLM` | 整句增强模型（神经语言模型）路径，只用它；不设时先找导入的 `~/.local/share/wowtype/wetype/nlrgpt2_nnlm.bin`，没有再用自带的 `nnlm.bin` |
 | `WOWTYPE_DOMAIN_LM` | 领域词级模型路径，默认数据目录下的 `words.domain.lm`；没有就不混 |
 | `WOWTYPE_NO_UPDATE_CHECK=1` | 不自动检查更新，也不自动打开默认主题 |
 | `WOWTYPE_LOG` | 日志文件路径，默认 `~/.local/state/wowtype/wowtype.log`；`0` 不写 |
@@ -258,9 +258,10 @@ macOS 还没有的功能不列；Linux 单独一页的「更新」在「常规�
 「下载并安装」下载 `WowType-<版本>-macos.pkg` 和同一页的 `SHA256SUMS`，校验后交给系统的 `installer` 只装给当前用户（不要密码，和一键安装脚本一样），
 装的时候输入法和设置窗口会重启一下，装好后设置窗口自动重新打开；失败时写原因，给发布页链接。
 
-设置窗口「输入」页的**整句增强模型**：从微信输入法 macOS 版的安装包（`.zip`）、装好的 `WeType.app` 或 `nlrgpt2_nnlm.bin` 本身导入
-（见下面的[神经语言模型](#数据文件)），放到 `~/Library/Application Support/WowType/wetype/nlrgpt2_nnlm.bin`，几秒后生效，不用重新登录；能删。
-导入时只看核心解析得了，不核对版本号、MD5。没导入时用安装包里的 `nnlm.bin`（WowType 以后会随包附带自己训的，现在还没有）。
+设置窗口「输入」页的**整句增强模型**：安装包里自带 WowType 自己训的 `nnlm.bin`，不用设置。也可以从微信输入法 macOS 版的安装包（`.zip`）、
+装好的 `WeType.app` 或 `nlrgpt2_nnlm.bin` 本身导入微信的（见下面的[整句增强模型](#数据文件)，效果相近），
+放到 `~/Library/Application Support/WowType/wetype/nlrgpt2_nnlm.bin`，几秒后生效，不用重新登录；导入了就先用它，能删，删掉以后换回自带的。
+导入时只看核心解析得了，不核对版本号、MD5。
 
 「常规」页「帮助」里：「复制诊断信息」把版本、数据文件、设置文件（翻译服务只留主机名，像密钥的值打码）、各模型状态和 WowType 最近两小时的系统日志
 复制到剪贴板，贴到问题里；「卸载 WowType」关掉输入法、从系统里去掉、删掉程序，用户数据（`~/Library/Application Support/WowType`）留着，
@@ -333,7 +334,7 @@ macOS 还没有的功能不列；Linux 单独一页的「更新」在「常规�
 | `lexicon.tsv.wcache` | 词库快照，让第二次启动更快（约 0.3 秒）；删了会自动重建 |
 | `wtlocal/` | 语音模型（约 130MB），在设置的「语音」页下载或删除；没有它语音输入打不开，按语音键只提示去下载 |
 | `dicts/wanxiang/` | 可选：万象词库包（`lexicon.tsv`、许可证、来源说明），在设置里下载，见下 |
-| `wetype/nlrgpt2_nnlm.bin` | 可选：微信输入法的神经语言模型（16MB），有它整句候选更准，见下 |
+| `wetype/nlrgpt2_nnlm.bin` | 可选：导入的微信输入法的整句增强模型（16MB），有它就先用它，不然用安装包自带的 `nnlm.bin`，见下 |
 | `words.domain.lm` | 可选：自己训的领域词级模型，和 `words.lm` 混着用，见下 |
 
 **语料词频**：`scripts/make-data.sh` 用雾凇拼音和仓库里 `data/` 下的表，
@@ -355,12 +356,17 @@ cargo run --release -p wowtype-core --bin wowtype-lmbuild -- \
 
 语料是纯文本、一行一段，繁体会转成简体。约 12 亿字、8 线程要 14 分钟，内存峰值约 3GB。
 
-**神经语言模型（可选）**：微信输入法自带一个按字预测下一个字的小模型（`nlrgpt2_nnlm.bin`），
-WowType 能读它来给整句候选重排（日常整句的首选命中率从约 75% 提到约 84%，每次按键多 2ms 左右）。
-模型是腾讯的，WowType 不分发：到微信输入法官网下载 macOS 版（3.0.0）的安装包（.zip，Linux 上也是下这个），
-在「WowType 设置 → 输入 → 整句增强模型」点「导入…」选它，马上生效，不用重启。
+**整句增强模型**：一个按字预测下一个字的小模型（字级神经语言模型），给整句候选重排，长句的首选更准，每次按键多 2ms 左右。
+安装包里自带 WowType 自己训的一份（8.6 MB，装到 `/usr/share/wowtype/nnlm.bin`，macOS 在安装包的 Resources 里，许可证 CC BY-SA 4.0），
+是用 [LCCC](https://huggingface.co/datasets/thu-coai/lccc)（MIT）加中文维基百科（CC BY-SA 4.0）训练的，开箱即用：
+按 `scripts/eval.sh` 的评测，日常整句的首选从 90.6% 提到 94.2%、带上文的从 89.1% 提到 94.0%，单独打词的各组不变。
+来源、训练和发布步骤见 [DATA.md §3.5](DATA.md#35-wowtype-自己的整句增强模型-nnlmbin)。
+
+也可以换成微信输入法自带的那个（`nlrgpt2_nnlm.bin`，效果相近）：模型是腾讯的，WowType 不分发，
+到微信输入法官网下载 macOS 版（3.0.0）的安装包（.zip，Linux 上也是下这个），
+在「WowType 设置 → 输入 → 整句增强模型」点「导入…」选它，马上生效，不用重启；导入了就先用它，删掉以后换回自带的。
 命令行也行：`python3 tools/install_wetype_nnlm.py <WeType 的 .zip 或 .app>`。版本对不上（MD5 不认识）时不装。
-macOS 版暂时还不读这个模型。
+插件日志里写着用的是哪一份，设置界面的诊断信息里也有。
 
 **领域词级模型（可选）**：手上有一批某个领域的语料（工作群聊天、某个专业的文档）时，可以用同一个工具训一个小模型，
 放进数据目录叫 `words.domain.lm`，和 `words.lm` 按 6:4 混着用，这个领域里常连着用的词排得更靠前。

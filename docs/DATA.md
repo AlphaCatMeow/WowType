@@ -119,6 +119,8 @@ key = absl::StrCat(上下文文本, 候选文本)   // 直接拼，无分隔符
 - 验证：Rust 实现和 LiteRT 的输出差 < 2e-5。`我今天很开心` = −15.28，`我今天很开薪` = −35.95。一步约 4M 次乘加，单核约 1ms。
 - `decgnr.bin`（12 层、768 维、词表 10496 的 WordPiece 模型）更大，逐键跑太重，没接。
 
+这个模型是腾讯的，不能分发。安装包自带的是 WowType 照同样结构自己训的 `nnlm.bin`，见 [§3.5](#35-wowtype-自己的整句增强模型-nnlmbin)。
+
 ### 3.2 WowType 自己的词级语言模型 `words.lm`（`core/src/wordlm.rs`）
 
 lmcnmac.bin 导不出来（§3），所以自己从语料训练。`wowtype-lmbuild`：
@@ -148,7 +150,8 @@ lmcnmac.bin 导不出来（§3），所以自己从语料训练。`wowtype-lmbui
 
 安装包里自带 400 万搭配的那份（`/usr/share/wowtype/words.lm`，CC BY-SA 4.0；0.3.3 及以前在单独的词库包 `2026.10.31.2` 里），
 `scripts/make-data.sh` 从 [Release lm-2026.11.09](https://github.com/Gloridust/WowType/releases/tag/lm-2026.11.09)
-下载并核对 sha256。不带 NNLM 时（安装包用户的情况）日常句 84.8%、维基句 60.2%，逐键平均约 1.9 ms，和不带它时一样。
+下载并核对 sha256。不带 NNLM 时日常句 84.8%、维基句 60.2%，逐键平均约 1.9 ms，和不带它时一样
+（安装包现在自带 WowType 自己的 NNLM，见 §3.5）。
 
 ### 3.3 语料词频
 
@@ -300,10 +303,48 @@ WowType 发布的每个数据文件都带一个机器可读的版本标记，插
   `python3 tools/datamark.py stamp words.lm words.lm <日期>.0 --source "lm-<日期>"`
   （或者在 `wowtype-lmbuild` 里写完调 `wordlm::set_data_marker`）；然后改 `make-data.sh` 的 `LM_URL` 和
   `LM_SHA256`（加了标记以后的 sha256）。不用再往 `kOfficialLmSizes` 加字节数。没加标记的模型在写清单时报错。
-- `nnlm.bin`：格式里带上标记（同上），版本规则一样；放进数据目录后清单自动列上。
+- `nnlm.bin`：`tools/nnlm/train.py` 导出时就把标记写在文件头里（`--version`，版本规则一样），放进数据目录后清单自动列上；
+  发布步骤见 §3.5。
 - 五笔码表：换 rime-wubi 的提交时 `WUBI_REV` 归 0；只改了 `tools/wubi2tsv.py`、码表内容变了时 `WUBI_REV` 加一。
 - 简繁表：重新生成后按 `tools/opencc2tsv.py` 文档里的最后一步加标记，版本用生成日期。
 - 发版前看一眼 `DATA-MANIFEST`：每个文件都有版本，版本比上一次发布的大（或者内容没变、版本没变）。
+
+### 3.5 WowType 自己的整句增强模型 `nnlm.bin`
+
+微信输入法的 `nlrgpt2_nnlm.bin`（§3.1）不能分发，所以照同样的结构自己训了一个，安装包都带上
+（Linux 装到 `/usr/share/wowtype/nnlm.bin`，macOS 在 `WowType.app/Contents/Resources/nnlm.bin`），许可证 CC BY-SA 4.0。
+插件和输入法先用用户导入的微信输入法模型，没有再用它（`fcitx5-addon/src/wowtype_engine.cpp` 的 `findNnlm`、
+macOS `AppState.nnlmPath`）。
+
+- 结构：3 层 GPT-2，d=256、4 头、FFN 1024、最长 512 位置，pre-LN，GELU 用 tanh 近似，输出头和字向量共用；
+  和微信的模型一样大，每步推理的耗时也一样。字表 6995 个字（出现 50 次以上、最多 7000 个），覆盖语料 99.59%。
+- 格式：`WTNN`（`core/src/nnlm.rs` 的 `from_wtnn`，格式写在 `tools/nnlm/train.py` 文件头），权重 float16，8.6 MB
+  （xz 压缩后 7.7 MB）。文件头的说明第一行是版本标记 `wowtype-data: nnlm.bin <版本> <来源>`（§3.4），后面是 JSON。
+- 语料：[LCCC](https://huggingface.co/datasets/thu-coai/lccc)（清华 CoAI 组，MIT，2.4 亿字、1760 万句）
+  和中文维基百科（Hugging Face `wikimedia/wikipedia` 的 `20231101.zh`，CC BY-SA 4.0，7.9 亿字、2820 万句）；
+  每批里对话语料占 0.6。模型由维基的内容训练而来，按 CC BY-SA 4.0 发布。
+- 训练：20000 步、批 512、序列 96，单卡约 50 分钟（`target/train/nnlm/train.log`），验证集交叉熵 3.21。
+- 效果（`scripts/eval.sh` 加 `--nnlm`，和外壳一样的用法：没有上文时只给 5 个音节以上的输入重排，权重 0.5）：
+  日常整句首选 90.6% → 94.2%，上文 89.1% → 94.0%，其余各组不变，回归集全过。
+
+当前版本：`2026.11.17.0`，Release [`nnlm-2026.11.17`](https://github.com/Gloridust/WowType/releases/tag/nnlm-2026.11.17)，
+解压后的 sha256 `d50289dfd10c8a4a0da49fc412bdc61a37c6f63ef1a1cbec4bdb74bf5bb7b52b`。
+
+**重新训练、发布**：
+
+1. 整理语料（一行一句的简体纯文本）：
+   `python3 tools/nnlm/prep_corpus.py --s2t core/data/s2t.tsv --out <目录> --wiki <wiki-*.parquet> --lccc <lccc_base_train.jsonl.gz>`
+2. 训练、导出（要 PyTorch，最好有 CUDA）：
+   `python3 tools/nnlm/train.py --text <目录> --out nnlm.bin --version <日期>.0`，
+   版本要比上一版大；导出时标记就写好了，`python3 tools/datamark.py show nnlm.bin` 看一眼。
+3. 评测：`scripts/eval.sh <数据目录> --nnlm nnlm.bin`，和不带它的比，贴进提交说明。
+4. 压缩：`xz -9e -k nnlm.bin`（得到 `nnlm.bin.xz`）。
+5. 上传 GitHub Release `nnlm-<日期>`，附件 `nnlm.bin.xz`，说明里写上语料、许可证（CC BY-SA 4.0）和 sha256。
+6. 改 `scripts/make-data.sh` 的 `NNLM_URL`（新 Release 的下载地址）和 `NNLM_SHA256`（**解压后**的 `nnlm.bin` 的 sha256）。
+
+`scripts/make-data.sh` 下载不到这个文件（比如 Release 还没发）时只警告、不带 `nnlm.bin`，别的文件照常生成，
+各安装包也就不带它；下载到了但 sha256 对不上时报错退出。`WOWTYPE_NNLM_FILE=<文件>` 用本机的、不下载，
+`WOWTYPE_NO_NNLM=1` 不带它。
 
 ## 4. Cell 词典（`cell_dict.*.zh`）
 
