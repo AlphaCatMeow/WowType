@@ -518,6 +518,26 @@ pub unsafe extern "C" fn wowtype_engine_load_nnlm(
     }
 }
 
+/// 只检查文件是不是读得出来的字级神经语言模型，不载入引擎。返回字表大小，失败返回 -1。
+#[no_mangle]
+pub unsafe extern "C" fn wowtype_nnlm_check(path: *const c_char) -> c_int {
+    let Some(path) = (unsafe { cstr_to_str(path) }) else {
+        set_last_error("path is null or not utf8");
+        return -1;
+    };
+    match std::panic::catch_unwind(|| crate::nnlm::Nnlm::load(path)) {
+        Ok(Ok(model)) => model.vocab_size().min(c_int::MAX as usize) as c_int,
+        Ok(Err(e)) => {
+            set_last_error(format!("{e:#}"));
+            -1
+        }
+        Err(_) => {
+            set_last_error("模型文件格式不对");
+            -1
+        }
+    }
+}
+
 /// 混上领域词级模型（用户自己训的 words.domain.lm）。path 为 NULL/空串时去掉。
 /// 再调一次是换掉上一个。返回 0 成功，-1 失败（原来的模型不动）。
 #[no_mangle]
@@ -1147,7 +1167,7 @@ pub extern "C" fn wowtype_abi_version() -> c_int {
 
 /// C 接口版本，和 `wowtype_core.h` 里的 `WOWTYPE_ABI_VERSION_*` 一致（测试会比对）。
 pub const ABI_VERSION_MAJOR: c_int = 1;
-pub const ABI_VERSION_MINOR: c_int = 10;
+pub const ABI_VERSION_MINOR: c_int = 11;
 
 /// WowType 版本号字符串。
 #[no_mangle]

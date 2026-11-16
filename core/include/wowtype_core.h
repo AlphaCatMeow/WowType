@@ -16,7 +16,7 @@
  * 删函数或改参数含义时升主版本。外壳启动时用 wowtype_abi_version() 比对主版本。
  * 规则见 docs/ABI.md。 */
 #define WOWTYPE_ABI_VERSION_MAJOR 1
-#define WOWTYPE_ABI_VERSION_MINOR 10
+#define WOWTYPE_ABI_VERSION_MINOR 11
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,9 +52,13 @@ int wowtype_engine_set_rare_ext_chars(WowtypeEngineHandle *engine, int on);
  * 载入后输入已知英文词（hello、github）时英文排在前面。返回累计词条数，失败返回 -1。 */
 int wowtype_engine_load_english(WowtypeEngineHandle *engine, const char *path);
 
-/* 载入微信输入法的字级神经语言模型（nlrgpt2_nnlm.bin，不随 WowType 分发），
+/* 载入字级神经语言模型（微信输入法的 nlrgpt2_nnlm.bin，或 WowType 自己的），
  * 用来给整句候选重排。返回字表大小，失败返回 -1。 */
 int wowtype_engine_load_nnlm(WowtypeEngineHandle *engine, const char *path);
+
+/* 只检查 path 是不是读得出来的字级神经语言模型（不载入任何引擎）：返回字表大小，读不出来返回 -1
+ * （原因见 wowtype_last_error）。设置界面导入微信输入法的模型前用它试解析，不看版本号。（1.11） */
+int wowtype_nnlm_check(const char *path);
 
 /* 混上用户自己训的领域词级模型（wowtype-lmbuild 生成，和 words.lm 同格式），path 为 NULL/空串时去掉；
  * 再调一次是换掉上一个，不会叠着混。返回 0 成功，-1 失败（原来的不动）。（1.10） */
@@ -393,7 +397,7 @@ typedef struct {
 #define WOWTYPE_KEY_HINT_PANEL_OPEN (1u << 1)    /* 外壳开着自己的面板（表情面板、工具栏）：按 Shift 不切中英文 */
 #define WOWTYPE_KEY_HINT_NO_TRANSLATE (1u << 2)  /* 不能翻译的输入框（密码框）：「译」里也照常上屏 */
 #define WOWTYPE_KEY_HINT_SURROUNDING (1u << 3)   /* 应用告诉了光标周围的文字：prev_char 为 0 是光标前确实没有字 */
-#define WOWTYPE_KEY_HINT_NO_LEARN (1u << 4)      /* 确定是密码框：选的词也不学（回车上屏的原始字母串本来就不学） */
+#define WOWTYPE_KEY_HINT_NO_LEARN (1u << 4)      /* 确定是密码框：选的词也不学（回车上屏的原始字母串本来就不学）（1.11） */
 
 /* 输入模式（1.10 起）。单按 Shift（Shift_L 0xffe1 / Shift_R 0xffe2 的按下、松开都交给会话）
  * 在中 → 英 →（WowtypeSessionConfig.translate_mode 时）译 → 中 之间切换，frame->mode_changed 为 1；

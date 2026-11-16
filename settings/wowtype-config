@@ -2060,13 +2060,29 @@ def install_lexicon_cli(args):
 
 # ---------------------------------------------------------------- 神经语言模型
 # 微信输入法自带的字级神经语言模型（16 MB），有它整句候选更准。模型是腾讯的，WowType 不分发：
-# 用户自己下载微信输入法的 macOS 安装包（.zip），在设置里点「导入」，这里从包里取出来、核对后放好。
+# 用户自己下载微信输入法的 macOS 安装包（.zip），在设置里点「导入」，这里从包里取出来、试着解析后放好。
+# 不看版本号：腾讯出了小版本，只要结构没变照样能用；解析不了才不装（核心的读取代码说了算）。
 # 和命令行的 tools/install_wetype_nnlm.py 做的一样。
 NNLM_NAME = "nlrgpt2_nnlm.bin"
 NNLM_FILE = os.environ.get("WOWTYPE_NNLM") or os.path.join(DATA_DIR, "wetype", NNLM_NAME)
-# 微信输入法 3.0.0（macOS）里的版本，核心按它写的读取代码；别的版本格式可能不同，不装
-NNLM_KNOWN_MD5 = {"edca685aba600497de298dd68a5d5e4d"}
 NNLM_MAX_BYTES = 200 << 20
+# 和设置界面装在一起的自检工具：用核心的读取代码试解析模型
+CHECK_TOOL = shutil.which("wowtype-check") or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                           "wowtype-check")
+
+
+def check_nnlm_file(path):
+    """用核心的读取代码试着解析模型：读得出来返回字表大小，读不出来抛 ValueError。"""
+    if not os.access(CHECK_TOOL, os.X_OK):
+        raise ValueError("找不到 wowtype-check，没法检查模型（重装 WowType 可以修好）")
+    try:
+        done = subprocess.run([CHECK_TOOL, "--nnlm", path], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise ValueError(f"检查模型时出错：{e}") from e
+    if done.returncode != 0:
+        reason = (done.stderr.strip().splitlines() or ["格式不对"])[-1]
+        raise ValueError(f"读不出这个模型（{reason}），可能是微信输入法改了模型格式")
+    return int(done.stdout.strip() or 0)
 
 
 def read_wetype_nnlm(src):
@@ -2093,62 +2109,78 @@ def read_wetype_nnlm(src):
         return f.read()
 
 
-def install_wetype_nnlm(src, dest=None):
-    """导入神经语言模型，返回字节数。版本对不上（MD5 不认识）抛 ValueError，不装。"""
+def install_wetype_nnlm(src, dest=None, check=None):
+    """导入神经语言模型，返回字节数。先写到临时文件试着解析，解析不了抛 ValueError，不装。"""
     dest = dest or NNLM_FILE
+    check = check or check_nnlm_file
     data = read_wetype_nnlm(src)
-    if hashlib.md5(data).hexdigest() not in NNLM_KNOWN_MD5:
-        raise ValueError("模型的版本对不上：要微信输入法 3.0.0（macOS 版）安装包里的那一个")
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     tmp = dest + ".tmp"
     with open(tmp, "wb") as f:
         f.write(data)
+    try:
+        check(tmp)
+    except BaseException:
+        os.remove(tmp)
+        raise
     os.replace(tmp, dest)
     return len(data)
 
 
 def nnlm_self_test():
-    """神经语言模型导入：从 zip、目录、文件本身取；版本不对、包里没有都不装（不联网）。"""
+    """神经语言模型导入：从 zip、目录、文件本身取；解析不了、包里没有都不装（不联网，不跑 wowtype-check）。"""
     import tempfile
     import zipfile
-    global NNLM_KNOWN_MD5
-    saved = NNLM_KNOWN_MD5
     model = b"fake nnlm " * 100
-    NNLM_KNOWN_MD5 = {hashlib.md5(model).hexdigest()}
-    try:
-        with tempfile.TemporaryDirectory() as root:
-            dest = os.path.join(root, "out", "wetype", NNLM_NAME)
-            pack = os.path.join(root, "WeType.zip")
-            with zipfile.ZipFile(pack, "w") as z:
-                z.writestr("WeType.app/Contents/Resources/" + NNLM_NAME, model)
-                z.writestr("WeType.app/Contents/Info.plist", "x")
-            assert install_wetype_nnlm(pack, dest) == len(model)
-            with open(dest, "rb") as f:
-                assert f.read() == model
-            os.remove(dest)
-            app = os.path.join(root, "WeType.app", "Contents", "Resources")
-            os.makedirs(app)
-            with open(os.path.join(app, NNLM_NAME), "wb") as f:
-                f.write(model)
-            assert install_wetype_nnlm(os.path.join(root, "WeType.app"), dest) == len(model)
-            assert install_wetype_nnlm(os.path.join(app, NNLM_NAME), dest) == len(model)
-            os.remove(dest)
-            empty = os.path.join(root, "other.zip")
-            with zipfile.ZipFile(empty, "w") as z:
-                z.writestr("readme.txt", "x")
-            wrong = os.path.join(root, "wrong.zip")
-            with zipfile.ZipFile(wrong, "w") as z:
-                z.writestr(NNLM_NAME, b"another version")
-            for bad in (empty, wrong, os.path.join(root, "WeType.app", "Contents", "Info.plist")):
-                try:
-                    install_wetype_nnlm(bad, dest)
-                except (ValueError, OSError):
-                    pass
-                else:
-                    raise AssertionError(f"{bad} 不该装上")
-                assert not os.path.exists(dest) and not os.path.exists(dest + ".tmp")
-    finally:
-        NNLM_KNOWN_MD5 = saved
+
+    def check(path):  # 内容就是 model 才算读得出来
+        with open(path, "rb") as f:
+            if f.read() != model:
+                raise ValueError("读不出这个模型")
+        return 1
+
+    with tempfile.TemporaryDirectory() as root:
+        dest = os.path.join(root, "out", "wetype", NNLM_NAME)
+        pack = os.path.join(root, "WeType.zip")
+        with zipfile.ZipFile(pack, "w") as z:
+            z.writestr("WeType.app/Contents/Resources/" + NNLM_NAME, model)
+            z.writestr("WeType.app/Contents/Info.plist", "x")
+        assert install_wetype_nnlm(pack, dest, check) == len(model)
+        with open(dest, "rb") as f:
+            assert f.read() == model
+        os.remove(dest)
+        app = os.path.join(root, "WeType.app", "Contents", "Resources")
+        os.makedirs(app)
+        with open(os.path.join(app, NNLM_NAME), "wb") as f:
+            f.write(model)
+        assert install_wetype_nnlm(os.path.join(root, "WeType.app"), dest, check) == len(model)
+        assert install_wetype_nnlm(os.path.join(app, NNLM_NAME), dest, check) == len(model)
+        os.remove(dest)
+        empty = os.path.join(root, "other.zip")
+        with zipfile.ZipFile(empty, "w") as z:
+            z.writestr("readme.txt", "x")
+        wrong = os.path.join(root, "wrong.zip")
+        with zipfile.ZipFile(wrong, "w") as z:
+            z.writestr(NNLM_NAME, b"another format")
+        for bad in (empty, wrong, os.path.join(root, "WeType.app", "Contents", "Info.plist")):
+            try:
+                install_wetype_nnlm(bad, dest, check)
+            except (ValueError, OSError):
+                pass
+            else:
+                raise AssertionError(f"{bad} 不该装上")
+            assert not os.path.exists(dest) and not os.path.exists(dest + ".tmp")
+        # 没有 wowtype-check 时说清楚，不装
+        global CHECK_TOOL
+        saved, CHECK_TOOL = CHECK_TOOL, os.path.join(root, "missing")
+        try:
+            check_nnlm_file(pack)
+        except ValueError as e:
+            assert "wowtype-check" in str(e)
+        else:
+            raise AssertionError("没有 wowtype-check 时不该算通过")
+        finally:
+            CHECK_TOOL = saved
 
 
 def stale_copy_self_test():
