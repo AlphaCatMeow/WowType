@@ -757,15 +757,33 @@ do {
     check(Set(WowtypeConfig.keys).count == WowtypeConfig.keys.count
           && WowtypeConfig.keys.allSatisfy { d.value(forKey: $0) != nil }, "每个键都有写法")
     let template = WowtypeConfig.template()
-    check(WowtypeConfig.keys.allSatisfy { template.contains("\n" + $0 + "=") }, "模板里每个键都有")
+    check(WowtypeConfig.keys.allSatisfy { template.contains("\n# " + $0 + "=") }, "模板里每个键都有（注释掉的默认值）")
     // 加了新设置（模板里多了一行）却没加进 keys / setValue / value(forKey:)：设置窗口写不回去
     let templateKeys = template.split(separator: "\n").compactMap { line -> String? in
-        guard !line.hasPrefix("#"), let eq = line.firstIndex(of: "=") else { return nil }
-        return String(line[..<eq])
+        guard line.hasPrefix("# "), let eq = line.firstIndex(of: "=") else { return nil }
+        let key = line[line.index(line.startIndex, offsetBy: 2)..<eq]
+        return key.allSatisfy({ $0.isASCII && $0.isLetter }) ? String(key) : nil
     }
     check(Set(templateKeys) == Set(WowtypeConfig.keys) && templateKeys.allSatisfy { d.value(forKey: $0) != nil },
           "模板里的键都能写回去", "\(Set(templateKeys).symmetricDifference(WowtypeConfig.keys))")
-    check(d.value(forKey: "CheckUpdate") == nil, "不认识的键没有写法")
+    // 模板里一项都不生效：以后改了默认值，没改过的人跟着变
+    let activeLines = template.split(separator: "\n").filter { !$0.hasPrefix("#") && $0.contains("=") }
+    check(activeLines.isEmpty, "模板里的设置行都注释掉了", "\(activeLines)")
+    check(d.value(forKey: "NoSuchKey") == nil, "不认识的键没有写法")
+
+    // 从模板写：只写改过的键，就地换掉注释掉的那一行，别的键还是注释
+    var one = WowtypeConfig()
+    one.pageSize = 5
+    one.traditional = true
+    let fromTemplate = one.serialized(into: nil)
+    let written = fromTemplate.split(separator: "\n").filter { !$0.hasPrefix("#") && $0.contains("=") }
+    check(written == ["PageSize=5", "Traditional=True"], "从模板写只写改过的键", "\(written)")
+    check(!fromTemplate.contains("# PageSize=") && fromTemplate.contains("# 每页候选个数，3–9\nPageSize=5\n")
+          && fromTemplate.contains("\n# Fuzzy=False\n"), "改过的键换掉注释掉的那一行，说明还在上面", fromTemplate)
+    check(WowtypeConfig.parse(fromTemplate) == one && one.serialized(into: fromTemplate) == fromTemplate,
+          "从模板写的读回来一样，再写一次不变")
+    check(one.serialized(into: "# 我的设置\n#PageSize=7\n") == "# 我的设置\nPageSize=5\nTraditional=True\n",
+          "自己注释掉的设置行也就地换掉", one.serialized(into: "# 我的设置\n#PageSize=7\n"))
 
     // 每一项都改成不是默认值：写出来读回来一样（不管从模板、空文件还是只有注释的文件开始）
     var all = WowtypeConfig()

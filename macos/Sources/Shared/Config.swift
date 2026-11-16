@@ -381,7 +381,8 @@ public struct WowtypeConfig: Equatable {
     ///
     /// 只动认识的键：值读出来已经一样的那行原样不动（大小写、引号、两边的空格都留着），不一样的只换 = 后面的值。
     /// 注释、空行、不认识的键（语音这些 macOS 还没有的）、[分组] 原样留着，所以 Linux 拷过来的文件
-    /// 改完拿回 Linux 照样能用。文件里没有、又不是默认值的键补在最后一个设置后面（[分组] 前面）。
+    /// 改完拿回 Linux 照样能用。文件里没有、又不是默认值的键：有模板里那样注释掉的一行（# 键=默认值）就地换成
+    /// 生效的，没有就补在最后一个设置后面（[分组] 前面）。和默认值一样的键不往里补，以后改了默认值没改过的人跟着变。
     /// 只删一种行：0.3.12 及以前的 Shuangpin 开关（三端存盘都不写它）。
     /// text 是 nil 或空的（还没有文件）时从带说明的模板开始。
     public func serialized(into text: String?) -> String {
@@ -394,6 +395,8 @@ public struct WowtypeConfig: Equatable {
         var firstGroup: Int?
         var crlf = false
         var oldShuangpin: [Int] = []
+        /// 注释掉的设置行（# PageSize=9）在哪一行：这个键要写进去时就地换成生效的
+        var commented: [String: Int] = [:]
         for i in lines.indices {
             var line = lines[i]
             let cr = line.hasSuffix("\r")
@@ -404,6 +407,9 @@ public struct WowtypeConfig: Equatable {
             let body = trim(Substring(line))
             if body.hasPrefix("[") {
                 firstGroup = firstGroup ?? i
+            }
+            if firstGroup == nil, let key = WowtypeConfig.commentedKey(body), commented[key] == nil {
+                commented[key] = i
             }
             if firstGroup != nil || body.isEmpty || body.hasPrefix("#") || body.hasPrefix(";") {
                 continue
@@ -434,21 +440,29 @@ public struct WowtypeConfig: Equatable {
             lines[i] = String(line[..<start]) + quote(wanted) + (cr ? "\r" : "")
         }
 
-        // 0.3.12 及以前的双拼开关（parse 读过了）：删掉，方案只看 InputScheme（这些行都在 [分组] 前面）
+        // 文件里没有的键读出来是默认值；TranslateLocal 没写时跟着 TranslateBaseUrl 走（见 parse），按读回来的值比。
+        // 有注释掉的那一行（模板里的 # 键=默认值）就地换掉，免得同一个键一行注释着默认值、文件末尾又写一行
+        var implied = WowtypeConfig()
+        implied.translateLocal = WowtypeConfig.impliedTranslateLocal(baseUrl: translateBaseUrl)
+        var missing: [String] = []
+        for key in WowtypeConfig.keys {
+            guard !seen.contains(key), let v = value(forKey: key), v != implied.value(forKey: key) else {
+                continue
+            }
+            let entry = key + "=" + quote(v) + (crlf ? "\r" : "")
+            if let i = commented[key] {
+                lines[i] = entry
+            } else {
+                missing.append(entry)
+            }
+        }
+
+        // 0.3.12 及以前的双拼开关（parse 读过了）：删掉，方案只看 InputScheme（这些行都在 [分组] 前面）。
+        // 放在就地换注释行后面：删行会挪动 commented 记的行号
         for i in oldShuangpin.reversed() {
             lines.remove(at: i)
         }
         firstGroup = firstGroup.map { $0 - oldShuangpin.count }
-
-        // 文件里没有的键读出来是默认值；TranslateLocal 没写时跟着 TranslateBaseUrl 走（见 parse），按读回来的值比
-        var implied = WowtypeConfig()
-        implied.translateLocal = WowtypeConfig.impliedTranslateLocal(baseUrl: translateBaseUrl)
-        let missing = WowtypeConfig.keys.compactMap { key -> String? in
-            guard !seen.contains(key), let v = value(forKey: key), v != implied.value(forKey: key) else {
-                return nil
-            }
-            return key + "=" + quote(v) + (crlf ? "\r" : "")
-        }
         if !missing.isEmpty {
             // 补在最后一个设置后面：跳过 [分组]（或文件末尾）前面的空行
             var at = firstGroup ?? lines.count
@@ -472,13 +486,32 @@ public struct WowtypeConfig: Equatable {
         return target.serialized(into: text)
     }
 
-    /// 第一次打开设置时写出来的文件：每项都是默认值，带上说明。
+    /// 注释掉的设置行（# PageSize=9、#PageSize=9）是哪个键；别的注释、不是注释的行是 nil。
+    static func commentedKey(_ body: String) -> String? {
+        guard body.hasPrefix("#") else { return nil }
+        let rest = body.dropFirst()
+        guard let eq = rest.firstIndex(of: "=") else { return nil }
+        let key = trim(rest[..<eq])
+        return WowtypeConfig.keys.contains(key) ? key : nil
+    }
+
+    /// 第一次打开设置时写出来的文件：带说明，每项都是注释掉的默认值（# PageSize=9），一项都不生效。
+    /// 设置窗口只把改过的键写进来（就地换掉那一行），以后改了默认值，没改过的人跟着变。
     public static func template() -> String {
+        defaultsDocument().split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            line.isEmpty || line.hasPrefix("#") ? String(line) : "# " + line
+        }.joined(separator: "\n")
+    }
+
+    /// 模板的原文：说明 + 每项「键=默认值」（template 再把设置行注释掉）。
+    private static func defaultsDocument() -> String {
         let d = WowtypeConfig()
         func b(_ v: Bool) -> String { v ? "True" : "False" }
         return """
         # WowType 设置（键名和 Linux 的 wowtype.conf 一样，见 docs/CONFIG.md）。
+        # 前面带 # 的设置行是默认值，不生效；要改哪一项，去掉那一行前面的 # 再改值。
         # 改完保存，下一次按键时生效；删掉一行就是用默认值。注释要单独写一行。
+        # 设置窗口只写和默认值不一样的项，以后默认值变了，没改过的项跟着变。
 
         # 候选排列：Horizontal 横排、Vertical 竖排
         CandidateLayout=Horizontal
