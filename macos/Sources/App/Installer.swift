@@ -1,6 +1,8 @@
 // 向系统登记输入法（install.sh 装好以后调用）。和 Squirrel 的做法一样：
 // TISRegisterInputSource 登记安装包，TISEnableInputSource 打开，TISSelectInputSource 切过去。
+// 卸载（--uninstall、设置窗口「帮助」→「卸载 WowType」）也在这里。
 
+import AppKit
 import Carbon
 import Foundation
 
@@ -68,5 +70,76 @@ enum Installer {
         }
         print(ok ? "已关闭" : "关闭失败")
         return ok
+    }
+
+    /// 诊断信息用：系统里登记了没有、打开了没有、是不是正在用（在主线程上调）
+    static var sourceSummary: String {
+        guard let source = mode() else { return "系统里没有登记（没找到 \(modeID)）" }
+        let enabled = bool(source, kTISPropertyInputSourceIsEnabled)
+        let selected = bool(source, kTISPropertyInputSourceIsSelected)
+        return "已登记，" + (enabled ? "已打开" : "没打开") + (selected ? "，正在用" : "")
+    }
+
+    // MARK: 卸载
+
+    /// 和 lsregister -u 一样从 LaunchServices 去掉这个程序的登记
+    private static let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/"
+        + "LaunchServices.framework/Support/lsregister"
+
+    /// 装好的 WowType.app：现在跑的这个（在「Input Methods」目录里才算，构建目录里的不删），
+    /// 和 ~/Library/Input Methods 里的那个
+    static func installedApps() -> [URL] {
+        var apps: [URL] = []
+        let me = Bundle.main.bundleURL.standardizedFileURL
+        if me.lastPathComponent == "WowType.app", me.deletingLastPathComponent().lastPathComponent == "Input Methods" {
+            apps.append(me)
+        }
+        let user = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Input Methods/WowType.app")
+            .standardizedFileURL
+        if FileManager.default.fileExists(atPath: user.path), !apps.contains(user) {
+            apps.append(user)
+        }
+        return apps
+    }
+
+    /// 卸载：关掉输入源、停掉别的 WowType 进程（输入法收到 SIGTERM 会先存学习数据）、从 LaunchServices
+    /// 去掉登记、删掉程序。用户数据（~/Library/Application Support/WowType）不动。返回 (都做到了, 给人看的说明)。
+    static func uninstall(supportDir: URL) -> (ok: Bool, message: String) {
+        let apps = installedApps()
+        guard !apps.isEmpty else {
+            return (false, "没找到装好的 WowType.app（~/Library/Input Methods 里没有）")
+        }
+        _ = disable()
+        // 别的 WowType 进程：输入法（系统按需启动）、另一个设置窗口
+        let me = ProcessInfo.processInfo.processIdentifier
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .filter { $0.processIdentifier != me && !$0.isTerminated }
+        for app in others {
+            kill(app.processIdentifier, SIGTERM)
+        }
+        let deadline = Date().addingTimeInterval(3)
+        while others.contains(where: { !$0.isTerminated }) && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        for app in others where !app.isTerminated {
+            app.forceTerminate()
+        }
+        var problems: [String] = []
+        for app in apps {
+            _ = try? LocalModelInstaller.run(lsregister, ["-u", app.path], timeout: 30)
+            do {
+                try FileManager.default.removeItem(at: app)
+            } catch {
+                problems.append("删不掉 \((app.path as NSString).abbreviatingWithTildeInPath)：\(error.localizedDescription)")
+            }
+        }
+        // 菜单栏的输入法菜单会缓存输入法列表和图标，重启一下它（系统会马上把它拉起来）
+        _ = try? LocalModelInstaller.run("/usr/bin/killall", ["TextInputMenuAgent"], timeout: 10)
+        let data = (supportDir.path as NSString).abbreviatingWithTildeInPath
+        if !problems.isEmpty {
+            return (false, problems.joined(separator: "\n") + "\n可以在访达里手动删掉。用户数据还在 \(data)。")
+        }
+        return (true, "已卸载 WowType。自定义词、学到的词和设置还在 \(data)，不要了可以手动删掉。"
+                + "输入法列表里还看得到 WowType 的话，注销重新登录一次就没了。")
     }
 }

@@ -244,6 +244,17 @@ private struct GeneralPage: View {
             ActionRow(title: "提交问题", action: { NSWorkspace.shared.open(issuesURL) }) {
                 Image(systemName: "arrow.up.right.square").foregroundColor(.secondary)
             }
+            RowDivider()
+            ActionRow(title: "复制诊断信息", subtitle: "版本、数据文件、设置（打码）和最近的日志，贴到问题里",
+                      info: "不含你打过的字、自定义词和输入习惯的内容（只有条数和大小）；翻译服务只留主机名，API Key 不在里面。",
+                      action: { model.copyDiagnostics() }) {
+                Image(systemName: "doc.on.clipboard").foregroundColor(.secondary)
+            }
+            RowDivider()
+            ActionRow(title: "卸载 WowType", subtitle: "自定义词、学到的词和设置会留着",
+                      action: { model.confirmUninstall() }) {
+                Image(systemName: "trash").foregroundColor(.secondary)
+            }
         }
     }
 

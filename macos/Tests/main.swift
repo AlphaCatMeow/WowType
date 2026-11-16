@@ -2093,6 +2093,22 @@ do {
     }
 }
 
+// MARK: 诊断信息里的设置打码（DiagnosticsText）
+
+do {
+    let conf = "# 注释 TranslateBaseUrl=https://a@b/c\nPageSize=5\n"
+        + "TranslateBaseUrl=https://user:sk-123@api.example.com:8443/v1/sk-456\nTranslateKey=sk-789\n"
+        + "ApiToken = \"abc\"\nEmojiKey=Control+period\nTranslateModel=\nMyKey=\n[Hotkey]\nX=1"
+    let masked = DiagnosticsText.maskConfig(conf)
+    check(masked == "# 注释 TranslateBaseUrl=https://a@b/c\nPageSize=5\n"
+          + "TranslateBaseUrl=https://api.example.com:8443/…\nTranslateKey=（已打码）\n"
+          + "ApiToken=（已打码）\nEmojiKey=Control+period\nTranslateModel=\nMyKey=\n[Hotkey]\nX=1",
+          "诊断信息里的设置：接口地址只留主机，像密钥的键打码，别的原样", masked)
+    check(DiagnosticsText.maskURL("") == "" && DiagnosticsText.maskURL("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434/…"
+          && DiagnosticsText.maskURL("\"https://k@x.org\"") == "https://x.org/…" && DiagnosticsText.maskURL("sk-abc") == "（已打码）",
+          "网址只留协议和主机")
+}
+
 // MARK: 设置契约（spec/config.json、spec/lexicon-pack.json；Linux 两端在 scripts/test-config-contract.py 对照）
 
 checkConfigContract()

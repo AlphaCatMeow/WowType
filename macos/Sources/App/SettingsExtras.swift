@@ -1,8 +1,66 @@
-// 设置窗口里自成一块的几样：整句增强模型（导入 / 删除）。
-// 各自是单独的 ObservableObject，SettingsModel 只持有它们，界面在 SettingsView.swift 里。
+// 设置窗口里自成一块的几样：整句增强模型（导入 / 删除）、更新、「帮助」里的复制诊断信息和卸载。
+// 前两样各自是单独的 ObservableObject，SettingsModel 只持有它们，界面在 SettingsView.swift 里。
 
 import AppKit
 import SwiftUI
+
+// MARK: 帮助：诊断信息、卸载
+
+extension SettingsModel {
+    /// 收集诊断信息（Diagnostics，要几秒：读系统日志）复制到剪贴板，贴到问题里给开发者看
+    func copyDiagnostics() {
+        var errors: [String] = []
+        if let releaseError { errors.append("查万象词库的发布页：\(releaseError)") }
+        if let voiceError { errors.append("语音模型：\(voiceError)") }
+        if let localError { errors.append("离线翻译模型：\(localError)") }
+        if let error = nnlm.error { errors.append("整句增强模型：\(error)") }
+        if let error = updater.error { errors.append("更新：\(error)") }
+        let source = Installer.sourceSummary
+        showToast("正在收集诊断信息…")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let text = Diagnostics.collect(inputSource: source, errors: errors)
+            DispatchQueue.main.async { [weak self] in
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                self?.showToast("诊断信息已复制，可以粘贴到问题里（不含打过的字）")
+            }
+        }
+    }
+
+    /// 「卸载 WowType」：确认后关掉输入法、去掉登记、删掉程序（Installer.uninstall），用户数据留着，然后退出设置窗口
+    func confirmUninstall() {
+        let alert = NSAlert()
+        alert.messageText = "卸载 WowType？"
+        let apps = Installer.installedApps().map { ($0.path as NSString).abbreviatingWithTildeInPath }
+        let data = (supportDir.path as NSString).abbreviatingWithTildeInPath
+        alert.informativeText = "会关掉 WowType 输入法、从系统里去掉，删掉"
+            + (apps.isEmpty ? " WowType.app" : "：\n" + apps.joined(separator: "\n"))
+            + "\n\n自定义词、学到的词和设置留在 \(data)，以后重新安装接着用；不要了可以自己删掉。"
+        alert.addButton(withTitle: "卸载")
+        alert.addButton(withTitle: "取消")
+        if #available(macOS 11.0, *) {
+            alert.buttons.first?.hasDestructiveAction = true
+        }
+        let answered: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            self.save()
+            let result = Installer.uninstall(supportDir: self.supportDir)
+            let done = NSAlert()
+            done.messageText = result.ok ? "已卸载" : "没卸载干净"
+            done.informativeText = result.message
+            done.addButton(withTitle: result.ok ? "退出" : "好")
+            done.runModal()
+            if result.ok {
+                NSApp.terminate(nil)
+            }
+        }
+        if let window = NSApp.keyWindow ?? NSApp.windows.first(where: \.isVisible) {
+            alert.beginSheetModal(for: window, completionHandler: answered)
+        } else {
+            answered(alert.runModal())
+        }
+    }
+}
 
 /// 「输入」页的「整句增强模型」：从微信输入法导入 nlrgpt2_nnlm.bin（和 Linux 设置的一样）。规矩在 NnlmInstaller。
 final class NnlmModel: ObservableObject {
