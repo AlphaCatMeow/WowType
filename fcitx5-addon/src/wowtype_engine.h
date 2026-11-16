@@ -414,6 +414,9 @@ public:
     void choosePanelItem(fcitx::InputContext *ic, WowtypeState *state, std::size_t index);
     /// 展开的候选面板里点了第 row 行：光标在这行就选光标处的词，否则选这行第一个。
     void selectGridRow(fcitx::InputContext *ic, WowtypeState *state, std::size_t row);
+    /// 工具栏 / 表情面板 / 展开面板的候选框上点了翻页按钮、滚了滚轮：和键盘上按 sym（Page Up /
+    /// Page Down、上下键）一样交给会话，照会话的页和光标重画。面板的页码、光标只在会话里有一份。
+    void panelListKey(fcitx::InputContext *ic, WowtypeState *state, fcitx::KeySym sym);
     /// 互译：上屏译文；还没译好就记下来，好了再上屏。
 
 private:
@@ -474,7 +477,7 @@ private:
     void fillTranslateView(fcitx::InputContext *ic, WowtypeState *state, fcitx::InputPanel &panel);
 
     // 表情面板（快捷键打开，打拼音或英文搜 emoji 和符号）
-    void fillToolPanel(fcitx::InputPanel &panel, WowtypeState *state);
+    void fillToolPanel(fcitx::InputContext *ic, WowtypeState *state);
     /// 剪贴板历史：从 fcitx5 的 clipboard 插件拿最新一条交给核心（没有这个插件就什么都不做）。
     void sampleClipboard(fcitx::InputContext *ic);
 
@@ -501,7 +504,7 @@ private:
     void refreshCandidates(WowtypeState *state);
     /// 会话的候选重算过才重新抄；返回 true 表示重抄了。页码、光标每次都抄。
     bool syncView(WowtypeState *state);
-    void fillGridPanel(fcitx::InputPanel &panel, WowtypeState *state);
+    void fillGridPanel(fcitx::InputContext *ic, WowtypeState *state);
     std::string segmentedRemaining(WowtypeState *state);
     /// 会话上屏以后：上屏 frame->commit、清空外壳的状态；frame->learned 时攒着存用户词库。
     void finishCommit(fcitx::InputContext *ic, WowtypeState *state, const WowtypeFrame *frame);

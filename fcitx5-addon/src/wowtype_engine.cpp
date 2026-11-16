@@ -609,6 +609,62 @@ private:
     bool mirroring_ = false;
 };
 
+/// 工具栏、表情面板、展开面板的列表：候选框上的翻页按钮、滚轮和直接调列表的，都和键盘上按
+/// Page Up / Page Down、上下键一样交给会话，再照会话的光标整个重画（WowtypeEngine::panelListKey）。
+/// 让 CommonCandidateList 自己翻的话只是换了显示的那一页，会话的光标还在原来那一页，接着按数字、
+/// 空格选的是原来那页的。
+class WowtypePanelList final : public fcitx::CommonCandidateList {
+public:
+    WowtypePanelList(WowtypeEngine *engine, fcitx::InputContext *ic, WowtypeState *state)
+        : engine_(engine), ic_(ic->watch()), state_(state) {}
+
+    void prev() override { act(FcitxKey_Page_Up); }
+    void next() override { act(FcitxKey_Page_Down); }
+    void prevCandidate() override {
+        // 第一个（展开面板是第一行）上不再往上：展开面板里那是收起
+        if (globalCursorIndex() > 0) {
+            act(FcitxKey_Up);
+        }
+    }
+    void nextCandidate() override { act(FcitxKey_Down); }
+    void setPage(int page) override {
+        // 一屏一屏翻会话。重画会换掉输入框的列表，翻完之前自己先留着
+        const auto keep = shown();
+        if (!keep) {
+            return;
+        }
+        const int steps = page - currentPage();
+        for (int i = 0; i < std::min(std::abs(steps), 1000) && ic_.get(); ++i) {
+            engine_->panelListKey(ic_.get(), state_, steps < 0 ? FcitxKey_Page_Up : FcitxKey_Page_Down);
+        }
+    }
+
+    /// 建列表时照会话的光标摆好（只摆自己）：setGlobalCursorIndex 只设光标、不翻页，先翻到光标那一页，
+    /// 不然光标走到后面几页时看不到。
+    void place(std::size_t page, std::size_t cursor) {
+        CommonCandidateList::setPage(static_cast<int>(page));
+        setGlobalCursorIndex(static_cast<int>(cursor));
+    }
+
+private:
+    /// 输入框现在显示的就是这个列表才返回它（不是的话是一个过时的列表，不能拿它去翻会话）。
+    std::shared_ptr<fcitx::CandidateList> shown() const {
+        auto *ic = ic_.get();
+        auto list = ic ? ic->inputPanel().candidateList() : nullptr;
+        return list.get() == this ? list : nullptr;
+    }
+
+    void act(fcitx::KeySym sym) {
+        if (const auto keep = shown()) {
+            engine_->panelListKey(ic_.get(), state_, sym);
+        }
+    }
+
+    WowtypeEngine *engine_;
+    fcitx::TrackableObjectReference<fcitx::InputContext> ic_;
+    WowtypeState *state_;
+};
+
 } // namespace
 
 WowtypeEngine::WowtypeEngine(fcitx::Instance *instance)
@@ -1452,7 +1508,7 @@ void WowtypeEngine::sampleClipboard(fcitx::InputContext *ic) {
     }
 }
 
-void WowtypeEngine::fillToolPanel(fcitx::InputPanel &panel, WowtypeState *state) {
+void WowtypeEngine::fillToolPanel(fcitx::InputContext *ic, WowtypeState *state) {
     // 工具栏（菜单、剪贴板、常用语）：竖排一列，一页 9 个，数字键选这一页的
     constexpr std::size_t kToolPageSize = 9;
     const std::size_t n = state->candidates_.size();
@@ -1460,17 +1516,35 @@ void WowtypeEngine::fillToolPanel(fcitx::InputPanel &panel, WowtypeState *state)
         return;
     }
     const std::size_t cursor = std::min(state->panelCursor_, n - 1);
-    auto list = std::make_unique<fcitx::CommonCandidateList>();
+    // 翻到哪一页由会话的光标定（鼠标翻页也交给会话），屏幕上的第 N 项就是按 N 选的那一项
+    auto list = std::make_unique<WowtypePanelList>(this, ic, state);
     list->setLayoutHint(fcitx::CandidateLayoutHint::Vertical);
     list->setPageSize(static_cast<int>(kToolPageSize));
     list->setSelectionKey(fcitx::Key::keyListFromString("1 2 3 4 5 6 7 8 9"));
     for (std::size_t i = 0; i < n; ++i) {
         list->append<WowtypeToolWord>(this, state, i, state->candidates_[i].text);
     }
-    // setGlobalCursorIndex 只设光标、不翻页：先翻到光标那一页，不然光标走到后面几页时看不到
-    list->setPage(static_cast<int>(cursor / kToolPageSize));
-    list->setGlobalCursorIndex(static_cast<int>(cursor));
-    panel.setCandidateList(std::move(list));
+    list->place(cursor / kToolPageSize, cursor);
+    ic->inputPanel().setCandidateList(std::move(list));
+}
+
+void WowtypeEngine::panelListKey(fcitx::InputContext *ic, WowtypeState *state, fcitx::KeySym sym) {
+    if (!ic || !state) {
+        return;
+    }
+    // 面板还开着才交给会话（没开着时这个键在会话里是别的意思）；不管怎样都照会话现在的样子重画
+    WowtypeSessionView view{};
+    view.size = sizeof(view);
+    const bool expanded = state->composing() &&
+                          wowtype_session_view(state->session_, &view) == 0 && view.expanded != 0;
+    if (state->panel() != WOWTYPE_TOOL_NONE || expanded) {
+        if (const WowtypeFrame *frame = sessionKey(ic, state, fcitx::Key(sym));
+            frame && frame->handled) {
+            applySessionFrame(ic, state, frame);
+            return;
+        }
+    }
+    updateInputPanel(ic, state);
 }
 
 void WowtypeEngine::choosePanelItem(fcitx::InputContext *ic, WowtypeState *state,
@@ -1535,9 +1609,9 @@ void WowtypeEngine::updateInputPanel(fcitx::InputContext *ic,
         }
         if (!state->candidates_.empty()) {
             if (open == WOWTYPE_TOOL_EMOJI || open == WOWTYPE_TOOL_SYMBOLS) {
-                fillGridPanel(panel, state);
+                fillGridPanel(ic, state);
             } else {
-                fillToolPanel(panel, state);
+                fillToolPanel(ic, state);
             }
         }
         ic->updatePreedit();
@@ -1574,7 +1648,7 @@ void WowtypeEngine::updateInputPanel(fcitx::InputContext *ic,
     }
 
     if (state->expanded_ && !state->candidates_.empty()) {
-        fillGridPanel(panel, state);
+        fillGridPanel(ic, state);
     } else if (!state->candidates_.empty()) {
         auto candidates = std::make_unique<WowtypeSessionList>(state);
         candidates->setLayoutHint(horizontal_
@@ -1606,7 +1680,7 @@ void WowtypeEngine::updateInputPanel(fcitx::InputContext *ic,
 /// 照微信输入法的样子：光标所在行标 １–６，光标处的词用〔〕框起来；同一屏里各列
 /// 按最宽的词补齐，这样上下键在同一列里走。classic UI 和 kimpanel 都只会画一行或
 /// 一列，画不了真正的网格，所以用全角字符拼出来。
-void WowtypeEngine::fillGridPanel(fcitx::InputPanel &panel, WowtypeState *state) {
+void WowtypeEngine::fillGridPanel(fcitx::InputContext *ic, WowtypeState *state) {
     static const char *kLabels[] = {"\uFF11", "\uFF12", "\uFF13",
                                     "\uFF14", "\uFF15", "\uFF16"};
     static_assert(sizeof(kLabels) / sizeof(kLabels[0]) == kGridCols);
@@ -1616,7 +1690,8 @@ void WowtypeEngine::fillGridPanel(fcitx::InputPanel &panel, WowtypeState *state)
     const std::size_t rows = (n + kGridCols - 1) / kGridCols;
     const std::size_t cursorRow = state->gridCursor_ / kGridCols;
 
-    auto list = std::make_unique<fcitx::CommonCandidateList>();
+    // 一屏一屏翻也交给会话（WowtypePanelList）：光标跟着到新的一屏，数字、空格选的是看到的这一屏
+    auto list = std::make_unique<WowtypePanelList>(this, ic, state);
     list->setLayoutHint(fcitx::CandidateLayoutHint::Vertical);
     list->setPageSize(static_cast<int>(kGridRows));
     list->setSelectionKey(fcitx::KeyList{}); // 不要行号：编号画在行里
@@ -1645,10 +1720,9 @@ void WowtypeEngine::fillGridPanel(fcitx::InputPanel &panel, WowtypeState *state)
             list->append<WowtypeGridRow>(this, state, r, std::move(line));
         }
     }
-    // 先翻到光标所在的那一屏（setGlobalCursorIndex 不翻页），下键走到第 7 行以后才看得到
-    list->setPage(static_cast<int>(cursorRow / kGridRows));
-    list->setGlobalCursorIndex(static_cast<int>(cursorRow));
-    panel.setCandidateList(std::move(list));
+    // 先翻到光标所在的那一屏，下键走到第 7 行以后才看得到
+    list->place(cursorRow / kGridRows, cursorRow);
+    ic->inputPanel().setCandidateList(std::move(list));
 }
 
 void WowtypeEngine::selectGridRow(fcitx::InputContext *ic, WowtypeState *state,

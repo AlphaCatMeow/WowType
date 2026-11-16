@@ -634,6 +634,74 @@ void runCases(Instance &instance) {
         type(ic.get(), "2");
         check(p1.size() > 1 && ic->committed == p1[1], "收起后数字按当前页选，实际 " + ic->committed);
     }
+    // 展开面板上点翻页按钮、滚滚轮（直接调列表的 next / prev）：会话的光标跟着到那一屏，
+    // 看到的这一屏上框着的词就是空格选的，数字选的是光标那一行的
+    /// 一行里〔〕框着的词；没有框是空的
+    auto framedIn = [](const std::vector<std::string> &rows) {
+        for (const auto &row : rows) {
+            const auto open = row.find("\u3014");
+            const auto close = row.find("\u3015");
+            if (open != std::string::npos && close != std::string::npos && close > open) {
+                return row.substr(open + 3, close - open - 3);
+            }
+        }
+        return std::string();
+    };
+    /// 有光标的那一行里标着 label（１–６）的词
+    auto labelledIn = [](const std::vector<std::string> &rows, const std::string &label) {
+        for (const auto &row : rows) {
+            auto at = row.find(label + "\u3000");
+            if (row.find("\u3014") == std::string::npos || at == std::string::npos) {
+                continue;
+            }
+            at += label.size() + 3;
+            std::string text = row.substr(at, row.find("\u3000", at) - at);
+            if (const auto pad = text.find("\u2002"); pad != std::string::npos) {
+                text.resize(pad); // 补宽度的半角空格
+            }
+            return text;
+        }
+        return std::string();
+    };
+    fresh(ic.get());
+    type(ic.get(), "shi<down>");
+    if (auto *list = common(); list && list->hasNext()) {
+        const auto screen1 = page(ic.get());
+        list->next();
+        list = common();
+        const auto screen2 = page(ic.get());
+        const std::string framed = framedIn(screen2);
+        check(list && list->currentPage() == 1 && list->cursorIndex() == 0 && screen2 != screen1 &&
+                  !framed.empty(),
+              "展开面板点下一屏：光标跟到第二屏第一个：" + join(screen2));
+        type(ic.get(), "<sp>");
+        check(!framed.empty() && ic->committed == framed,
+              "展开面板点下一屏后空格选这一屏框着的（" + framed + "），实际 " + ic->committed);
+        fresh(ic.get());
+        type(ic.get(), "shi<down>");
+        if ((list = common())) {
+            list->next();
+        }
+        const std::string second = labelledIn(page(ic.get()), "\uFF12");
+        type(ic.get(), "2");
+        check(!second.empty() && ic->committed == second,
+              "展开面板点下一屏后数字选这一屏的（" + second + "），实际 " + ic->committed);
+        fresh(ic.get());
+        type(ic.get(), "shi<down>");
+        if ((list = common())) {
+            list->next();
+        }
+        if ((list = common())) {
+            list->prev();
+        }
+        list = common();
+        const std::string back = framedIn(page(ic.get()));
+        check(list && list->currentPage() == 0 && !back.empty(), "展开面板点上一屏：回到第一屏：" + back);
+        type(ic.get(), "<sp>");
+        check(!back.empty() && ic->committed == back, "回到第一屏后空格选框着的，实际 " + ic->committed);
+    } else {
+        std::printf("skip 展开面板点翻页按钮（这个词库里 shi 的候选不到两屏）\n");
+    }
     fresh(ic.get());
     type(ic.get(), "shi");
     {
@@ -1238,6 +1306,145 @@ void runCases(Instance &instance) {
     fresh(ic.get());
     type(ic.get(), "v100.5<sp>");
     check(ic->committed == "壹佰元伍角", "v 后面只打一个数：空格上屏大写金额：" + ic->committed);
+    fresh(ic.get());
+
+    // 符号面板（和表情面板、展开面板一样是 6 列的网格）点翻页按钮、滚滚轮：光标跟着到那一屏，
+    // 屏幕上框着的就是空格选的、标着 ２ 的就是按 2 选的（以前只是 fcitx5 自己换了一屏，选的还是第一屏的）
+    fresh(ic.get());
+    type(ic.get(), "v<sp>3");
+    {
+        auto *list = common();
+        check(list && list->hasNext() && list->totalPages() == 2, "符号面板有两屏");
+        const auto screen1 = page(ic.get());
+        if (list) {
+            list->next(); // 候选框上的翻页按钮、滚轮直接调列表
+        }
+        list = common();
+        const auto screen2 = page(ic.get());
+        const std::string framed = framedIn(screen2);
+        check(list && list->currentPage() == 1 && list->cursorIndex() == 0 && !list->hasNext() &&
+                  screen2 != screen1 && !framed.empty(),
+              "符号面板点下一屏：光标跟到第二屏：" + join(screen2));
+        type(ic.get(), "<sp>");
+        check(!framed.empty() && ic->committed == framed,
+              "符号面板点下一屏后空格选这一屏框着的（" + framed + "），实际 " + ic->committed);
+    }
+    // 表情面板（不止三屏）：连着翻、翻回来、滚轮移光标、直接跳到某一屏
+    fresh(ic.get());
+    type(ic.get(), "v<sp>4");
+    {
+        if (auto *list = common()) {
+            list->next();
+        }
+        if (auto *list = common()) {
+            list->next();
+        }
+        auto *list = common();
+        const std::string third = labelledIn(page(ic.get()), "\uFF13");
+        check(list && list->currentPage() == 2 && !third.empty(), "表情面板连点两次下一屏：到第三屏");
+        type(ic.get(), "3");
+        check(!third.empty() && ic->committed == third,
+              "表情面板第三屏按 3 选这一屏标着 ３ 的（" + third + "），实际 " + ic->committed);
+    }
+    fresh(ic.get());
+    type(ic.get(), "v<sp>4");
+    {
+        if (auto *list = common()) {
+            list->next();
+        }
+        if (auto *list = common()) {
+            list->next();
+        }
+        if (auto *list = common()) {
+            list->prev();
+        }
+        auto *list = common();
+        const std::string framed = framedIn(page(ic.get()));
+        check(list && list->currentPage() == 1 && !framed.empty(), "表情面板点上一屏：回到第二屏");
+        if (list) {
+            list->nextCandidate(); // 滚轮移到下一行
+        }
+        list = common();
+        const std::string below = framedIn(page(ic.get()));
+        check(list && list->cursorIndex() == 1 && !below.empty() && below != framed,
+              "表情面板列表 nextCandidate：光标到下一行：" + below);
+        type(ic.get(), "<cr>");
+        check(!below.empty() && ic->committed == below, "接着回车选框着的，实际 " + ic->committed);
+    }
+    fresh(ic.get());
+    type(ic.get(), "v<sp>4");
+    {
+        if (auto *list = common()) {
+            list->setPage(2); // 直接跳到第三屏也是一屏一屏翻会话
+        }
+        auto *list = common();
+        const std::string framed = framedIn(page(ic.get()));
+        check(list && list->currentPage() == 2 && !framed.empty(), "表情面板 setPage(2)：到第三屏");
+        type(ic.get(), "<sp>");
+        check(!framed.empty() && ic->committed == framed, "setPage 后空格选框着的，实际 " + ic->committed);
+    }
+    // 工具栏的列表（常用语 11 条，一页 9 个）也一样：点下一页后数字、空格选的是第二页的
+    {
+        std::ofstream(customFile) << "ce jia\t测甲\nce yi\t测乙\nce bing\t测丙\nce ding\t测丁\nce wu\t测戊\n"
+                                     "ce ji\t测己\nce geng\t测庚\nce xin\t测辛\nce ren\t测壬\nce gui\t测癸\n"
+                                     "ce zi\t测子\n";
+    }
+    addon->reloadConfig();
+    fresh(ic.get());
+    type(ic.get(), "v<sp>2");
+    {
+        auto *list = common();
+        check(list && list->totalSize() == 11 && list->size() == 9 && list->hasNext(),
+              "常用语 11 条分两页：" + join(page(ic.get())));
+        if (list) {
+            list->next();
+        }
+        list = common();
+        const auto p2 = page(ic.get());
+        check(list && list->currentPage() == 1 && list->cursorIndex() == 0 && p2.size() == 2 &&
+                  p2[0] == "ce gui\u3000测癸" && p2[1] == "ce zi\u3000测子",
+              "常用语点下一页：第二页、光标在第一个：" + join(p2));
+        type(ic.get(), "2");
+        check(ic->committed == "测子", "常用语点下一页后按 2 选第二页第二个，实际 " + ic->committed);
+    }
+    fresh(ic.get());
+    type(ic.get(), "v<sp>2");
+    {
+        if (auto *list = common()) {
+            list->next();
+        }
+        type(ic.get(), "<sp>");
+        check(ic->committed == "测癸", "常用语点下一页后空格选第二页第一个，实际 " + ic->committed);
+    }
+    fresh(ic.get());
+    type(ic.get(), "v<sp>2");
+    {
+        if (auto *list = common()) {
+            list->next();
+        }
+        if (auto *list = common()) {
+            list->prev();
+        }
+        auto *list = common();
+        check(list && list->currentPage() == 0 && list->cursorIndex() == 0 && page(ic.get()).size() == 9,
+              "常用语点上一页：回到第一页");
+        if (list) {
+            list->nextCandidate();
+        }
+        type(ic.get(), "<sp>");
+        check(ic->committed == "测乙", "常用语列表 nextCandidate 后空格选第二个，实际 " + ic->committed);
+    }
+    fresh(ic.get());
+    type(ic.get(), "v<sp>2");
+    {
+        if (auto *list = common()) {
+            list->next();
+        }
+        if (auto list = ic->inputPanel().candidateList(); list && list->size() > 1) {
+            list->candidate(1).select(ic.get()); // 鼠标点第二页第二个
+        }
+        check(ic->committed == "测子", "常用语点下一页后点第二个，实际 " + ic->committed);
+    }
     fresh(ic.get());
 
     // 删掉文件再 reload：回到默认
