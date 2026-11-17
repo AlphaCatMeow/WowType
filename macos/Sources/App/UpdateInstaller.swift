@@ -45,9 +45,10 @@ enum UpdateInstaller {
         try? writeText(state.text, to: stateFile(in: supportDir).path)
     }
 
-    /// 问 GitHub 最新正式版，查到了记进 update-state（输入法菜单、下一次检查用）。会等网络，在后台线程上调。
-    static func fetchLatest(supportDir: URL) throws -> LexiconPackInstaller.Release {
-        let release = try LexiconPackInstaller.fetchLatest()
+    /// 问 GitHub 最新正式版（beta：Beta 计划开着，预发布也算），查到了记进 update-state（输入法菜单、下一次检查用）。
+    /// 会等网络，在后台线程上调。
+    static func fetchLatest(supportDir: URL, beta: Bool = false) throws -> LexiconPackInstaller.Release {
+        let release = try beta ? LexiconPackInstaller.fetchNewest() : LexiconPackInstaller.fetchLatest()
         guard AppUpdate.version(tag: release.tag) != nil else {
             throw PackError("发布页上的版本号看不懂：\(release.tag)")
         }

@@ -349,7 +349,7 @@ DEFAULTS = {
     "PunctuationStyle": "Fullwidth",
     "SelectKeys": "Off",
     "PickChar": "True",
-    "Association": "True",
+    "Association": "False",
     "DateTime": "True",
     "Calculator": "True",
     "Toolbar": "True",
@@ -374,6 +374,7 @@ DEFAULTS = {
     "TranslateLlamaServer": "",
     "TranslateIdleMinutes": "5",
     "CheckUpdate": "True",
+    "BetaUpdates": "False",
     # 词库文件，留空用默认的雾凇；切到万象时是 WANXIANG_LEXICON
     "Lexicon": "",
 }
@@ -2141,6 +2142,8 @@ def export_diagnostics(path):
 
 REPO = "Gloridust/WowType"
 RELEASE_API = f"https://api.github.com/repos/{REPO}/releases/latest"
+# Beta 计划：最近的几十个发布（含预发布），挑版本号最大的
+RELEASES_API = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
 RELEASES_PAGE = f"{HOMEPAGE}/releases"
 CACHE_DIR = os.path.join(_xdg("XDG_CACHE_HOME", "~/.cache"), "wowtype")
 UPDATE_DIR = os.path.join(CACHE_DIR, "updates")
@@ -2376,17 +2379,51 @@ def markdown_to_pango(md):
     return '<span lang="zh-cn">' + "\n".join(lines) + "</span>"
 
 
-def fetch_latest():
-    """GitHub 上最新的正式版：{tag, version, notes, url, assets: {文件名: 下载地址}}。"""
-    with http_open(RELEASE_API, timeout=20) as response:
-        data = json.load(response)
+def release_info(data):
+    """GitHub 发布的 JSON -> {tag, version, notes, url, prerelease, assets: {文件名: 下载地址}}。"""
     return {
         "tag": data.get("tag_name", ""),
         "version": data.get("tag_name", "").lstrip("vV"),
         "notes": data.get("body") or "",
         "url": data.get("html_url") or RELEASES_PAGE,
+        "prerelease": bool(data.get("prerelease")),
         "assets": {a["name"]: a["browser_download_url"] for a in data.get("assets", [])},
     }
+
+
+def pick_release(releases):
+    """Beta 计划：发布列表（GitHub 的 JSON）里版本号最大的那个，预发布也算；一样大时要正式版。
+
+    只看 v 加数字开头的 tag：数据的发布（lm-…、nnlm-…）也是预发布，不是新版本。草稿不算。没有合适的返回 None。"""
+    best = None
+    for data in releases:
+        tag = data.get("tag_name") or ""
+        if data.get("draft") or not re.fullmatch(r"[vV]\d+(\.\d+)*", tag):
+            continue
+        key = (parse_version(tag), not data.get("prerelease"))
+        if best is None or key > best[0]:
+            best = (key, data)
+    return release_info(best[1]) if best else None
+
+
+def beta_updates(values=None):
+    """设置里开了 Beta 计划（接收预发布版）。"""
+    if values is None:
+        values, _ = read_config()
+    return values.get("BetaUpdates") == "True"
+
+
+def fetch_latest(beta=None):
+    """GitHub 上最新的正式版；Beta 计划开着时是最新的版本（预发布也算）。beta 不给时按设置。"""
+    if beta is None:
+        beta = beta_updates()
+    if beta:
+        with http_open(RELEASES_API, timeout=20) as response:
+            picked = pick_release(json.load(response))
+        if picked:
+            return picked
+    with http_open(RELEASE_API, timeout=20) as response:
+        return release_info(json.load(response))
 
 
 def is_newer(release):
@@ -2489,7 +2526,7 @@ def background_check():
     if time.time() - state.get("checked", 0) < CHECK_INTERVAL:
         return 0
     try:
-        release = fetch_latest()
+        release = fetch_latest(beta_updates(values))
     except Exception:  # 没网、被限流：下次再说
         return 0
     state["checked"] = time.time()
@@ -2512,7 +2549,8 @@ def background_check():
     def shown():  # 同一版本只提醒一次；发不出去的下次再发
         state["notified"] = release["tag"]
         write_update_state(state)
-    chosen = notify(f"WowType {release['version']} 可以更新了",
+    beta = "（预发布）" if release.get("prerelease") else ""
+    chosen = notify(f"WowType {release['version']}{beta} 可以更新了",
                     f"当前是 {current_version()}。打开设置可以看更新内容，{hint}。",
                     [("open", "查看更新"), ("default", "查看更新")], shown=shown)
     if chosen in ("open", "default"):
@@ -3497,6 +3535,14 @@ def restart_self_test():
     assert addon_version_from(None, "?") is None
     assert not restart_needed("0.4.1", "0.4.1")
     assert restart_needed("0.4.0", "0.4.1") and restart_needed("0.4.2", "0.4.1")  # 降级也要重启
+    # Beta 计划：版本号最大的（预发布也算），一样大要正式版；数据的发布（nnlm-…）、草稿不算
+    rel = lambda tag, pre=False, draft=False: {"tag_name": tag, "prerelease": pre, "draft": draft, "assets": []}
+    assert pick_release([rel("v0.4.0"), rel("v0.5.0", True), rel("nnlm-2026.11.17", True)])["tag"] == "v0.5.0"
+    assert pick_release([rel("v0.5.0", True), rel("v0.5.0")])["prerelease"] is False
+    assert pick_release([rel("v0.4.0"), rel("v0.6.0", draft=True), rel("lm-2026.11.09", True)])["version"] == "0.4.0"
+    assert pick_release([rel("v0.10.0"), rel("v0.9.9", True)])["tag"] == "v0.10.0"
+    assert pick_release([rel("nnlm-2026.11.17", True)]) is None and pick_release([]) is None
+    assert release_info(rel("v0.5.0", True))["prerelease"] and not beta_updates({}) and beta_updates({"BetaUpdates": "True"})
     assert restart_needed("", "0.4.1")  # 没有 Version 的旧插件
     assert not restart_needed(None, "0.4.1")  # 插件没在跑、总线连不上：说不清，不提醒
     # 源码直接跑（版本号还是占位串）。占位串拼出来写：安装时 configure_file 会把字面上的占位串全换成真实版本号，
@@ -6394,6 +6440,12 @@ class SettingsWindow(Adw.ApplicationWindow):
         check = self.make_switch("CheckUpdate", "自动检查更新", "有新版本时发通知")
         self.add_info(check, "切到 WowType 时在后台检查，最多一小时一次。")
         auto.add(check)
+        beta = self.make_switch("BetaUpdates", "Beta 计划", "也接收预发布版的更新")
+        self.add_info(beta, "预发布版（pre-release）先带上新功能给想尝鲜的人试，可能不稳定。"
+                            "关掉以后已经装上的预发布版不会退回，等下一个正式版出来再提示更新。")
+        # 开关一换就按新的规矩再查一次
+        beta.connect("notify::active", lambda _r, _p: self.quiet_switch or self.on_check_update())
+        auto.add(beta)
         page.add(auto)
         return page
 
@@ -6404,7 +6456,7 @@ class SettingsWindow(Adw.ApplicationWindow):
 
         def work():
             try:
-                release = fetch_latest()
+                release = fetch_latest(self.values.get("BetaUpdates") == "True")
                 files, reason = plan_update(release) if is_newer(release) else ([], "")
                 result = (release, files, reason, None)
             except Exception as e:  # noqa: BLE001  网络错误各式各样
@@ -6427,7 +6479,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         write_update_state(state)
         newer = is_newer(release)
         if newer:
-            self.latest_row.set_title(f"有新版本 {release['version']}")
+            self.latest_row.set_title(f"有新版本 {release['version']}" + ("（预发布）" if release.get("prerelease") else ""))
             self.latest_row.set_subtitle("")
         elif development_build():
             # 开发版不说「已经是最新」：它可能在最新正式版之前，也可能之后

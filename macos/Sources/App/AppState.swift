@@ -466,8 +466,9 @@ final class AppState {
         noteLatest(state.latest)
         guard AppUpdate.due(state, now: Int64(Date().timeIntervalSince1970)) else { return }
         updateChecking = true
+        let beta = config.betaUpdates
         DispatchQueue.global(qos: .utility).async {
-            let release = try? UpdateInstaller.fetchLatest(supportDir: dir)
+            let release = try? UpdateInstaller.fetchLatest(supportDir: dir, beta: beta)
             DispatchQueue.main.async {
                 self.updateChecking = false
                 guard let release else { return }

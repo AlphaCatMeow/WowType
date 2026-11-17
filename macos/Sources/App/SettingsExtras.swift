@@ -173,6 +173,8 @@ final class UpdateModel: ObservableObject {
     let supportDir: URL
     /// 交给 installer 之前调（SettingsModel 设成 save：设置窗口会被停掉，没写的设置先写）
     var beforeInstall: () -> Void = {}
+    /// Beta 计划开着没有（SettingsModel 设成读设置里的 BetaUpdates）
+    var beta: () -> Bool = { false }
     private var control: DownloadControl?
     private var watch: Timer?
 
@@ -196,7 +198,9 @@ final class UpdateModel: ObservableObject {
     var busy: Bool { downloadProgress != nil || installing }
 
     var title: String {
-        if hasUpdate, let latest = latestVersion { return "有新版本 \(latest)" }
+        if hasUpdate, let latest = latestVersion {
+            return "有新版本 \(latest)" + (release?.prerelease == true ? "（预发布）" : "")
+        }
         return "当前版本 \(appVersion)"
     }
 
@@ -222,8 +226,9 @@ final class UpdateModel: ObservableObject {
         checking = true
         error = nil
         let supportDir = self.supportDir
+        let beta = self.beta()
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let result = Result { try UpdateInstaller.fetchLatest(supportDir: supportDir) }
+            let result = Result { try UpdateInstaller.fetchLatest(supportDir: supportDir, beta: beta) }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.checking = false

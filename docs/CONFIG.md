@@ -137,7 +137,7 @@ InitialMode=Chinese
 Traditional=False
 SelectKeys=Off
 PickChar=True
-Association=True
+Association=False
 DateTime=True
 Calculator=True
 Toolbar=True
@@ -162,6 +162,7 @@ TranslateLocalModel=
 TranslateLlamaServer=
 TranslateIdleMinutes=5
 CheckUpdate=True
+BetaUpdates=False
 Lexicon=
 ```
 
@@ -170,13 +171,13 @@ Lexicon=
 | `CandidateLayout` | `Horizontal` 横排、`Vertical` 竖排 |
 | `ArrowKeys` | 打字途中方向键做什么（#129），设置界面里叫「方向键」：`Candidates`「都用来选词」（默认），跟着候选排列，横排 `←` `→` 选词、`↑` 上一页、`↓` 展开更多候选，竖排 `↑` `↓` 选词、`←` `→` 翻页；`Caret`「左右键移动光标」，横排竖排都是 `↑` `↓` 选词（到了一页的两头接着翻页），`←` `→` 在拼音里移动光标：打的字母插在光标处，退格删光标前一个，`Home`、`End`、`Delete` 也管光标，到了两头再按什么也不做；方向键不翻页，翻页用 `PgUp` `PgDn` 和翻页键，横排也不展开面板。双拼时光标在中间，编辑区显示打的键；「译」里拼音在原文框里，没有光标 |
 | `PageSize` | 每页候选个数，3–9 |
-| `Fuzzy`、`TypoCorrection`、`Traditional`、`DateTime`、`Calculator`、`Toolbar`、`ClipboardHistory`、`Voice`、`VoiceCopy`、`EmojiSuggest`、`Translate`、`TranslateFormal`、`CheckUpdate` | `True` / `False` |
+| `Fuzzy`、`TypoCorrection`、`Traditional`、`DateTime`、`Calculator`、`Toolbar`、`ClipboardHistory`、`Voice`、`VoiceCopy`、`EmojiSuggest`、`Translate`、`TranslateFormal`、`CheckUpdate`、`BetaUpdates` | `True` / `False` |
 | `AutoSpace`、`AutoSpaceLetters`、`AutoSpaceDigits` | 中英文之间自动加空格：总开关（默认关）、汉字和字母之间、汉字和数字之间。要应用报告光标前的文字才生效（终端等不支持），密码、网址、邮箱输入框不加 |
 | `FuzzyZh`、`FuzzyCh`、`FuzzySh`、`FuzzyNL`、`FuzzyFH`、`FuzzyRL`、`FuzzyAn`、`FuzzyEn`、`FuzzyIn`、`FuzzyIan`、`FuzzyUan`、`FuzzyUn`、`FuzzyAnAi`、`FuzzyHuangWang`、`FuzzyUnIong`、`FuzzyEngOng` | 模糊音的各组（z=zh、c=ch、s=sh、n=l、f=h、r=l、an=ang、en=eng、in=ing、ian=iang、uan=uang、un=ong、an=ai、huang=wang、un=iong、eng=ong），`Fuzzy` 打开时才生效 |
 | `SelectKeys` | 分号、引号选词：`Off`、`Semicolon`（`;` 选第 2 个）、`SemicolonQuote`（再加 `'` 选第 3 个，引号不再当隔音符） |
 | `RareExtChars` | 也出 CJK 扩展 B 区及以后的单字（比如 `hou` 的 𠯜），默认关：常见中文字体（Noto CJK、思源、苹方）都没有这些字，列出来是方块。打开前先装能显示它们的字体，比如 Ubuntu / Debian 的 `fonts-hanazono`。通用规范汉字表里的扩展区字（𬭩、𫚔，约 200 个，常见字体都有）和含这些字的词（𩽾𩾌）不受这个开关影响 |
 | `PickChar` | 以词定字：打拼音时 `[` 上屏光标处候选的第一个字、`]` 上屏最后一个字，默认开；翻页键设成 `[ ]` 时让给翻页 |
-| `Association` | 联想：选词、整句上屏以后给出一页常跟在后面的词（词级模型里的，加上自己用过的搭配），默认开。按 `Tab` 进联想行，再用空格、回车、数字上屏，`Esc` 退出，也能用鼠标点；没按 `Tab` 时接着打字、数字、标点、空格、回车都照常（数字不选联想，中文后面常接着打数字）。五笔、互译、密码框里不出 |
+| `Association` | 联想：选词、整句上屏以后给出一页常跟在后面的词（词级模型里的，加上自己用过的搭配）。按 `Tab` 进联想行，再用空格、回车、数字上屏，`Esc` 退出，也能用鼠标点；没按 `Tab` 时接着打字、数字、标点、空格、回车都照常（数字不选联想，中文后面常接着打数字）。五笔、互译、密码框里不出。默认关（0.5.0 预发布时默认开），在设置的「输入」页打开 |
 | `InputScheme` | 输入方案，设置界面里是「输入方案」的单选：`Quanpin` 拼音（默认）、`Shuangpin` 双拼、`Wubi86` 五笔 86。五笔要数据目录里有五笔码表 `wubi86.tsv`（安装包里带着，查找顺序和词库一样，环境变量是 `WOWTYPE_WUBI`）；没有时设置里「五笔输入」灰掉，配置文件里写了 `Wubi86` 的照全拼打，候选框上方提示没有码表。五笔怎么打见 [README 的五笔](../README.md#五笔) |
 | `Shuangpin` | 0.3.12 及以前的双拼开关，已经不是设置项。文件里没有 `InputScheme` 时，`Shuangpin=True` 读成 `InputScheme=Shuangpin`；有 `InputScheme` 时不看它。三端存盘时都不写它，下次存盘这一行就没了 |
 | `WubiAutoCommit` | 五笔打满四码、只有一个字词时直接上屏，默认 `True`。只在五笔时显示 |
@@ -257,6 +258,9 @@ macOS 还没有的功能不列；Linux 单独一页的「更新」在「常规�
 「有新版本 …，下载并安装…」，点它打开设置窗口「常规」页；设置窗口打开时也查。不弹系统通知（输入法没有开发者签名，通知要先授权，打字时弹框也打扰人）。
 「下载并安装」下载 `WowType-<版本>-macos.pkg` 和同一页的 `SHA256SUMS`，校验后交给系统的 `installer` 只装给当前用户（不要密码，和一键安装脚本一样），
 装的时候输入法和设置窗口会重启一下，装好后设置窗口自动重新打开；失败时写原因，给发布页链接。
+`BetaUpdates`（默认 `False`，设置里「更新」下的「Beta 计划」，Linux 和 macOS 都有）：检查更新也算 GitHub 上的预发布版（pre-release），
+新功能先到、可能不稳定。开着时查最近 30 个发布，挑 `v` 加数字的 tag 里版本号最大的（数据的发布 `lm-…`、`nnlm-…` 不算，一样大时要正式版）；
+关着时只认最新正式版（`releases/latest`）。关掉以后已经装上的预发布版不会退回，等版本号更大的正式版出来再提示。
 
 设置窗口「输入」页的**整句增强模型**：安装包里自带 WowType 自己训的 `nnlm.bin`，不用设置。也可以从微信输入法 macOS 版的安装包（`.zip`）、
 装好的 `WeType.app` 或 `nlrgpt2_nnlm.bin` 本身导入微信的（见下面的[整句增强模型](#数据文件)，效果相近），

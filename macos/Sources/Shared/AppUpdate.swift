@@ -31,6 +31,44 @@ public enum AppUpdate {
         return ("0"..."9").contains(first)
     }
 
+    /// GitHub 发布列表里的一项（Beta 计划挑版本用）
+    public struct Listed: Equatable {
+        public let tag: String
+        public let prerelease: Bool
+        public let draft: Bool
+
+        public init(tag: String, prerelease: Bool = false, draft: Bool = false) {
+            self.tag = tag
+            self.prerelease = prerelease
+            self.draft = draft
+        }
+    }
+
+    /// Beta 计划：发布列表里版本号最大的那个的下标，预发布也算，一样大时要正式版；没有合适的是 nil。
+    /// 只看 v 加数字开头的 tag：数据的发布（lm-…、nnlm-…）也是预发布，不是新版本。草稿不算。和 Linux 的 pick_release 一样
+    public static func pickNewest(_ releases: [Listed]) -> Int? {
+        var best: Int?
+        for (i, r) in releases.enumerated() where !r.draft && isAppTag(r.tag) {
+            guard let b = best else {
+                best = i
+                continue
+            }
+            let c = LexiconPack.compareVersions(r.tag, releases[b].tag)
+            if c > 0 || (c == 0 && releases[b].prerelease && !r.prerelease) {
+                best = i
+            }
+        }
+        return best
+    }
+
+    /// v0.5.0 这样的 tag（v 加数字和点）
+    static func isAppTag(_ tag: String) -> Bool {
+        guard tag.hasPrefix("v") || tag.hasPrefix("V") else { return false }
+        let rest = tag.unicodeScalars.dropFirst()
+        guard let first = rest.first, ("0"..."9").contains(first), rest.last != "." else { return false }
+        return rest.allSatisfy { ("0"..."9").contains($0) || $0 == "." }
+    }
+
     /// latest 比现在装的 current 新。current 不是正式版（dev）时不算：开发版不提示更新（和 Linux 一样）
     public static func isNewer(_ latest: String, than current: String) -> Bool {
         isRelease(current) && isRelease(latest) && LexiconPack.compareVersions(latest, current) > 0

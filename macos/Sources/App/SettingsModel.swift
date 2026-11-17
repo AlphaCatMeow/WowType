@@ -50,6 +50,10 @@ final class SettingsModel: ObservableObject {
             if config != oldValue && !quiet {
                 scheduleSave()
             }
+            // Beta 计划一换就按新的规矩再查一次更新
+            if config.betaUpdates != oldValue.betaUpdates && !quiet {
+                updater.check()
+            }
         }
     }
     @Published private(set) var words: [CustomWords.Entry] = []
@@ -124,6 +128,7 @@ final class SettingsModel: ObservableObject {
         words = CustomWords(text: readText(state.customWordsPath)).entries
         nnlm.toast = { [weak self] text in self?.showToast(text) }
         updater.beforeInstall = { [weak self] in self?.save() }
+        updater.beta = { [weak self] in self?.config.betaUpdates ?? false }
         // 打开设置窗口时查一次更新（设置里关了自动检查就等用户点「检查更新」）
         if loaded.checkUpdate {
             updater.check()

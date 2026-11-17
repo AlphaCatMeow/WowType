@@ -398,42 +398,53 @@ void runCases(Instance &instance) {
           "没在打字时这些键照常交给应用");
     // 上屏后紧接着按退格：刚才那次上屏学到的退回去（选了第二个又删掉，下次还是原来的第一个）；
     // 不删的话选过的就排到前面
-    fresh(ic.get());
-    type(ic.get(), "xian");
     {
-        // 挑第一页里第二个以后的第一个多字词（单字选过只放到第二，看不出来）
-        const auto before = page(ic.get());
+        // 挑第一页里第二个以后的第一个多字词（单字选过只放到第二，看不出来）；词库不同第一页不同
+        // （新词库里 xian 第一页全是单字），挨个试，用第一个有的
+        std::string input;
+        std::vector<std::string> before;
         std::size_t pick = 1;
-        while (pick < before.size() && fcitx::utf8::length(before[pick]) < 2) {
-            ++pick;
+        bool found = false;
+        for (const char *candidate : {"xian", "shiyan", "gongshi", "jiaoyu"}) {
+            fresh(ic.get());
+            type(ic.get(), candidate);
+            before = page(ic.get());
+            pick = 1;
+            while (pick < before.size() && fcitx::utf8::length(before[pick]) < 2) {
+                ++pick;
+            }
+            found = pick < before.size() && pick < 9;
+            if (found) {
+                input = candidate;
+                break;
+            }
         }
-        const bool found = pick < before.size() && pick < 9;
         const std::string word = found ? before[pick] : "";
         const std::string digit = std::to_string(pick + 1);
         bool ok = found;
         for (int i = 0; i < 3 && ok; ++i) {
             fresh(ic.get());
-            type(ic.get(), "xian" + digit + "<bs>");
+            type(ic.get(), input + digit + "<bs>");
             ok = ic->committed == word;
         }
         fresh(ic.get());
-        type(ic.get(), "xian");
+        type(ic.get(), input);
         const auto after = page(ic.get());
         check(ok && !after.empty() && after[0] == before[0],
-              "选了 " + word + " 又马上退格（三次）：xian 的第一个还是 " + (before.empty() ? "" : before[0]) +
+              "选了 " + word + " 又马上退格（三次）：" + input + " 的第一个还是 " + (before.empty() ? "" : before[0]) +
                   "，实际 " + join(after));
         fresh(ic.get());
-        type(ic.get(), "xian" + digit);
+        type(ic.get(), input + digit);
         fresh(ic.get());
-        type(ic.get(), "xian");
+        type(ic.get(), input);
         const auto kept = page(ic.get());
         check(found && !kept.empty() && kept[0] == word,
-              "不退格就记着：xian 选过的 " + word + " 排第一，实际 " + join(kept));
+              "不退格就记着：" + input + " 选过的 " + word + " 排第一，实际 " + join(kept));
         // 收拾：忘掉（后面的用例不受影响）
         send(ic.get(), Key(FcitxKey_Delete, KeyState::Ctrl));
     }
 
-    // 上屏以后的联想（Association，默认开）：没有词级模型时只有学到的搭配。你好 -> 中国 上屏一次，
+    // 上屏以后的联想（Association，默认关）：没有词级模型时只有学到的搭配。你好 -> 中国 上屏一次，
     // 再打你好：候选框是联想（中国），上方提示「联想」，不画序号；数字、字母、空格照常，Tab 进联想行再选
     fresh(ic.get());
     type(ic.get(), "nihao<sp>zhongguo<sp>");
@@ -443,6 +454,12 @@ void runCases(Instance &instance) {
             const std::string aux = ic->inputPanel().auxUp().toString();
             return aux.find("联想") != std::string::npos ? out : std::vector<std::string>{};
         };
+        auto *associationAddon = instance.addonManager().addon("wowtype");
+        fresh(ic.get());
+        type(ic.get(), "nihao<sp>");
+        check(associations().empty() && page(ic.get()).empty(), "联想默认关：上屏你好以后什么都不出");
+        setenv("WOWTYPE_ASSOCIATION", "1", 1);
+        associationAddon->reloadConfig();
         const auto hasZhongguo = [](const std::vector<std::string> &items) {
             return std::find(items.begin(), items.end(), "中国") != items.end();
         };
@@ -498,6 +515,8 @@ void runCases(Instance &instance) {
             clicked->candidate(static_cast<int>(hit - items.begin())).select(ic.get());
         }
         check(ic->committed == "你好中国", "鼠标点联想上屏，实际 " + ic->committed);
+        unsetenv("WOWTYPE_ASSOCIATION");
+        associationAddon->reloadConfig();
     }
     fresh(ic.get());
     // 单音节不出拆开音节的句首词（dan -> 大）

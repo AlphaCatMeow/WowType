@@ -2075,6 +2075,17 @@ do {
     check(AppUpdate.version(tag: "") == nil && AppUpdate.version(tag: "v") == nil && AppUpdate.version(tag: "v1/../x") == nil
           && AppUpdate.version(tag: "v1 2") == nil && AppUpdate.version(tag: "-1") == nil, "不像版本号的 tag 不认")
     check(AppUpdate.packageName(version: "0.4.1") == "WowType-0.4.1-macos.pkg", "macOS 安装包的名字")
+    // Beta 计划：版本号最大的（预发布也算），一样大要正式版；数据的发布（nnlm-…）、草稿不算
+    typealias L = AppUpdate.Listed
+    check(AppUpdate.pickNewest([L(tag: "v0.4.0"), L(tag: "v0.5.0", prerelease: true),
+                                L(tag: "nnlm-2026.11.17", prerelease: true)]) == 1, "Beta：预发布的 0.5.0 比 0.4.0 新")
+    check(AppUpdate.pickNewest([L(tag: "v0.5.0", prerelease: true), L(tag: "v0.5.0")]) == 1, "Beta：一样大要正式版")
+    check(AppUpdate.pickNewest([L(tag: "v0.4.0"), L(tag: "v0.6.0", draft: true), L(tag: "lm-2026.11.09", prerelease: true)]) == 0,
+          "Beta：草稿、数据的发布不算")
+    check(AppUpdate.pickNewest([L(tag: "v0.9.9", prerelease: true), L(tag: "v0.10.0")]) == 1, "Beta：按数字段比")
+    check(AppUpdate.pickNewest([L(tag: "nnlm-2026.11.17", prerelease: true)]) == nil && AppUpdate.pickNewest([]) == nil,
+          "Beta：没有合适的")
+    check(!WowtypeConfig().betaUpdates && WowtypeConfig.parse("BetaUpdates=True\n").betaUpdates, "BetaUpdates 默认关、读得出来")
     check(AppUpdate.isNewer("0.4.1", than: "0.4.0") && AppUpdate.isNewer("0.10.0", than: "0.9.9")
           && AppUpdate.isNewer("0.4.0.1", than: "0.4.0"), "新版本")
     check(!AppUpdate.isNewer("0.4.0", than: "0.4.0") && !AppUpdate.isNewer("0.3.12", than: "0.4.0"), "一样的、旧的不算新版本")
@@ -2152,11 +2163,18 @@ if getenv("WOWTYPE_EXPECT_FULL_CHARS") != nil {
     }
 }
 
+check(!WowtypeConfig().association, "联想默认关")
 do {
-    // 上屏以后的联想（默认开；这个词库没有词级模型，只有学到的搭配）：你好、开心各上屏一次学到 你好 -> 开心，
+    let (c, client) = fresh()
+    type(c, "nihao ")
+    type(c, "kaixin ")
+    type(c, "nihao ")
+    check(client.page == nil, "联想默认关：学过 你好 -> 开心，上屏你好以后也不出", "\(String(describing: client.page))")
+}
+withConfig({ $0.association = true }) { c, client in
+    // 上屏以后的联想（打开以后；这个词库没有词级模型，只有学到的搭配）：你好、开心各上屏一次学到 你好 -> 开心，
     // 再打你好就联想出开心。没进联想行不画序号、数字交给应用；Tab 进联想行再按空格上屏。
     // 放在最后：引擎是大家共用的，学到的搭配会让后面的用例上屏你好以后也出联想
-    let (c, client) = fresh()
     type(c, "nihao ")
     type(c, "kaixin ")
     check(client.committed == "你好开心", "你好、开心各上屏一次", client.committed)

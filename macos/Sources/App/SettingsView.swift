@@ -304,6 +304,11 @@ private struct UpdateGroup: View {
             .rowPadding()
             RowDivider()
             SwitchRow(title: "自动检查更新", subtitle: "有新版本时输入法菜单里提示", isOn: $model.config.checkUpdate)
+            RowDivider()
+            SwitchRow(title: "Beta 计划", subtitle: "也接收预发布版的更新",
+                      info: "预发布版（pre-release）先带上新功能给想尝鲜的人试，可能不稳定。"
+                          + "关掉以后已经装上的预发布版不会退回，等下一个正式版出来再提示更新。",
+                      isOn: $model.config.betaUpdates)
         }
     }
 }

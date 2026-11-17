@@ -111,7 +111,7 @@ public struct WowtypeConfig: Equatable {
     public var selectKeys = SelectKeys.off
     public var pickChar = true
     /// 联想：上屏以后给出常跟在后面的词（Tab 进联想行再选；数字、空格照常）
-    public var association = true
+    public var association = false
     public var dateTime = true
     public var calculator = true
     public var emojiSuggest = true
@@ -137,6 +137,8 @@ public struct WowtypeConfig: Equatable {
     public var translateModeKey: Shortcut?
     /// 自动检查更新：输入法每天最多查一次 GitHub 上的新版本（有新版时输入法菜单里多一项），设置窗口打开时也查
     public var checkUpdate = true
+    /// Beta 计划：检查更新也算 GitHub 上的预发布版（pre-release）
+    public var betaUpdates = false
     /// 词库文件，空串用安装包里的雾凇词库；文件不在也用自带的
     public var lexicon = ""
     /// 候选字号（磅），只有 macOS 有：Linux 上字号跟着 fcitx5 主题
@@ -274,7 +276,7 @@ public struct WowtypeConfig: Equatable {
         "Traditional",
         "PunctuationStyle", "DateTime", "Calculator", "EmojiSuggest", "AutoSpace", "AutoSpaceLetters",
         "AutoSpaceDigits", "Lexicon", "Toolbar", "ClipboardHistory", "Voice", "VoiceKey", "VoiceCopy", "EmojiKey",
-        "ToggleKey", "TranslateModeKey", "CheckUpdate",
+        "ToggleKey", "TranslateModeKey", "CheckUpdate", "BetaUpdates",
         "Translate", "TranslateTarget", "TranslateBaseUrl", "TranslateModel", "TranslateFormal", "TranslateLocal",
         "TranslateLocalModel", "TranslateLlamaServer", "TranslateIdleMinutes",
     ]
@@ -295,7 +297,7 @@ public struct WowtypeConfig: Equatable {
         "AutoSpace": \.autoSpace, "AutoSpaceLetters": \.autoSpaceLetters, "AutoSpaceDigits": \.autoSpaceDigits,
         "Toolbar": \.toolbar, "ClipboardHistory": \.clipboardHistory, "Voice": \.voice, "VoiceCopy": \.voiceCopy,
         "Translate": \.translate, "TranslateFormal": \.translateFormal, "TranslateLocal": \.translateLocal,
-        "CheckUpdate": \.checkUpdate,
+        "CheckUpdate": \.checkUpdate, "BetaUpdates": \.betaUpdates,
     ]
 
     /// 按文件里的写法改一项。不认识的键、认不出的值不管（保持原值）。
@@ -613,6 +615,8 @@ public struct WowtypeConfig: Equatable {
         TranslateModeKey=\(d.translateModeKey?.name ?? "")
         # 自动检查更新：输入法每天最多查一次 GitHub 上的新版本，有新版时输入法菜单里多一项；设置窗口打开时也查
         CheckUpdate=\(b(d.checkUpdate))
+        # Beta 计划：检查更新也算预发布版（新功能先到，可能不稳定）；关掉以后装上的预发布版不退回，等正式版追上来
+        BetaUpdates=\(b(d.betaUpdates))
 
         # 词库文件（拼音<TAB>词<TAB>频次），留空用自带的雾凇词库；文件不在也用自带的
         Lexicon=
