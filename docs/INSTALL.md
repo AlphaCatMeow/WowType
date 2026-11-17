@@ -141,8 +141,9 @@ scripts/make-data.sh "" dist/data
 scripts/make-wubi.sh "" dist/data
 ```
 
-词库脚本下载并转换 rime-ice，合并项目热词，下载经过固定 SHA256 校验的语言模型。
-输出包含 `lexicon.tsv`、`english.txt`、`words.lm` 和许可证、来源信息。
+词库脚本下载并转换 rime-ice，合并项目热词，下载经过固定 SHA256 校验的语言模型和整句增强模型。
+输出包含 `lexicon.tsv`、`english.txt`、`words.lm`、`nnlm.bin` 和许可证、来源信息
+（整句增强模型下载不到时只警告、不带 `nnlm.bin`，见 [DATA.md §3.5](DATA.md#35-wowtype-自己的整句增强模型-nnlmbin)）。
 五笔脚本按钉死的提交下载 rime-wubi（LGPL-3.0），核对 SHA256 后生成五笔码表 `wubi86.tsv`
 和 `WUBI-LICENSE`、`WUBI-AUTHORS`、`WUBI-SOURCE.txt`；各发行版的打包脚本都要这几个文件。
 已有 rime-ice checkout 时可传入其路径，避免重复下载。
@@ -174,15 +175,17 @@ cargo test --locked -p wowtype-core
 cmake -S fcitx5-addon -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 cmake --build build -j"$(nproc)"
 sudo cmake --install build
-sudo install -m755 target/release/wowtype-check target/release/wowtype-show /usr/bin/
-install -Dm644 -t "${XDG_DATA_HOME:-$HOME/.local/share}/wowtype" \
-  dist/data/lexicon.tsv dist/data/english.txt dist/data/words.lm dist/data/wubi86.tsv
 ```
 
 CMake 使用 Fcitx 5 导出的安装路径：Debian / Ubuntu 通常为 `/usr/lib/<multiarch>/fcitx5`，
 Arch 为 `/usr/lib/fcitx5`，Fedora / openSUSE 为 `/usr/lib64/fcitx5`。
 可用 `pkg-config --variable=libdir Fcitx5Core` 查看本机库目录。
-设置界面、输入法注册文件和简繁映射表由 CMake 一起安装；真实词库放入当前用户的数据目录。
+设置界面、输入法注册文件、简繁映射表、自检工具（`wowtype-check`、`wowtype-show`）和第 2 节生成的
+`dist/data` 里的词库、英文词表、语言模型、五笔码表都由 `cmake --install` 装好（装在 `/usr/share/wowtype/`），
+不用再往用户目录拷文件。以后更新数据：重新跑第 2 节的脚本，再 `sudo cmake --install build`。
+数据放在别处时加 `-DWOWTYPE_DATA_DIR=<目录>`。
+以前按旧说明拷进 `~/.local/share/wowtype/` 的那几个文件不用管，插件认得出来、会改用新装的（见
+[CONFIG.md](CONFIG.md) 的「数据文件」）。
 
 需要可由包管理器卸载的包时，Debian / Ubuntu 可用
 `scripts/package-deb.sh engine "$version" dist/pkg`，Fedora 可用
@@ -199,7 +202,7 @@ cmake --build build-text -j"$(nproc)"
 sudo cmake --install build-text
 ```
 
-这条构建路径不需要 ALSA 开发包；后续仍按通用步骤安装词库和自检工具。
+这条构建路径不需要 ALSA 开发包；词库和自检工具同样由 `cmake --install` 装好。
 如果不需要设置界面，再添加 `-DWOWTYPE_INSTALL_SETTINGS=OFF`，使用 `fcitx5-configtool` 添加输入法。
 维护开发环境时可用 `scripts/build-linux.sh --addon` 统一构建与测试。
 真实词库存在时会运行按键测试，测试失败会直接返回非零状态。
@@ -234,8 +237,11 @@ KDE Wayland 使用其虚拟键盘设置，避免重复启动。
 添加输入法：
 
 ```bash
-wowtype-config --add-to-group --restart
+wowtype-config --setup
 ```
+
+（或者打开「WowType 设置」，点第一页的「一键设置」。fcitx5 还没在跑时它会在有 im-config 的系统上问你要不要切到 fcitx5，
+fcitx5 在跑但还没载入 WowType 时问你要不要重启它。）
 
 或打开 `fcitx5-configtool`，取消“仅显示当前语言”，搜索并添加 WowType。
 按 `Ctrl+Space` 切换，输入 `nihao`。重启 Fcitx 5 后，Chromium / Electron 程序可能需要退出后重新打开。
@@ -329,6 +335,23 @@ i18n.inputMethod.fcitx5.settings.globalOptions = {
 NixOS 模块的同名选项（`i18n.inputMethod.fcitx5.settings.globalOptions`，写法相同）写的是 `/etc/xdg/fcitx5/config`，
 只在没有 `~/.config/fcitx5/config` 时才生效；已经有这个文件时，用设置界面的开关就行（它能写这个文件）。
 fcitx5 其他全局快捷键（`EnumerateForwardKeys` 等）里也不要放单按的 Shift。
+
+### 维护：先发预发布
+
+`v*` 的 tag 打在 main 上的提交才发成正式版（成为 Latest）；打在别处（比如 pre-release 分支的提交）时，
+发布 job 发成 GitHub 的 pre-release，不发 Telegram、不动 `release` 分支、不开 Nix 词库 PR。
+设置界面和 macOS 的检查更新、`install.sh` 都只认 `releases/latest`，普通用户拿不到预发布；
+自己测时指定版本装（Release 说明的开头有这条命令）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/pre-release/install.sh | WOWTYPE_VERSION=v<版本> bash
+```
+
+测完转正：把 pre-release 合进 main，运行 `gh release edit v<版本> --prerelease=false --latest`，
+再照下面一节手动更新 `release` 分支；这一版换了词库时，下载这一版 Release 里的 `wowtype-data-rime-ice-*.tar.gz`，
+在本机运行 `GITHUB_REPOSITORY=Gloridust/WowType GITHUB_REF_NAME=v<版本> GH_TOKEN=$(gh auth token) .github/scripts/nix-data-pr.sh <那个文件>`
+开 Nix 词库的 PR。
+要改代码就打下一个版本号，别挪已经发出去的 tag。
 
 ### 维护：发版时的 Nix 相关步骤
 

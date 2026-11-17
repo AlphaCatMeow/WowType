@@ -137,6 +137,7 @@ InitialMode=Chinese
 Traditional=False
 SelectKeys=Off
 PickChar=True
+Association=False
 DateTime=True
 Calculator=True
 Toolbar=True
@@ -161,6 +162,7 @@ TranslateLocalModel=
 TranslateLlamaServer=
 TranslateIdleMinutes=5
 CheckUpdate=True
+BetaUpdates=False
 Lexicon=
 ```
 
@@ -169,12 +171,13 @@ Lexicon=
 | `CandidateLayout` | `Horizontal` 横排、`Vertical` 竖排 |
 | `ArrowKeys` | 打字途中方向键做什么（#129），设置界面里叫「方向键」：`Candidates`「都用来选词」（默认），跟着候选排列，横排 `←` `→` 选词、`↑` 上一页、`↓` 展开更多候选，竖排 `↑` `↓` 选词、`←` `→` 翻页；`Caret`「左右键移动光标」，横排竖排都是 `↑` `↓` 选词（到了一页的两头接着翻页），`←` `→` 在拼音里移动光标：打的字母插在光标处，退格删光标前一个，`Home`、`End`、`Delete` 也管光标，到了两头再按什么也不做；方向键不翻页，翻页用 `PgUp` `PgDn` 和翻页键，横排也不展开面板。双拼时光标在中间，编辑区显示打的键；「译」里拼音在原文框里，没有光标 |
 | `PageSize` | 每页候选个数，3–9 |
-| `Fuzzy`、`TypoCorrection`、`Traditional`、`DateTime`、`Calculator`、`Toolbar`、`ClipboardHistory`、`Voice`、`VoiceCopy`、`EmojiSuggest`、`Translate`、`TranslateFormal`、`CheckUpdate` | `True` / `False` |
+| `Fuzzy`、`TypoCorrection`、`Traditional`、`DateTime`、`Calculator`、`Toolbar`、`ClipboardHistory`、`Voice`、`VoiceCopy`、`EmojiSuggest`、`Translate`、`TranslateFormal`、`CheckUpdate`、`BetaUpdates` | `True` / `False` |
 | `AutoSpace`、`AutoSpaceLetters`、`AutoSpaceDigits` | 中英文之间自动加空格：总开关（默认关）、汉字和字母之间、汉字和数字之间。要应用报告光标前的文字才生效（终端等不支持），密码、网址、邮箱输入框不加 |
 | `FuzzyZh`、`FuzzyCh`、`FuzzySh`、`FuzzyNL`、`FuzzyFH`、`FuzzyRL`、`FuzzyAn`、`FuzzyEn`、`FuzzyIn`、`FuzzyIan`、`FuzzyUan`、`FuzzyUn`、`FuzzyAnAi`、`FuzzyHuangWang`、`FuzzyUnIong`、`FuzzyEngOng` | 模糊音的各组（z=zh、c=ch、s=sh、n=l、f=h、r=l、an=ang、en=eng、in=ing、ian=iang、uan=uang、un=ong、an=ai、huang=wang、un=iong、eng=ong），`Fuzzy` 打开时才生效 |
 | `SelectKeys` | 分号、引号选词：`Off`、`Semicolon`（`;` 选第 2 个）、`SemicolonQuote`（再加 `'` 选第 3 个，引号不再当隔音符） |
 | `RareExtChars` | 也出 CJK 扩展 B 区及以后的单字（比如 `hou` 的 𠯜），默认关：常见中文字体（Noto CJK、思源、苹方）都没有这些字，列出来是方块。打开前先装能显示它们的字体，比如 Ubuntu / Debian 的 `fonts-hanazono`。通用规范汉字表里的扩展区字（𬭩、𫚔，约 200 个，常见字体都有）和含这些字的词（𩽾𩾌）不受这个开关影响 |
 | `PickChar` | 以词定字：打拼音时 `[` 上屏光标处候选的第一个字、`]` 上屏最后一个字，默认开；翻页键设成 `[ ]` 时让给翻页 |
+| `Association` | 联想：选词、整句上屏以后给出一页常跟在后面的词（词级模型里的，加上自己用过的搭配）。按 `Tab` 进联想行，再用空格、回车、数字上屏，`Esc` 退出，也能用鼠标点；没按 `Tab` 时接着打字、数字、标点、空格、回车都照常（数字不选联想，中文后面常接着打数字）。五笔、互译、密码框里不出。默认关（0.5.0 预发布时默认开），在设置的「输入」页打开 |
 | `InputScheme` | 输入方案，设置界面里是「输入方案」的单选：`Quanpin` 拼音（默认）、`Shuangpin` 双拼、`Wubi86` 五笔 86。五笔要数据目录里有五笔码表 `wubi86.tsv`（安装包里带着，查找顺序和词库一样，环境变量是 `WOWTYPE_WUBI`）；没有时设置里「五笔输入」灰掉，配置文件里写了 `Wubi86` 的照全拼打，候选框上方提示没有码表。五笔怎么打见 [README 的五笔](../README.md#五笔) |
 | `Shuangpin` | 0.3.12 及以前的双拼开关，已经不是设置项。文件里没有 `InputScheme` 时，`Shuangpin=True` 读成 `InputScheme=Shuangpin`；有 `InputScheme` 时不看它。三端存盘时都不写它，下次存盘这一行就没了 |
 | `WubiAutoCommit` | 五笔打满四码、只有一个字词时直接上屏，默认 `True`。只在五笔时显示 |
@@ -228,7 +231,7 @@ Lexicon=
 | `WOWTYPE_S2T` | 简繁对照表，默认 `/usr/share/wowtype/s2t.tsv` |
 | `WOWTYPE_USER_DICT`、`WOWTYPE_HISTORY`、`WOWTYPE_CUSTOM` | 自动学到的词、输入习惯、自定义词的文件路径 |
 | `WOWTYPE_VOICE_MODEL_DIR` | 语音模型目录，默认 `~/.local/share/wowtype/wtlocal`（插件和设置界面都认） |
-| `WOWTYPE_NNLM` | 神经语言模型路径，默认 `~/.local/share/wowtype/wetype/nlrgpt2_nnlm.bin` |
+| `WOWTYPE_NNLM` | 整句增强模型（神经语言模型）路径，只用它；不设时先找导入的 `~/.local/share/wowtype/wetype/nlrgpt2_nnlm.bin`，没有再用自带的 `nnlm.bin` |
 | `WOWTYPE_DOMAIN_LM` | 领域词级模型路径，默认数据目录下的 `words.domain.lm`；没有就不混 |
 | `WOWTYPE_NO_UPDATE_CHECK=1` | 不自动检查更新，也不自动打开默认主题 |
 | `WOWTYPE_LOG` | 日志文件路径，默认 `~/.local/state/wowtype/wowtype.log`；`0` 不写 |
@@ -241,15 +244,32 @@ Lexicon=
 
 macOS 上的设置在 `~/Library/Application Support/WowType/wowtype.conf`，**键名、取值、默认值和上面一样**（只有 `EmojiKey` 的默认值不同，见下），Linux 上的文件拷过去就能用。
 点菜单栏里的 WowType 图标 →「WowType 设置…」打开设置窗口（页面和 Linux 的设置界面一样：常规、输入、表情、语音、翻译、自定义词，
-macOS 还没有的功能不列）。窗口只改它认识的键，文件里的注释、不认识的键（检查更新这些）、`[分组]` 原样留着，
+macOS 还没有的功能不列；Linux 单独一页的「更新」在「常规」页里）。窗口只改它认识的键，文件里的注释、不认识的键、`[分组]` 原样留着，
 改过的文件拿回 Linux 照样能用。也可以直接改文件：设置窗口的「文件」菜单 →「用文本编辑打开设置文件」，
-还没有文件时会写出一份全是默认值、带说明的。窗口开着时在别处改了文件，切回窗口会重新读，不会被窗口里的旧值盖掉。
+还没有文件时会写出一份带说明的，每项都是注释掉的默认值（`# PageSize=9`），去掉 `#` 再改值才生效。
+设置窗口只写和默认值不一样的项（就地换掉注释掉的那一行），以后默认值变了，没改过的项跟着变。
+窗口开着时在别处改了文件，切回窗口会重新读，不会被窗口里的旧值盖掉。
 改完下一次按键时生效，不用重启；换了 `Lexicon` 会在后台重新载入词库，载完之前照旧用原来的。
 
-现在认的项：`CandidateLayout`、`ArrowKeys`、`PageSize`、`PageKeys*`、`SelectKeys`、`PickChar`、`Fuzzy` 和 `Fuzzy*` 各组、`TypoCorrection`、`RareExtChars`、
+现在认的项：`CandidateLayout`、`ArrowKeys`、`PageSize`、`PageKeys*`、`SelectKeys`、`PickChar`、`Association`、`Fuzzy` 和 `Fuzzy*` 各组、`TypoCorrection`、`RareExtChars`、
 `InputScheme`、`ShuangpinScheme`、`ShuangpinShowKeys`、`WubiAutoCommit`、`WubiHint`、`ShiftToggle`、`Traditional`、`PunctuationStyle`、`DateTime`、`Calculator`、`EmojiSuggest`、
 `AutoSpace*`、`Lexicon`、`Toolbar`、`ClipboardHistory`、`EmojiKey`、`ToggleKey`、`TranslateModeKey`、`Voice`、`VoiceKey`、`VoiceCopy`、`Translate` 和 `Translate*` 各项，另外有一项只有 macOS 有的 `CandidateFontSize`（候选字号，10–40 磅，默认 17；Linux 上字号跟着 fcitx5 主题）。
-检查更新 macOS 还没做，对应的项写了也不起作用。
+`CheckUpdate`（默认 `True`）：输入法每天最多查一次 GitHub 上的最新正式版（后台，不挡打字），有新版时菜单栏的输入法菜单里多一项
+「有新版本 …，下载并安装…」，点它打开设置窗口「常规」页；设置窗口打开时也查。不弹系统通知（输入法没有开发者签名，通知要先授权，打字时弹框也打扰人）。
+「下载并安装」下载 `WowType-<版本>-macos.pkg` 和同一页的 `SHA256SUMS`，校验后交给系统的 `installer` 只装给当前用户（不要密码，和一键安装脚本一样），
+装的时候输入法和设置窗口会重启一下，装好后设置窗口自动重新打开；失败时写原因，给发布页链接。
+`BetaUpdates`（默认 `False`，设置里「更新」下的「Beta 计划」，Linux 和 macOS 都有）：检查更新也算 GitHub 上的预发布版（pre-release），
+新功能先到、可能不稳定。开着时查最近 30 个发布，挑 `v` 加数字的 tag 里版本号最大的（数据的发布 `lm-…`、`nnlm-…` 不算，一样大时要正式版）；
+关着时只认最新正式版（`releases/latest`）。关掉以后已经装上的预发布版不会退回，等版本号更大的正式版出来再提示。
+
+设置窗口「输入」页的**整句增强模型**：安装包里自带 WowType 自己训的 `nnlm.bin`，不用设置。也可以从微信输入法 macOS 版的安装包（`.zip`）、
+装好的 `WeType.app` 或 `nlrgpt2_nnlm.bin` 本身导入微信的（见下面的[整句增强模型](#数据文件)，效果相近），
+放到 `~/Library/Application Support/WowType/wetype/nlrgpt2_nnlm.bin`，几秒后生效，不用重新登录；导入了就先用它，能删，删掉以后换回自带的。
+导入时只看核心解析得了，不核对版本号、MD5。
+
+「常规」页「帮助」里：「复制诊断信息」把版本、数据文件、设置文件（翻译服务只留主机名，像密钥的值打码）、各模型状态和 WowType 最近两小时的系统日志
+复制到剪贴板，贴到问题里；「卸载 WowType」关掉输入法、从系统里去掉、删掉程序，用户数据（`~/Library/Application Support/WowType`）留着，
+命令行是 `WowType --uninstall`。设置里 `Lexicon` 指的文件在、但读不出来时，输入法改用自带的雾凇词库（文件换过了再试）。
 
 [工具栏](#v--空格工具栏)和表情面板和 Linux 上一样用，不同的是：
 
@@ -267,8 +287,8 @@ macOS 还没有的功能不列）。窗口只改它认识的键，文件里的�
 - 自定义词在同一个目录的 `custom.tsv`，格式和 [Linux 的](#自定义词)一样；菜单里「自定义词…」打开设置窗口的自定义词页
   （加词时自动填拼音，能删、导入、导出），保存后下一次按键时生效。
 - `AutoSpace` 只在应用告诉输入法光标前是什么字时才加（很多应用不告诉，这时不猜）。
-- [互译](#互译)用法和 Linux 一样（单按 Shift 中 → 英 → 译 → 中，原文在候选框顶上，译文写在输入框里）。在 `wowtype.conf` 里写
-  `Translate=True` 和 `TranslateBaseUrl`、`TranslateModel`（设置窗口的「文件」菜单能用文本编辑打开它）；API Key 用菜单里的「设置互译 API Key…」填，
+- [互译](#互译)用法和 Linux 一样（单按 Shift 中 → 英 → 译 → 中，原文在候选框顶上，译文写在输入框里）。在设置窗口的「翻译」页打开互译、
+  填接口地址和模型（也可以直接改 `wowtype.conf` 里的 `Translate`、`TranslateBaseUrl`、`TranslateModel`）；API Key 也在那一页填，
   存在同一个目录的 `translate.key`（0600，只有自己能读），不写进 `wowtype.conf`。系统开着安全输入（密码框）时照常打中文，不翻译。
 - 本地模型（`TranslateLocal=True`）：和 Linux 一样一键下载。设置窗口「翻译」页选「本地模型（离线）」，点「下载」，
   确认许可后模型（1.13 GB）下到数据目录的 `models/`（`TranslateLocalModel` 写了位置就下到那里），下完校验 SHA256，断了再点会接着下；好了那一行写「已就绪」。
@@ -287,8 +307,9 @@ macOS 还没有的功能不列）。窗口只改它认识的键，文件里的�
   - 模型和 Linux 是同一个：设置窗口「语音」页点「下载」，从腾讯的服务器下载微信输入法的离线语音包（约 103 MB），
     校验后解到数据目录的 `wtlocal/`（约 130 MB），断了再点会接着下。和这台电脑装没装微信输入法无关，WowType 不分发它。
     命令行：`WowType --install-voice-model`（也接受下载好的 `.apk`）、`--remove-voice-model`。
-  - 还没下载模型时按语音键只提示去设置里下载，不碰麦克风。第一次说话时系统会问要不要允许 WowType 使用麦克风
-    （下载完模型时设置窗口会先问一次）；WowType 更新后系统可能会再问一次。在本机识别，录音不上传。
+  - 还没下载模型时按语音键不碰麦克风，第一次会直接打开设置窗口的「语音」页去下载。第一次说话时系统会问要不要允许 WowType 使用麦克风
+    （下载完模型时设置窗口会先问一次）；WowType 更新后系统可能会再问一次。没允许时第一次按语音键会打开「语音」页，
+    那里的「麦克风」一行有按钮直接打开系统设置的麦克风权限。在本机识别，录音不上传。
   - `VoiceCopy=True` 时说的话上屏后也复制到剪贴板（密码框里不复制）。
 - 上面的环境变量 macOS 不认（输入法是系统启动的，拿不到你设的环境变量）。
 
@@ -297,19 +318,27 @@ macOS 还没有的功能不列）。窗口只改它认识的键，文件里的�
 词库和英文词表按这个顺序找，用第一个找到的：环境变量 → 配置里的 `Lexicon`（只管词库） → `~/.local/share/wowtype/` → `/usr/share/wowtype/`。
 都找不到时用只有十几个词的演示词库（能打 `nihao`，但没法日常用）。
 
+例外：`~/.local/share/wowtype/` 里的 `lexicon.tsv`、`english.txt`、`wubi86.tsv` 是 WowType 自己生成的标准数据（第一行是
+`# 由 tools/rime2tsv.py 生成` / `# Rime dictionary`，五笔码表认第一条），`/usr/share/wowtype/` 里也有一份，而且用户目录这份
+不比它新时，插件和设置界面改用 `/usr/share/wowtype/` 的；`words.lm` 的字节数和某一版官方发布的一样时也这样处理。
+0.3.4 以前词库不在安装包里，要自己拷进用户目录（源码安装的说明到 0.4.0 还这样写）；后来安装包自带了，
+那份旧副本却一直优先，装了新版也用不上新词库。日志里会记一条，设置界面「诊断信息」里那行会标「可以删掉」。
+用户目录里自己做的词库和码表（第一行不是上面的标记）、自己重新生成的更新的一份、自己训的 `words.lm` 照旧优先；
+想明确指定词库，用设置里的 `Lexicon` 或环境变量。macOS 用的是安装包里的词库（数据目录里那个是指向它的链接），没有这个问题。
+
 | 文件 | 内容 |
 |---|---|
 | `lexicon.tsv` | 词库，一行一个：`拼音（空格分隔）<TAB>词<TAB>词频` |
 | `english.txt` | 英文词表 |
 | `words.lm` | 词级语言模型（哪些词常连着用），有它长句更准；安装包里自带，见下 |
 | `custom.tsv` | [自定义词](#自定义词)：在设置里加的词 |
-| `user.tsv` | 自动学到的新词：分几次选出来拼成的词（四个字以内，比如「霜」「频」「阁」）用一次就收进来；一次打出来的词选够 3 次才收 |
-| `history.tsv` | 输入习惯：选过哪些词、哪些词常连着用 |
+| `user.tsv` | 自动学到的新词：分几次选出来拼成的词（四个字以内，比如「霜」「频」「阁」）30 天里第二次这样拼（或者直接选它）就收进来；一次打出来的词选够 3 次（按 30 天减半的热度算）才收 |
+| `history.tsv` | 输入习惯：选过哪些词、哪些词常连着用、等第二次的候选新词 |
 | `emoji-recent.txt` | 最近用过的 emoji（表情面板里排最前） |
 | `lexicon.tsv.wcache` | 词库快照，让第二次启动更快（约 0.3 秒）；删了会自动重建 |
 | `wtlocal/` | 语音模型（约 130MB），在设置的「语音」页下载或删除；没有它语音输入打不开，按语音键只提示去下载 |
 | `dicts/wanxiang/` | 可选：万象词库包（`lexicon.tsv`、许可证、来源说明），在设置里下载，见下 |
-| `wetype/nlrgpt2_nnlm.bin` | 可选：微信输入法的神经语言模型（16MB），有它整句候选更准，见下 |
+| `wetype/nlrgpt2_nnlm.bin` | 可选：导入的微信输入法的整句增强模型（16MB），有它就先用它，不然用安装包自带的 `nnlm.bin`，见下 |
 | `words.domain.lm` | 可选：自己训的领域词级模型，和 `words.lm` 混着用，见下 |
 
 **语料词频**：`scripts/make-data.sh` 用雾凇拼音和仓库里 `data/` 下的表，
@@ -331,10 +360,17 @@ cargo run --release -p wowtype-core --bin wowtype-lmbuild -- \
 
 语料是纯文本、一行一段，繁体会转成简体。约 12 亿字、8 线程要 14 分钟，内存峰值约 3GB。
 
-**神经语言模型（可选）**：微信输入法自带一个按字预测下一个字的小模型（`nlrgpt2_nnlm.bin`），
-WowType 能读它来给整句候选重排（日常整句的首选命中率从约 75% 提到约 84%，每次按键多 2ms 左右）。
-模型是腾讯的，WowType 不分发；手上有微信输入法 macOS 版（3.0.0）的安装包或程序时，运行
-`python3 tools/install_wetype_nnlm.py <WeType 的 .zip 或 .app>` 取出来，重启 fcitx5 生效。
+**整句增强模型**：一个按字预测下一个字的小模型（字级神经语言模型），给整句候选重排，长句的首选更准，每次按键多 2ms 左右。
+安装包里自带 WowType 自己训的一份（8.6 MB，装到 `/usr/share/wowtype/nnlm.bin`，macOS 在安装包的 Resources 里，许可证 CC BY-SA 4.0），
+是用 [LCCC](https://huggingface.co/datasets/thu-coai/lccc)（MIT）加中文维基百科（CC BY-SA 4.0）训练的，开箱即用：
+按 `scripts/eval.sh` 的评测，日常整句的首选从 90.6% 提到 94.2%、带上文的从 89.1% 提到 94.0%，单独打词的各组不变。
+来源、训练和发布步骤见 [DATA.md §3.5](DATA.md#35-wowtype-自己的整句增强模型-nnlmbin)。
+
+也可以换成微信输入法自带的那个（`nlrgpt2_nnlm.bin`，效果相近）：模型是腾讯的，WowType 不分发，
+到微信输入法官网下载 macOS 版（3.0.0）的安装包（.zip，Linux 上也是下这个），
+在「WowType 设置 → 输入 → 整句增强模型」点「导入…」选它，马上生效，不用重启；导入了就先用它，删掉以后换回自带的。
+命令行也行：`python3 tools/install_wetype_nnlm.py <WeType 的 .zip 或 .app>`。版本对不上（MD5 不认识）时不装。
+插件日志里写着用的是哪一份，设置界面的诊断信息里也有。
 
 **领域词级模型（可选）**：手上有一批某个领域的语料（工作群聊天、某个专业的文档）时，可以用同一个工具训一个小模型，
 放进数据目录叫 `words.domain.lm`，和 `words.lm` 按 6:4 混着用，这个领域里常连着用的词排得更靠前。

@@ -39,6 +39,9 @@ final class VoiceInput {
     private var frame = 0
     /// 出错或提示时留到这个时候再收起
     private var holdUntil: TimeInterval = 0
+    /// 没下载模型、麦克风被拒时打开过设置窗口的「语音」页（每个进程各最多一次，免得每按一次就弹一次窗口）
+    private var openedSettingsForModel = false
+    private var openedSettingsForMic = false
 
     /// 照设置配语音键；第一次要用时才建核心的语音对象（不碰麦克风、不读模型，按键时才读）。
     func configure(_ config: WowtypeConfig, modelDir: String) {
@@ -113,6 +116,11 @@ final class VoiceInput {
             wowtype_voice_key_up(handle)
             poll()
             startTimer()
+            // 第一次直接打开设置窗口的「语音」页，那里点一下就下载
+            if !openedSettingsForModel {
+                openedSettingsForModel = true
+                SettingsApp.open(page: .voice)
+            }
             return true
         }
         if !down {
@@ -137,6 +145,11 @@ final class VoiceInput {
             return true
         default:
             hint("麦克风没打开：系统设置 → 隐私与安全性 → 麦克风，打开 WowType", host: host)
+            // 第一次被拒时打开设置窗口的「语音」页：那里有按钮直接打开系统设置的麦克风权限
+            if !openedSettingsForMic {
+                openedSettingsForMic = true
+                SettingsApp.open(page: .voice)
+            }
             return true
         }
         keyDown = true

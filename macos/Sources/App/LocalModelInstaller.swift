@@ -90,10 +90,13 @@ enum LocalModelInstaller {
     }
 
     static func plan(model: String, customServer: String, supportDir: URL) -> LocalModel.Plan {
-        LocalModel.plan(modelExists: isFile(model),
-                        serverFound: findServer(custom: customServer, supportDir: supportDir) != nil,
-                        customServer: !customServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                        asset: llamaAsset)
+        let server = findServer(custom: customServer, supportDir: supportDir)
+        // 用的是以前下载的 llama-server，构建号（解包时写的 VERSION）不是现在钉的：当成要重新下载
+        let outdated = server != nil && server == downloadedServer(in: supportDir)
+            && downloadedBuild(in: supportDir) != LocalModel.llamaBuild
+        return LocalModel.plan(modelExists: isFile(model), serverFound: server != nil,
+                               customServer: !customServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                               asset: llamaAsset, serverOutdated: outdated)
     }
 
     /// 模型下了一半（.part 还在）：再下载是接着下

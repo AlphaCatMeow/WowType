@@ -30,23 +30,39 @@ case "$name" in
     esac
     ;;
   pgrep) exit 1 ;;
+  # GNOME 扩展：FIXTURE_EXTENSIONS / FIXTURE_ENABLED 是装了的、启用了的；FIXTURE_KIMPANEL=1 时软件源里有 kimpanel
+  gnome-extensions)
+    case "${1:-}" in
+      list) if [[ "${2:-}" == --enabled ]]; then printf '%s' "${FIXTURE_ENABLED:-}"; else printf '%s' "${FIXTURE_EXTENSIONS:-}"; fi ;;
+      *) printf 'gnome-extensions %s\n' "$*" >> "$FIXTURE_LOG"; exit "${FIXTURE_ENABLE_EXIT:-0}" ;;
+    esac
+    ;;
+  apt-cache) [[ -n "${FIXTURE_KIMPANEL:-}" ]] ;;
+  gsettings)
+    printf 'gsettings %s\n' "$*" >> "$FIXTURE_LOG"
+    [[ "${1:-}" != get ]] || printf '%s\n' "${FIXTURE_GSETTINGS:-@as []}"
+    ;;
   im-config) [[ "${1:-}" != -m ]] || printf 'fcitx5\nfcitx5\n' ;;
   apt-get|pacman|dnf|wowtype-config|installer)
     printf '%s' "$name" >> "$FIXTURE_LOG"
     printf ' %q' "$@" >> "$FIXTURE_LOG"
     printf '\n' >> "$FIXTURE_LOG"
+    # wowtype-config --setup 的退出码：0 好了、2 要注销重新登录、3 刚重启了 fcitx5、4 还差一步、1 出错
+    [[ "$name $*" != "wowtype-config --setup"* ]] || exit "${FIXTURE_SETUP_EXIT:-0}"
     ;;
   *) printf '意外命令：%s\n' "$name" >&2; exit 1 ;;
 esac
 MOCK
 chmod +x "$work/bin/mock"
-for name in sudo curl apt-get pacman dnf pgrep im-config wowtype-config installer; do
+for name in sudo curl apt-get pacman dnf pgrep im-config wowtype-config installer gnome-extensions apt-cache gsettings; do
   ln -s mock "$work/bin/$name"
 done
 
 test_arch=x86_64
 test_version=v0.3.8
 test_system=Linux
+test_no_switch=1
+test_desktop=
 count=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 pass() { count=$((count + 1)); printf 'ok %s - %s\n' "$count" "$*"; }
@@ -62,7 +78,7 @@ run() {
     WOWTYPE_SYSTEM="$test_system" WOWTYPE_OS_RELEASE="$work/os-release" WOWTYPE_ARCH="$test_arch" \
     WOWTYPE_VERSION="$test_version" WOWTYPE_REPO=Gloridust/WowType \
     WOWTYPE_BASE_URL="file://$work/assets" WOWTYPE_YES=1 \
-    WOWTYPE_NO_IM_CONFIG=1 WOWTYPE_NO_RESTART=1 XDG_CURRENT_DESKTOP= \
+    WOWTYPE_NO_IM_CONFIG="$test_no_switch" WOWTYPE_NO_RESTART="$test_no_switch" XDG_CURRENT_DESKTOP="$test_desktop" \
     bash "$root/install.sh" "$@"
 }
 reset() {
@@ -72,6 +88,9 @@ reset() {
   test_arch=x86_64
   test_version=v0.3.8
   test_system=Linux
+  test_no_switch=1
+  test_desktop=
+  unset FIXTURE_SETUP_EXIT FIXTURE_EXTENSIONS FIXTURE_ENABLED FIXTURE_KIMPANEL FIXTURE_ENABLE_EXIT FIXTURE_GSETTINGS
   printf '%s\n' "$1" > "$work/os-release"
 }
 asset() {
@@ -180,7 +199,7 @@ assert_log 'fcitx5-config-qt fcitx5-frontend-all im-config'
 assert_log 'python3-gi gir1.2-gtk-4.0 gir1.2-adw-1'
 assert_log 'wowtype_0.3.8_ubuntu24.04_amd64.deb'
 assert_log 'wowtype-data-rime-ice_20260101_all.deb'
-assert_log 'wowtype-config --add-to-group'
+assert_log 'wowtype-config --setup --yes --no-im-config --no-restart'
 pass 'APT installs verified local packages and legacy data'
 
 reset $'ID=ubuntu\nVERSION_ID=22.04'
@@ -196,9 +215,63 @@ asset wowtype_0.3.8_deepin25_amd64.deb
 run > "$work/output" 2>&1 || fail "apt install deepin: $(cat "$work/output")"
 assert_log 'wowtype_0.3.8_deepin25_amd64.deb'
 assert_log 'fcitx5-frontend-all python3-gi'
-if grep -Eq 'im-config|fcitx5-config-qt' "$work/commands"; then fail 'deepin 不该装 im-config、fcitx5-config-qt'; fi
-assert_log 'wowtype-config --add-to-group'
+if grep -Eq '(^| )im-config( |$)|fcitx5-config-qt' "$work/commands"; then fail 'deepin 不该装 im-config、fcitx5-config-qt'; fi
+assert_log 'wowtype-config --setup --yes --no-im-config --no-restart'
 pass 'deepin keeps its own IM framework and config tool'
+
+# 输入法框架、输入法列表交给 wowtype-config --setup：不设 WOWTYPE_NO_* 时不带对应的选项，退出码决定最后的提示
+reset $'ID=ubuntu\nVERSION_ID=24.04'
+asset wowtype_0.3.8_ubuntu24.04_amd64.deb
+test_no_switch=
+export FIXTURE_SETUP_EXIT=2
+run > "$work/output" 2>&1 || fail "setup relogin: $(cat "$work/output")"
+grep -Eq '^wowtype-config --setup --yes$' "$work/commands" || fail "--setup 的选项不对：$(cat "$work/commands")"
+grep -Fq '注销并重新登录' "$work/output" || fail "缺少注销提示：$(cat "$work/output")"
+FIXTURE_SETUP_EXIT=3 run > "$work/output" 2>&1 || fail "setup restarted: $(cat "$work/output")"
+grep -Fq 'Chromium/Electron' "$work/output" || fail "缺少重启提示：$(cat "$work/output")"
+FIXTURE_SETUP_EXIT=1 run > "$work/output" 2>&1 || fail "setup failed 时安装不该失败：$(cat "$work/output")"
+grep -Fq '一键设置' "$work/output" || fail "缺少一键设置提示：$(cat "$work/output")"
+pass 'Setup is delegated to wowtype-config --setup'
+
+reset $'ID=deepin\nVERSION_ID=25\nVERSION_CODENAME=crimson'
+asset wowtype_0.3.8_deepin25_amd64.deb
+test_no_switch=
+run > "$work/output" 2>&1 || fail "deepin setup: $(cat "$work/output")"
+grep -Eq '^wowtype-config --setup --yes --no-im-config$' "$work/commands" || fail "deepin 不该切输入法框架：$(cat "$work/commands")"
+pass 'deepin setup never switches the IM framework'
+
+# GNOME：软件源里有 kimpanel 就装上并启用；没有的只给链接；装了没启用的只启用
+reset $'ID=debian\nVERSION_ID=13'
+asset wowtype_0.3.8_debian13_amd64.deb
+test_desktop=ubuntu:GNOME
+export FIXTURE_KIMPANEL=1 FIXTURE_ENABLE_EXIT=1 FIXTURE_GSETTINGS="['ding@rastersoft.com']"
+run > "$work/output" 2>&1 || fail "kimpanel: $(cat "$work/output")"
+assert_log 'apt-get install -y gnome-shell-extension-kimpanel'
+assert_log 'gnome-extensions enable kimpanel@kde.org'
+assert_log "gsettings set org.gnome.shell enabled-extensions ['ding@rastersoft.com', 'kimpanel@kde.org']"
+grep -Fq '注销并重新登录' "$work/output" || fail "装了扩展要提示重新登录：$(cat "$work/output")"
+pass 'GNOME installs and enables kimpanel from the distro repository'
+
+reset $'ID=ubuntu\nVERSION_ID=24.04'
+asset wowtype_0.3.8_ubuntu24.04_amd64.deb
+test_desktop=ubuntu:GNOME
+run > "$work/output" 2>&1 || fail "kimpanel link: $(cat "$work/output")"
+if grep -q 'kimpanel' "$work/commands"; then fail "软件源里没有 kimpanel 时不该装：$(cat "$work/commands")"; fi
+grep -Fq 'extensions.gnome.org/extension/261' "$work/output" || fail "缺少扩展链接：$(cat "$work/output")"
+pass 'GNOME without a kimpanel package keeps the link'
+
+reset $'ID=ubuntu\nVERSION_ID=24.04'
+asset wowtype_0.3.8_ubuntu24.04_amd64.deb
+test_desktop=GNOME
+export FIXTURE_EXTENSIONS=$'kimpanel@kde.org\n'
+run > "$work/output" 2>&1 || fail "kimpanel enable: $(cat "$work/output")"
+assert_log 'gnome-extensions enable kimpanel@kde.org'
+if grep -q 'apt-get install -y gnome-shell' "$work/commands"; then fail '装了的扩展不该再装'; fi
+export FIXTURE_ENABLED=$'kimpanel@kde.org\n'
+: > "$work/commands"
+run > "$work/output" 2>&1 || fail "kimpanel enabled: $(cat "$work/output")"
+if grep -q 'gnome-extensions\|gsettings' "$work/commands"; then fail '已经启用了不该再动'; fi
+pass 'GNOME only enables an installed kimpanel when needed'
 
 reset 'ID=arch'
 asset wowtype-0.3.8-1-x86_64.pkg.tar.zst

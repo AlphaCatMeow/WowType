@@ -26,6 +26,9 @@ fi
 /usr/bin/xattr -dr com.apple.quarantine "$app" 2>/dev/null || true
 
 bin="$app/Contents/MacOS/WowType"
+# preinstall 停掉旧进程以后、新文件落盘之前，系统可能已经把旧程序又拉起来了（按一次键就会）：
+# 再停一次，下面登记完拉起来的才是新版。不然装完菜单里还是旧版本，要注销才换
+/usr/bin/pkill -x -u "$(id -u "${user:-$(id -un)}" 2>/dev/null || id -u)" WowType 2>/dev/null || true
 as_user "$bin" --register || echo "WowType postinstall: 登记失败"
 # 菜单栏的输入法菜单会缓存图标：升级换了图标时不重启它，菜单栏还是旧图标，要注销才变。系统会马上把它拉起来。
 as_user /usr/bin/killall TextInputMenuAgent 2>/dev/null || true
@@ -39,4 +42,6 @@ for _ in 1 2 3 4 5; do
   sleep 1
 done
 echo "WowType postinstall: 没能自动打开，要注销重新登录或到系统设置里添加"
+# 把要去的那个面板直接打开（系统设置 → 键盘），不让人自己找
+as_user /usr/bin/open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension" 2>/dev/null || true
 exit 0

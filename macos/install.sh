@@ -14,6 +14,10 @@ stop_running() {
 }
 
 if [[ "${1:-}" == "--uninstall" ]]; then
+  # 新版自己会卸（关掉输入源、停掉输入法、去掉登记、删掉程序）；老版本不认 --uninstall，照下面的老办法
+  if [[ -x "$dest/Contents/MacOS/WowType" ]] && "$dest/Contents/MacOS/WowType" --uninstall; then
+    exit 0
+  fi
   [[ -x "$dest/Contents/MacOS/WowType" ]] && "$dest/Contents/MacOS/WowType" --disable || true
   stop_running
   rm -rf "$dest"
@@ -34,6 +38,8 @@ stop_running
 mkdir -p "$HOME/Library/Input Methods"
 rm -rf "$dest"
 ditto "$src" "$dest"
+# 上面停掉以后、新文件落盘之前，系统可能已经把旧程序又拉起来了（在终端里按一次键就会）：再停一次
+stop_running
 # 从网上下载的没有公证，去掉隔离标记，不然系统不让输入法跑起来
 xattr -dr com.apple.quarantine "$dest" 2>/dev/null || true
 
@@ -54,5 +60,6 @@ done
 cat <<'MSG'
 已经装到 ~/Library/Input Methods/WowType.app，但没能自动打开。
 请注销重新登录一次，然后在「系统设置 → 键盘 → 输入法 → 编辑 → +」里，
-在「简体中文」下面加上 WowType。
+在「简体中文」下面加上 WowType。（已为你打开「系统设置 → 键盘」）
 MSG
+open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension" 2>/dev/null || true

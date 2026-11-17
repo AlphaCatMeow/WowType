@@ -1,6 +1,7 @@
 // 进程里只有一份的东西：词库（后台载入）、设置、数据目录、定时保存学习数据、互译的翻译器。
 
 import AppKit
+import CWowtype
 
 final class AppState {
     static let shared = AppState()
@@ -23,6 +24,13 @@ final class AppState {
     /// 正在用的词库文件，和它载入时的 (大小, 修改时间)
     private var lexiconInUse: String?
     private var lexiconStamp: FileStamp?
+    /// 上次载入失败的词库和它那时的 (大小, 修改时间)：文件没变、设置没换就不再试（不然每秒重试一次），
+    /// 这期间用着自带的词库
+    private var failedLexicon: String?
+    private var failedLexiconStamp: FileStamp?
+    /// 引擎载入时用的整句增强模型（没有是 nil）和它那时的 (大小, 修改时间)：导入、删掉、换了就重新载入引擎
+    private var nnlmInUse: String?
+    private var nnlmStamp: FileStamp?
     private var configStamp: FileStamp?
     private var customStamp: FileStamp?
     private var lastCheck: TimeInterval = 0
@@ -33,6 +41,11 @@ final class AppState {
     private var missingLexiconLogged: String?
     /// 上一次看系统剪贴板时它的 changeCount（没变就不读）
     private var clipboardChangeCount = -1
+    /// 发布页上比现在装的新的版本（输入法菜单里多一项「下载并安装」）；没有是 nil
+    private(set) var availableUpdate: String?
+    private var updateChecking = false
+    /// 下一次看要不要检查更新的时刻（systemUptime）：最多一小时看一次，没网时也不会每切一次输入框就去连
+    private var nextUpdateLook: TimeInterval = 0
 
     private init() {
         RecentEmoji.shared.path = supportDir.appendingPathComponent("emoji-recent.txt").path
@@ -133,6 +146,16 @@ final class AppState {
         return link.path
     }
 
+    /// 整句增强模型（字级神经语言模型）：设置窗口导入的微信输入法模型优先，没有再用安装包里的 nnlm.bin
+    /// （WowType 自己训的，scripts/make-data.sh 下载到了就随包带上）；都没有是 nil，整句照常出，只是不用它重排。
+    func nnlmPath() -> String? {
+        let imported = NnlmInstaller.model(in: supportDir).path
+        if FileManager.default.fileExists(atPath: imported) {
+            return imported
+        }
+        return resource("nnlm.bin")
+    }
+
     func resource(_ name: String) -> String? {
         let path = resourceDir.appendingPathComponent(name).path
         return FileManager.default.fileExists(atPath: path) ? path : nil
@@ -225,6 +248,14 @@ final class AppState {
                 NSLog("WowType: 领域词级模型载入失败 %@", domain)
             }
         }
+        if let nnlm = nnlmPath() {
+            let vocab = wowtype_engine_load_nnlm(engine.handle, nnlm)
+            if vocab >= 0 {
+                NSLog("WowType: 载入整句增强模型 %@（字表 %d）", nnlm, vocab)
+            } else {
+                NSLog("WowType: 整句增强模型载入失败 %@", nnlm)
+            }
+        }
         engine.loadUserDict(userDictPath)
         engine.loadHistory(historyPath)
         return engine
@@ -255,23 +286,47 @@ final class AppState {
             NSLog("WowType: 安装包里没有 lexicon.tsv")
             return
         }
-        // 换词库：新引擎要读学习数据，先把旧引擎学到的存下来（载入途中学的就丢了，最多几秒）
-        save(force: true)
+        // 换词库：新引擎要读学习数据，先把旧引擎学到的存下来、等写完（载入途中学的就丢了，最多几秒）
+        save(force: true, wait: true)
         loading = true
         let stamp = FileStamp(lexicon)
+        // 设置里指定的词库在、但读不出来（格式不对、没权限）：改载自带的，不然只能打英文
+        let bundled = bundledLexiconPath()
+        let fallback = bundled == lexicon ? nil : bundled
+        let fallbackStamp = fallback.flatMap { FileStamp($0) }
+        // makeEngine 里载入的整句增强模型：记下是哪个、什么时候的（载没载上都记，不然载不上时每秒重载）
+        let nnlm = nnlmPath()
+        let nnlmStampNow = nnlm.flatMap { FileStamp($0) }
         let start = Date()
         DispatchQueue.global(qos: .userInitiated).async {
-            let engine = self.makeEngine(lexicon: lexicon)
+            var used = lexicon
+            var engine = self.makeEngine(lexicon: lexicon)
+            if engine == nil, let fallback {
+                NSLog("WowType: 词库 %@ 读不出来，改用自带的词库", lexicon)
+                engine = self.makeEngine(lexicon: fallback)
+                used = fallback
+            }
+            let loaded = engine, loadedPath = used
             DispatchQueue.main.async {
                 self.loading = false
-                NSLog("WowType: 词库 %@ 载入%@，用时 %.1f 秒", lexicon, engine == nil ? "失败" : "完成",
+                self.nnlmInUse = nnlm
+                self.nnlmStamp = nnlmStampNow
+                NSLog("WowType: 词库 %@ 载入%@，用时 %.1f 秒", loadedPath, loaded == nil ? "失败" : "完成",
                       Date().timeIntervalSince(start))
-                if let engine {
+                // 想要的词库没载上：记下来，文件和设置都没变时 checkForChanges 不再试
+                if loaded == nil || loadedPath != lexicon {
+                    self.failedLexicon = lexicon
+                    self.failedLexiconStamp = stamp
+                } else {
+                    self.failedLexicon = nil
+                    self.failedLexiconStamp = nil
+                }
+                if let engine = loaded {
                     self.applyEngineSettings(engine)
                     self.engine = engine
                     self.commitsSinceSave = 0
-                    self.lexiconInUse = lexicon
-                    self.lexiconStamp = stamp
+                    self.lexiconInUse = loadedPath
+                    self.lexiconStamp = loadedPath == lexicon ? stamp : fallbackStamp
                 }
                 if self.reloadAfterLoading {
                     self.reloadAfterLoading = false
@@ -316,15 +371,25 @@ final class AppState {
             let custom = engine.loadCustomWords(customWordsPath)
             NSLog("WowType: 自定义词改了，重新载入 %d 条", custom)
         }
-        guard engine != nil || loading else { return }
-        let wanted = lexiconPath()
-        if let wanted, wanted != lexiconInUse || FileStamp(wanted) != lexiconStamp {
-            if loading {
-                reloadAfterLoading = true
-            } else if engine != nil {
+        // 想要的词库变了就（重新）载入：换了词库、词库文件改了、上次没载上的文件换过了。
+        // engine 还是 nil（上次连自带的都没载上）时也走这里，不会卡在只能打英文
+        guard let wanted = lexiconPath() else { return }
+        let wantedStamp = FileStamp(wanted)
+        let failedBefore = wanted == failedLexicon && wantedStamp == failedLexiconStamp
+        let lexiconChanged = !failedBefore && (wanted != lexiconInUse || wantedStamp != lexiconStamp)
+        // 设置窗口导入、删掉了整句增强模型：核心没有「卸下模型」的接口，整个引擎在后台重新载入（几秒，载完之前照旧用旧的）
+        let nnlm = nnlmPath()
+        let nnlmChanged = nnlm != nnlmInUse || nnlm.flatMap { FileStamp($0) } != nnlmStamp
+        guard lexiconChanged || nnlmChanged else { return }
+        if loading {
+            reloadAfterLoading = true
+        } else {
+            if lexiconChanged {
                 NSLog("WowType: 换词库 %@ -> %@", lexiconInUse ?? "", wanted)
-                loadEngineInBackground()
+            } else {
+                NSLog("WowType: 整句增强模型换了（%@），重新载入", nnlm ?? "删掉了")
             }
+            loadEngineInBackground()
         }
     }
 
@@ -386,6 +451,39 @@ final class AppState {
         ClipboardHistory.remember(text)
     }
 
+    /// 切换输入框时调：设置里 CheckUpdate 开着，上次查（输入法或设置窗口查的，记在 update-state）过了一天，
+    /// 就在后台问一次 GitHub 最新正式版，不挡按键。有新版只在输入法菜单里多一项，不弹通知：输入法是后台进程、
+    /// 没有开发者签名，通知要先弹框要授权，打字时弹出来也打扰人；菜单里点一下打开设置窗口，那里下载安装。
+    /// 开发版（dev）、测试（设了 WOWTYPE_DATA_DIR）不查。
+    func checkUpdateIfDue() {
+        let uptime = ProcessInfo.processInfo.systemUptime
+        guard config.checkUpdate, !updateChecking, uptime >= nextUpdateLook, AppUpdate.isRelease(appVersion),
+              ProcessInfo.processInfo.environment["WOWTYPE_DATA_DIR"] == nil
+        else { return }
+        nextUpdateLook = uptime + 3600
+        let dir = supportDir
+        let state = UpdateInstaller.readState(supportDir: dir)
+        noteLatest(state.latest)
+        guard AppUpdate.due(state, now: Int64(Date().timeIntervalSince1970)) else { return }
+        updateChecking = true
+        let beta = config.betaUpdates
+        DispatchQueue.global(qos: .utility).async {
+            let release = try? UpdateInstaller.fetchLatest(supportDir: dir, beta: beta)
+            DispatchQueue.main.async {
+                self.updateChecking = false
+                guard let release else { return }
+                self.noteLatest(release.tag)
+                if let version = self.availableUpdate {
+                    NSLog("WowType: 有新版本 %@（现在 %@）", version, appVersion)
+                }
+            }
+        }
+    }
+
+    private func noteLatest(_ tag: String) {
+        availableUpdate = AppUpdate.version(tag: tag).flatMap { AppUpdate.isNewer($0, than: appVersion) ? $0 : nil }
+    }
+
     /// 上屏里有学到的选词（Composer.onCommit 只在 frame->learned 时调）。
     func didCommit() {
         commitsSinceSave += 1
@@ -400,20 +498,25 @@ final class AppState {
         save()
     }
 
-    func save(force: Bool = false) {
-        guard let engine, force || commitsSinceSave > 0 else { return }
-        try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
-        let dictSaved = engine.saveUserDict(userDictPath)
-        if !dictSaved {
-            NSLog("WowType: 保存用户词库失败")
+    /// 存用户词库和输入习惯。在核心的后台线程上写（ABI 1.11），这里（主线程，也是按键的线程）不等磁盘；
+    /// wait 时等写完再返回（退出、换词库前：新引擎要读这两个文件）。
+    func save(force: Bool = false, wait: Bool = false) {
+        guard let engine else { return }
+        // 上次后台写失败了现在才知道：记下来，这次接着存（写的都是整份，存成了就补上了，和 Linux 一样）
+        if let error = engine.waitSaved(timeout: 0) {
+            NSLog("WowType: 保存用户词库或输入习惯失败：%@", error)
+            commitsSinceSave = max(commitsSinceSave, 1)
         }
-        let historySaved = engine.saveHistory(historyPath)
-        if !historySaved {
-            NSLog("WowType: 保存输入习惯失败")
+        if force || commitsSinceSave > 0 {
+            try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+            let dictQueued = engine.saveUserDictAsync(userDictPath)
+            let historyQueued = engine.saveHistoryAsync(historyPath)
+            if dictQueued && historyQueued {
+                commitsSinceSave = 0
+            }
         }
-        // 两样都存上了才清零：存失败的那批下次接着存（和 Linux 一样）
-        if dictSaved && historySaved {
-            commitsSinceSave = 0
+        if wait, let error = engine.waitSaved() {
+            NSLog("WowType: 保存用户词库或输入习惯失败：%@", error)
         }
     }
 }

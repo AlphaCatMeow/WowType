@@ -35,7 +35,7 @@
 <p align="center"><img src="docs/images/candidates.png" width="720" alt="在文本编辑器里打 hengxianghouxuanci：横排候选条，第一个是横向候选词，后面是横向、横向后选词……"><br>
 <sub>候选横排，和微信输入法一样：整句只留几个，后面是词，最后是单字</sub></p>
 
-- **整句输入**：`xiangquzijieshangban` 直接出「想去字节上班」；后面跟着句子的前半截，可以先上屏一段，剩下的拼音接着改。
+- **整句输入**：`xiangquzijieshangban` 直接出「想去字节上班」；后面跟着句子的前半截，可以先上屏一段，剩下的拼音接着改。自带 WowType 自己训的整句增强模型（字级神经语言模型），长句的首选更准，开箱即用；也可以导入微信输入法的（[说明](docs/CONFIG.md#数据文件)）。
 - **半成品也有词**：`zhongg` 就有「中国」，不用打全。打全了的拼音正好是个词时，它一定排第一。
 - **按错键能认出来**：按成相邻键、两个键按反、多按或漏按一个键（`zhognguo` → 中国）。本来就打对的输入不受影响。
 - **越用越懂你**：记住你选过的词和常连着用的词（选过一次「我们再讨论」，下次就不会出「我们在讨论」），30 天不用会慢慢淡掉。
@@ -114,10 +114,11 @@ curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/main/install.sh |
 1. 下载和你系统对应的最新安装包（词库已经在包里，约 29 MB），按 `SHA256SUMS` 校验
 2. 用系统的包管理器（`apt-get`、`pacman`、`dnf`）装上，顺带装好 fcitx5 和设置界面要用的 GTK 4 / libadwaita。Arch 不会替你整机升级，提示依赖不满足时先 `sudo pacman -Syu`
 3. 输入法框架还不是 fcitx5（Ubuntu 默认是 IBus）时，问你要不要用 `im-config` 切过去（deepin 默认就是 fcitx5，不动）
-4. 把 WowType 加进 fcitx5 的输入法列表；fcitx5 正在运行的话会先重启它一次
+4. 把 WowType 加进 fcitx5 的输入法列表；fcitx5 正在运行的话会先重启它一次（3、4 两步是 `wowtype-config --setup` 做的，直接装包的话在「WowType 设置」第一页点「一键设置」一样）
+5. GNOME 上软件源里有 Input Method Panel 扩展（Debian 13、Fedora 45 起）时，问你要不要装上并启用
 
 装完按提示做：切换了输入法框架的话**注销并重新登录**，然后按 `Ctrl+Space` 切到 WowType，打 `nihao` 试试。
-以后再跑一遍同样的命令就是升级（设置界面里也会提醒有新版本）。
+以后再跑一遍同样的命令就是升级（设置界面里也会提醒有新版本；升级以后还没重启输入法的话，会发通知提醒重启）。
 
 > 想先看看脚本做了什么：[install.sh](install.sh)，或者 `bash install.sh --print-plan` 只看会装哪个包、不动系统。
 > 不想让它改输入法框架或重启 fcitx5，可以加环境变量，例如 `curl -fsSL … | WOWTYPE_NO_IM_CONFIG=1 WOWTYPE_NO_RESTART=1 bash`。
@@ -154,8 +155,10 @@ curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/main/install.sh |
   还是没有就注销重新登录一次
 - 设置在菜单栏的输入法菜单里（切到 WowType 后点菜单栏的输入法图标），设置文件是
   `~/Library/Application Support/WowType/wowtype.conf`，见 [docs/CONFIG.md](docs/CONFIG.md#macos)
-- 卸载：菜单栏的输入法里先换成别的输入法，在访达里按 `⇧⌘G` 打开 `~/Library/Input Methods`，把 WowType 拖到废纸篓，
-  再到「系统设置 → 键盘 → 输入法」里把它移除
+- 升级：有新版本时输入法菜单里会多一项，点它打开设置窗口「常规」页，点「下载并安装」（不要密码）
+- 卸载：设置窗口「常规」页最下面的「卸载 WowType」（或者终端里
+  `"$HOME/Library/Input Methods/WowType.app/Contents/MacOS/WowType" --uninstall`）。自定义词、学到的词和设置留在
+  `~/Library/Application Support/WowType`，不要了自己删掉
 
 ### 手动安装
 
@@ -191,7 +194,9 @@ sudo apt install ./wowtype_*.deb
 ```
 
 `apt` 会顺带装上设置界面要用的 GTK 4 和 libadwaita（`python3-gi`、`gir1.2-gtk-4.0`、`gir1.2-adw-1`）。
-加了 `--no-install-recommends` 的话不会装，打字不受影响，只是打不开设置界面。
+装完打开应用菜单里的「WowType 设置」，点第一页的「一键设置」（或者在终端运行 `wowtype-config --setup`）：
+输入法框架还不是 fcitx5 时问你要不要用 `im-config` 切过去（之后注销重新登录），fcitx5 正在运行的话问你要不要重启它，
+再把 WowType 加进输入法列表。
 
 > 0.3.3 及以前的版本，词库是单独的 `wowtype-data-rime-ice` 包。装新版时 apt 会自动把它删掉（文件由新包接管），不用管它。
 
@@ -201,7 +206,7 @@ sudo apt install ./wowtype_*.deb
 
 ```bash
 sudo dnf install ./wowtype-*.rpm
-wowtype-config --add-to-group      # 把 WowType 加进 fcitx5 的输入法列表
+wowtype-config --setup             # 把 WowType 加进 fcitx5 的输入法列表（fcitx5 在跑时会问要不要重启它）
 ```
 
 `dnf` 会顺带装上 fcitx5 和设置界面要用的 PyGObject、GTK 4、libadwaita。
@@ -252,7 +257,7 @@ home-manager 的 `i18n.inputMethod.fcitx5.addons` 用法相同。
 ### 检查是否装好
 
 ```bash
-wowtype-check --lexicon /usr/share/wowtype/lexicon.tsv    # 源码安装的用 ~/.local/share/wowtype/lexicon.tsv
+wowtype-check --lexicon /usr/share/wowtype/lexicon.tsv
 wowtype-show  --lexicon /usr/share/wowtype/lexicon.tsv nihao
 # nihao: 1.你好词 2.拟好词 ...
 ```
@@ -328,7 +333,7 @@ WowType 在会话总线上登记了 `org.wowtype.Input`，外部命令可以直�
 busctl --user call org.wowtype.Input /org/wowtype/Input org.wowtype.Input1 SetMode s en
 ```
 
-模式可以是 `zh`、`en`、`translate`（配置了互译时）、`toggle`（中英之间切），返回切完以后的模式；查现在的模式用 `Mode`。
+模式可以是 `zh`、`en`、`translate`（配置了互译时）、`toggle`（中英之间切），返回切完以后的模式；查现在的模式用 `Mode`；`Version` 返回正在跑的插件版本（升级后设置界面拿它判断要不要提醒重启输入法）。
 neovim 里退出插入模式切英文、回到插入模式切回原来的模式：
 
 ```lua
@@ -493,7 +498,7 @@ WowType 默认用自己的绿色主题：选中的词是图标里的那种绿，
 | 输入法列表里找不到 WowType | 添加时取消勾选「仅显示当前语言」；确认 `/usr/share/fcitx5/inputmethod/wowtype.conf` 存在；`wowtype-config --restart-fcitx` 重启 |
 | KDE Wayland 下已经开着的程序能打字，新打开的程序打不了 | fcitx5 是用 `fcitx5 -r` 或托盘「重新启动」重启的，没经过 KWin。运行 `wowtype-config --restart-fcitx`，或注销再登录 |
 | 某个程序里打不了中文，别的程序可以 | 重启 fcitx5 以后 Chrome / Electron 程序要彻底退出再打开 |
-| 能打，但候选很少、很多常用词没有 | 没找到词库，用的是演示词库。用安装包装的话重装一遍（安装包自带词库）；从源码装的把 `lexicon.tsv` 放进 `~/.local/share/wowtype/` |
+| 能打，但候选很少、很多常用词没有 | 没找到词库，用的是演示词库。用安装包装的话重装一遍（安装包自带词库）；从源码装的先跑 `scripts/make-data.sh "" dist/data`，再 `sudo cmake --install build`（词库跟着一起装） |
 | 第一次切到 WowType 时要等一两秒 | 正常：第一次要载入词库并生成快照，之后约 0.3 秒 |
 | 按右 Alt 提示「没有语音模型」 | 到 WowType 设置的「语音」页点「下载」（或运行 `wowtype-config --install-voice-model`） |
 | 按右 Alt 提示「开不了麦克风」 | 在系统设置的「声音」里确认有输入设备；`arecord -l` 应该能列出麦克风 |
@@ -535,14 +540,14 @@ WowType 自己的日志在 `~/.local/state/wowtype/wowtype.log`（满 512 KB 换
 ```bash
 cargo test --workspace                     # Rust 测试（需要 libasound2-dev，语音守护进程还要 libx11-dev libxkbcommon-dev）
 ./scripts/abi-smoke.sh                     # C 接口冒烟测试
-scripts/addon-test.sh ~/.local/share/wowtype/lexicon.tsv ~/.local/share/wowtype/english.txt
+scripts/addon-test.sh /usr/share/wowtype/lexicon.tsv /usr/share/wowtype/english.txt
                                            # 插件按键测试：起一个私有的 fcitx5，不影响你正在用的输入法
 WOWTYPE_VOICE_WAV=说的话.wav WOWTYPE_VOICE_EXPECT=期望的字 scripts/addon-test.sh ...
                                            # 加跑语音用例：用 WAV 代替麦克风，要先下载好语音模型
                                            # （不给 WAV 时跑「没有模型按右 Alt 只提示」）
 ```
 
-改了排序，用 `wowtype-eval` 在几百个用例上对比改前改后（用法见 [docs/ENGINE.md](docs/ENGINE.md#调排序)）。
+改了排序，用 `scripts/eval.sh <数据目录>` 跑仓库里的评测集、和基线对比改前改后（CI 也跑这个，回归集必须全过；见 [tools/eval/README.md](tools/eval/README.md)，`wowtype-eval` 的用法见 [docs/ENGINE.md](docs/ENGINE.md#调排序)）。
 推送 `v*` 标签会自动编译各发行版的安装包并发布到 Releases。
 
 | 目录 | 内容 |
@@ -577,4 +582,4 @@ WOWTYPE_VOICE_WAV=说的话.wav WOWTYPE_VOICE_EXPECT=期望的字 scripts/addon-
 
 ## 许可证
 
-代码按 MIT 或 Apache-2.0 双许可证发布，任选其一。安装包里的词库数据遵循 rime-ice 的 GPL-3.0（词频另融进了 Tatoeba 句子统计出的词频，Tatoeba 句子是 CC BY 2.0 FR，署名见 DATA-SOURCE.txt），五笔码表遵循 rime-wubi 的 LGPL-3.0，可选的万象词库包遵循 CC BY 4.0，词级语言模型 `words.lm` 是 CC BY-SA 4.0，编进程序里的 emoji 关键词来自 Unicode CLDR（Unicode License v3）。
+代码按 MIT 或 Apache-2.0 双许可证发布，任选其一。安装包里的词库数据遵循 rime-ice 的 GPL-3.0（词频另融进了 Tatoeba 句子统计出的词频，Tatoeba 句子是 CC BY 2.0 FR，署名见 DATA-SOURCE.txt），五笔码表遵循 rime-wubi 的 LGPL-3.0，可选的万象词库包遵循 CC BY 4.0，词级语言模型 `words.lm` 和整句增强模型 `nnlm.bin`（都用 LCCC 和中文维基训练）是 CC BY-SA 4.0，编进程序里的 emoji 关键词来自 Unicode CLDR（Unicode License v3）。

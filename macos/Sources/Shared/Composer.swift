@@ -72,6 +72,26 @@ public final class Engine {
         wowtype_engine_save_history(handle, path) == 0
     }
 
+    /// 在后台存用户词库、输入习惯（ABI 1.11）：只抄一份数据就返回，写文件（两次 fsync）在核心的存盘线程上。
+    /// 返回交出去了没有。
+    @discardableResult
+    public func saveUserDictAsync(_ path: String) -> Bool {
+        wowtype_engine_save_user_dict_async(handle, path) == 0
+    }
+
+    @discardableResult
+    public func saveHistoryAsync(_ path: String) -> Bool {
+        wowtype_engine_save_history_async(handle, path) == 0
+    }
+
+    /// 等后台存盘写完：timeout 秒，nil 一直等，0 只看一眼。返回 nil 是都写完了（或者还在写、等不到 timeout）、
+    /// 上次问过以后交的都写成了；写失败了返回原因（只报一次）。
+    public func waitSaved(timeout: Double? = nil) -> String? {
+        let ms = timeout.map { Int32(max(0, min($0 * 1000, Double(Int32.max)))) } ?? -1
+        guard wowtype_engine_save_wait(handle, ms) < 0 else { return nil }
+        return wowtype_last_error().map { String(cString: $0) } ?? "unknown"
+    }
+
     /// 自定义词（custom.tsv）：替换上一次载入的，文件不存在就清空。返回条数，-1 出错。
     @discardableResult
     public func loadCustomWords(_ path: String) -> Int {
@@ -136,6 +156,8 @@ public struct CandidatePage: Equatable {
     public var aux: String? = nil
     /// 竖排：一行一个（设置里 CandidateLayout=Vertical、工具栏）
     public var vertical = false
+    /// 候选前面画序号。上屏以后的联想没按 Tab 进联想行时不画：这时数字不选联想，照常交给应用
+    public var labels = true
     /// 互译时候选上下多出来的两行；不在互译时 nil。互译时没有候选（只攒着原文）也画框
     public var translate: TranslatePanel? = nil
     public static let columns = 6
@@ -239,6 +261,8 @@ public final class Composer {
     }
     /// 现在画的是哪个结果（signature），结果变了才重画
     private var translateDrawn = ""
+    /// 候选框上画着上屏以后的联想：会话关掉了联想、键又交给了应用时要收起来
+    private var associationShown = false
     /// 原文变了、在等译文：外壳开始每 50 毫秒调一次 pollTranslation（已经在调就不用管）。
     public var onTranslatePoll: (() -> Void)?
     /// 单调时钟（秒），测试里换成假的。
@@ -519,6 +543,7 @@ public final class Composer {
         config.wubi = settings.wubi ? 1 : 0
         config.wubi_auto_commit = settings.wubiAutoCommit ? 1 : 0
         config.wubi_hint = settings.wubiHint ? 1 : 0
+        config.association = settings.association ? 1 : 0
         wowtype_session_configure(session, &config)
         if isComposing {
             refresh()
@@ -594,6 +619,9 @@ public final class Composer {
         let handled = frame.pointee.handled != 0
         if handled {
             apply(frame)
+        } else if associationShown {
+            // 联想开着时按了打字以外的键（空格、回车、数字、方向键……）：会话关掉了联想、键交给应用
+            refresh()
         }
         return handled
     }
@@ -637,7 +665,10 @@ public final class Composer {
             refreshTranslate(all)
             return
         }
-        let frame = isComposing ? wowtype_session_frame(session) : nil
+        // 没在打字时也可能有上屏以后的联想（会话给的一页，照普通候选框画）
+        let associating = !isComposing && wowtype_session_association(session) != 0
+        associationShown = associating
+        let frame = isComposing || associating ? wowtype_session_frame(session) : nil
         guard let frame else {
             client?.setMarkedText("", cursor: 0)
             client?.showCandidates(nil)
@@ -667,6 +698,7 @@ public final class Composer {
         guard !texts.isEmpty || aux != nil else { return nil }
         var page = CandidatePage(texts: texts, cursor: Int(f.cand_cursor), hasPrev: f.has_prev != 0,
                                  hasNext: f.has_next != 0, expanded: f.panel == 1, aux: aux, vertical: !config.horizontal)
+        page.labels = !(f.panel == WOWTYPE_PANEL_ASSOCIATION && f.cand_cursor < 0)
         page.comments = comments
         return page
     }

@@ -9,10 +9,13 @@ import Foundation
 
 enum LexiconPackInstaller {
     static let releaseAPI = URL(string: "https://api.github.com/repos/Gloridust/WowType/releases/latest")!
+    /// Beta 计划：最近的几十个发布（含预发布）
+    static let releasesAPI = URL(string: "https://api.github.com/repos/Gloridust/WowType/releases?per_page=30")!
 
     struct Release {
         let tag: String
         let assets: [String: URL]
+        var prerelease = false
 
         var wanxiang: (name: String, url: URL, version: String)? {
             LexiconPack.pickAsset(Array(assets.keys)).flatMap { pick in
@@ -37,6 +40,25 @@ enum LexiconPackInstaller {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw PackError("发布页的内容看不懂")
         }
+        return release(json)
+    }
+
+    /// Beta 计划：最近的发布里版本号最大的（预发布也算，见 AppUpdate.pickNewest）；一个都挑不出来时退回最新正式版
+    static func fetchNewest() throws -> Release {
+        let data = try get(releasesAPI, timeout: 20)
+        guard let list = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw PackError("发布页的内容看不懂")
+        }
+        let listed = list.map {
+            AppUpdate.Listed(tag: $0["tag_name"] as? String ?? "", prerelease: $0["prerelease"] as? Bool ?? false,
+                             draft: $0["draft"] as? Bool ?? false)
+        }
+        guard let i = AppUpdate.pickNewest(listed) else { return try fetchLatest() }
+        return release(list[i])
+    }
+
+    /// GitHub 一个发布的 JSON -> Release
+    static func release(_ json: [String: Any]) -> Release {
         var assets: [String: URL] = [:]
         for asset in json["assets"] as? [[String: Any]] ?? [] {
             if let name = asset["name"] as? String, let link = asset["browser_download_url"] as? String,
@@ -44,7 +66,8 @@ enum LexiconPackInstaller {
                 assets[name] = url
             }
         }
-        return Release(tag: json["tag_name"] as? String ?? "", assets: assets)
+        return Release(tag: json["tag_name"] as? String ?? "", assets: assets,
+                       prerelease: json["prerelease"] as? Bool ?? false)
     }
 
     /// 下载最新发布页上的万象词库包并按 SHA256SUMS 校验，返回临时文件（用完删掉）。
@@ -70,7 +93,8 @@ enum LexiconPackInstaller {
         return file
     }
 
-    private static func get(_ url: URL, timeout: TimeInterval) throws -> Data {
+    /// GET 一个小文件（发布页的 JSON、SHA256SUMS）；UpdateInstaller 也用
+    static func get(_ url: URL, timeout: TimeInterval) throws -> Data {
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.setValue(url.host == "api.github.com" ? "application/vnd.github+json" : "*/*",
                          forHTTPHeaderField: "Accept")

@@ -2,11 +2,12 @@
 //
 // 页面、分组、文字照 Linux 的设置界面（settings/wowtype-config 的 build_general / build_input / build_emoji /
 // build_voice / build_translate / build_words），名字和顺序两边一样，选项说明对得上 fcitx5-addon/src/wowtype_engine.h。macOS 还没有的功能
-// （检查更新）不列出来，它的键在 wowtype.conf 里原样留着。
+// 不列出来，它们的键在 wowtype.conf 里原样留着。Linux 单独一页的「更新」在 macOS 是「常规」页里的一组。
 // 每行一个标题，副标题最多一行；说明、注意事项、例子、来源、许可放进 ⓘ（InfoButton）或「更多选项」折叠里。
 // 样子也照 Linux：薄荷绿渐变侧栏、绿色选中块、白色圆角卡片。
 
 import AppKit
+import AVFoundation
 import SwiftUI
 
 // MARK: 颜色
@@ -222,6 +223,7 @@ private struct GeneralPage: View {
         PrefGroup("外观") {
             StepperRow(title: "候选字号", value: $model.config.candidateFontSize, range: 10...40)
         }
+        UpdateGroup(model: model, updater: model.updater)
         PrefGroup("帮助") {
             ExpanderRow(title: "小技巧") {
                 ActionRow(title: "简拼", subtitle: "bjdx → 北京大学，zhch → 支持")
@@ -242,6 +244,17 @@ private struct GeneralPage: View {
             ActionRow(title: "提交问题", action: { NSWorkspace.shared.open(issuesURL) }) {
                 Image(systemName: "arrow.up.right.square").foregroundColor(.secondary)
             }
+            RowDivider()
+            ActionRow(title: "复制诊断信息", subtitle: "版本、数据文件、设置（打码）和最近的日志，贴到问题里",
+                      info: "不含你打过的字、自定义词和输入习惯的内容（只有条数和大小）；翻译服务只留主机名，API Key 不在里面。",
+                      action: { model.copyDiagnostics() }) {
+                Image(systemName: "doc.on.clipboard").foregroundColor(.secondary)
+            }
+            RowDivider()
+            ActionRow(title: "卸载 WowType", subtitle: "自定义词、学到的词和设置会留着",
+                      action: { model.confirmUninstall() }) {
+                Image(systemName: "trash").foregroundColor(.secondary)
+            }
         }
     }
 
@@ -251,6 +264,51 @@ private struct GeneralPage: View {
         case (.caret, _): return "↑ ↓ 选词，← → 在拼音里移动光标"
         case (.candidates, true): return "← → 选词，↑ 上一页，↓ 展开更多候选"
         case (.candidates, false): return "↑ ↓ 选词，← → 翻页"
+        }
+    }
+}
+
+/// 「更新」：当前版本 / 有新版本，下载并安装（交给系统的 installer，不要密码），自动检查的开关
+private struct UpdateGroup: View {
+    @ObservedObject var model: SettingsModel
+    @ObservedObject var updater: UpdateModel
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        PrefGroup("更新", info: "从 GitHub 发布页下载这台 Mac 的安装包（WowType-<版本>-macos.pkg），按同一页的 SHA256SUMS 校验，"
+                  + "再交给系统的安装器只装给你自己，不要管理员密码。装的时候输入法和设置窗口会重启一下，装好后设置窗口自动重新打开。\n\n"
+                  + "自动检查：输入法每天最多查一次，有新版本时菜单栏的输入法菜单里多一项；打开设置窗口时也查。",
+                  links: [("发布页", UpdateInstaller.releasesPage)]) {
+            HStack(spacing: 10) {
+                RowLabel(title: updater.title, subtitle: updater.subtitle,
+                         subtitleColor: updater.error != nil ? palette.warning : nil)
+                if let (done, total) = updater.downloadProgress {
+                    ProgressView(value: Double(done), total: Double(max(total, 1)))
+                        .frame(width: 90)
+                    Button("取消") { updater.cancelDownload() }
+                } else if updater.installing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    if updater.error != nil {
+                        Button("打开发布页") { updater.openReleasePage() }
+                    }
+                    if updater.hasUpdate {
+                        Button("下载并安装") { updater.downloadAndInstall() }
+                    } else {
+                        Button("检查更新") { updater.check() }
+                            .disabled(updater.checking)
+                    }
+                }
+            }
+            .rowPadding()
+            RowDivider()
+            SwitchRow(title: "自动检查更新", subtitle: "有新版本时输入法菜单里提示", isOn: $model.config.checkUpdate)
+            RowDivider()
+            SwitchRow(title: "Beta 计划", subtitle: "也接收预发布版的更新",
+                      info: "预发布版（pre-release）先带上新功能给想尝鲜的人试，可能不稳定。"
+                          + "关掉以后已经装上的预发布版不会退回，等下一个正式版出来再提示更新。",
+                      isOn: $model.config.betaUpdates)
         }
     }
 }
@@ -311,6 +369,8 @@ private struct InputPage: View {
             .disabled(model.lexiconBusy)
         }
         .onAppear { model.checkRelease() }
+
+        NnlmGroup(nnlm: model.nnlm)
 
         PrefGroup("输入方案") {
             RadioRow(title: WowtypeConfig.InputScheme.quanpin.name, subtitle: "全拼，也能只打声母", selected: model.config.inputScheme == .quanpin) {
@@ -416,6 +476,11 @@ private struct InputPage: View {
             RowDivider()
             SwitchRow(title: "以词定字", subtitle: "按 [ 取第一个字，按 ] 取最后一个字", isOn: $model.config.pickChar)
             RowDivider()
+            SwitchRow(title: "联想", subtitle: "上屏以后给出常跟在后面的词，按 Tab 选",
+                      info: "联想出来以后接着打字、数字、标点、空格、回车都照常，不会选到联想；"
+                          + "按 Tab 进联想行，再用空格、回车或数字上屏，Esc 退出，也可以用鼠标点。五笔、互译和密码框里不出。",
+                      isOn: $model.config.association)
+            RowDivider()
             ExpanderRow(title: "中英文之间自动加空格", subtitle: "第5章 → 第 5 章",
                         info: "你好Mac → 你好 Mac。只在程序告诉输入法光标前是什么字时加，有些程序（比如终端）里不起作用。",
                         enabled: $model.config.autoSpace) {
@@ -468,6 +533,37 @@ private struct InputPage: View {
 
     private var lexiconColor: Color? {
         model.lexiconKind == .custom && model.customLexiconMissing ? palette.warning : nil
+    }
+}
+
+/// 整句增强模型：一行状态，「导入…」，导入过的能删，安装包自带的不能删（和 Linux 设置的一样）
+private struct NnlmGroup: View {
+    @ObservedObject var nnlm: NnlmModel
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        PrefGroup("整句增强", info: "整句增强模型是一个按字预测下一个字的小模型，"
+                  + "WowType 用它给整句候选重排，长句的首选更准，每次按键多 2 毫秒左右。"
+                  + "安装包自带 WowType 自己训的（nnlm.bin，用 LCCC 和中文维基训练，CC BY-SA 4.0）。\n\n"
+                  + "也可以导入微信输入法自带的（\(NnlmInstaller.fileName)，效果相近），导入了就先用它。"
+                  + "模型属于腾讯，WowType 不分发它。手上有微信输入法 macOS 版的安装包（.zip）或装好的 WeType.app 时，"
+                  + "点「导入…」选它，也可以直接选模型文件。导入后几秒生效，"
+                  + "放在 ~/Library/Application Support/WowType/wetype；删掉以后换回自带的。") {
+            HStack(spacing: 10) {
+                RowLabel(title: "整句增强模型", subtitle: nnlm.status,
+                         subtitleColor: nnlm.error != nil && !nnlm.busy ? palette.warning : nil)
+                if nnlm.busy {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Button("导入…") { nnlm.choose() }
+                    if nnlm.imported {
+                        IconButton(symbol: "trash", help: "删除导入的模型") { nnlm.remove() }
+                    }
+                }
+            }
+            .rowPadding()
+        }
     }
 }
 
@@ -550,6 +646,8 @@ private struct VoicePage: View {
                 }
             }
             .rowPadding()
+            RowDivider()
+            MicrophoneRow()
         }
     }
 
@@ -561,6 +659,52 @@ private struct VoicePage: View {
         let label = current.isEmpty ? "不用语音键"
             : VoiceKey(name: current) == nil ? "\(current)（Mac 上没有这个键）" : "其他（\(current)）"
         return options + [(label, current)]
+    }
+}
+
+/// 系统设置「隐私与安全性 → 麦克风」（只打开，不改系统设置）
+private let microphoneSettingsURL =
+    URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
+
+/// 麦克风权限：设置窗口和输入法是同一个程序，这里允许了输入法也能用。被拒了给按钮打开系统设置；
+/// 从系统设置切回来时重新看一眼。
+private struct MicrophoneRow: View {
+    @State private var status = AVCaptureDevice.authorizationStatus(for: .audio)
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        HStack(spacing: 10) {
+            RowLabel(title: "麦克风", subtitle: subtitle, subtitleColor: denied ? palette.warning : nil)
+            if status == .notDetermined {
+                Button("允许使用…") {
+                    AVCaptureDevice.requestAccess(for: .audio) { _ in
+                        DispatchQueue.main.async { refresh() }
+                    }
+                }
+            } else if denied {
+                Button("打开系统设置") { NSWorkspace.shared.open(microphoneSettingsURL) }
+            }
+        }
+        .rowPadding()
+        .onAppear { refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refresh()
+        }
+    }
+
+    private func refresh() {
+        status = AVCaptureDevice.authorizationStatus(for: .audio)
+    }
+
+    private var denied: Bool { status == .denied || status == .restricted }
+
+    private var subtitle: String {
+        switch status {
+        case .authorized: return "已允许"
+        case .notDetermined: return "还没问过：第一次说话时系统会问"
+        case .restricted: return "被系统限制了（家长控制或描述文件），WowType 用不了麦克风"
+        default: return "没允许：在「系统设置 → 隐私与安全性 → 麦克风」里打开 WowType"
+        }
     }
 }
 
@@ -721,7 +865,8 @@ private struct LocalModelRow: View {
                 Label("已就绪", systemImage: "checkmark.circle.fill")
                     .foregroundColor(Palette.green)
             } else if plan.canDownload {
-                Text("要下载 \(LocalModel.sizeText(plan.bytes))")
+                Text((plan.llamaOutdated && !plan.wantModel ? "llama-server 要更新，" : "要下载 ")
+                     + LocalModel.sizeText(plan.bytes))
                     .foregroundColor(.secondary)
                 Button("下载") { model.downloadLocalModel() }
             }

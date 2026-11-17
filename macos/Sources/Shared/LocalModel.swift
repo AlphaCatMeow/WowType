@@ -54,18 +54,23 @@ public enum LocalModel {
         public var llamaUnavailable: Bool
         /// 要下载的一共多少字节
         public var bytes: Int64
+        /// 数据目录里下载过的 llama-server 不是现在钉的构建（WowType 更新换了 llamaBuild）：要重新下载
+        public var llamaOutdated = false
 
         public var ready: Bool { !wantModel && !wantLlama && !llamaUnavailable }
         public var canDownload: Bool { wantModel || wantLlama }
     }
 
     /// serverFound：找到能用的 llama-server；customServer：设置里自己写了 llama-server 的位置
-    /// （写了就只用它，不替它下载）；asset：这台 Mac 能下载的官方包。
-    public static func plan(modelExists: Bool, serverFound: Bool, customServer: Bool, asset: Asset?) -> Plan {
-        let wantLlama = !serverFound && !customServer && asset != nil
+    /// （写了就只用它，不替它下载）；asset：这台 Mac 能下载的官方包；serverOutdated：找到的是以前下载的、
+    /// 构建号不是 llamaBuild 的那份，当成要重新下载（下载不了时照旧用它）。
+    public static func plan(modelExists: Bool, serverFound: Bool, customServer: Bool, asset: Asset?,
+                            serverOutdated: Bool = false) -> Plan {
+        let wantLlama = (!serverFound || serverOutdated) && !customServer && asset != nil
         let bytes = (modelExists ? 0 : size) + (wantLlama ? asset?.size ?? 0 : 0)
         return Plan(wantModel: !modelExists, wantLlama: wantLlama,
-                    llamaUnavailable: !serverFound && !wantLlama, bytes: bytes)
+                    llamaUnavailable: !serverFound && !wantLlama, bytes: bytes,
+                    llamaOutdated: serverFound && serverOutdated && wantLlama)
     }
 
     // MARK: 显示

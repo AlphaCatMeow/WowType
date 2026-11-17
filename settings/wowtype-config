@@ -23,17 +23,77 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-import gi
 
-# 界面文字全是简体中文。系统语言是英文时 Pango 给汉字挑字形会挑到繁体（台湾）那一套，
-# 「、」「。」画在格子正中间；告诉它优先简体中文。
-if "zh" not in os.environ.get("PANGO_LANGUAGE", ""):
-    os.environ["PANGO_LANGUAGE"] = ":".join(
-        x for x in ("zh-cn", os.environ.get("PANGO_LANGUAGE", "")) if x)
+def missing_gui_libraries(error):
+    """PyGObject / GTK 4 / libadwaita 没装全（--no-install-recommends、手动删了包）：告诉用户缺什么、怎么装，
+    不要静默退出（从应用菜单点「WowType 设置」会毫无反应）。有终端就打印；没有终端时用 zenity、kdialog、
+    notify-send 里有的那个说（插件在后台叫的 --startup 只发通知，最多一天一次）。"""
+    ids = ""
+    for path in ("/etc/os-release", "/usr/lib/os-release"):
+        try:
+            with open(path, encoding="utf-8") as f:
+                ids = " ".join(line.partition("=")[2].strip().strip("\"'").lower() for line in f
+                               if line.startswith(("ID=", "ID_LIKE=")))
+            break
+        except OSError:
+            continue
+    words = ids.split()
+    if any(w in words for w in ("debian", "ubuntu", "deepin")):
+        command = "sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1"
+    elif any(w in words for w in ("fedora", "rhel")):
+        command = "sudo dnf install python3-gobject gtk4 libadwaita gobject-introspection"
+    elif "arch" in words:
+        command = "sudo pacman -S --needed python-gobject gtk4 libadwaita"
+    else:
+        command = "用系统的包管理器装上 PyGObject、GTK 4、libadwaita"
+    title = "WowType 设置打不开：缺少界面库"
+    body = f"WowType 设置要 PyGObject、GTK 4 和 libadwaita，请在终端里运行：\n{command}\n\n（{error}）"
+    print(f"{title}\n{body}", file=sys.stderr)
+    if sys.stderr.isatty():
+        return
+    background = any(flag in sys.argv for flag in ("--startup", "--check-update", "--notify-setup"))
+    if background:
+        stamp = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
+                             "wowtype", "missing-gui")
+        try:
+            if time.time() - os.path.getmtime(stamp) < 24 * 3600:
+                return
+        except OSError:
+            pass
+        try:
+            os.makedirs(os.path.dirname(stamp), exist_ok=True)
+            open(stamp, "w").close()
+        except OSError:
+            pass
+    tools = [] if background else [
+        ["zenity", "--error", "--no-wrap", f"--title={title}", f"--text={body}"],
+        ["kdialog", "--title", title, "--error", body]]
+    tools.append(["notify-send", "--app-name=WowType", "--icon=wowtype", title, body])
+    for argv in tools:
+        if shutil.which(argv[0]):
+            try:
+                if subprocess.run(argv, timeout=3600, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL).returncode == 0:
+                    return
+            except (OSError, subprocess.SubprocessError):
+                continue
 
-gi.require_version("Gtk", "4.0")
-gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
+
+try:
+    import gi
+
+    # 界面文字全是简体中文。系统语言是英文时 Pango 给汉字挑字形会挑到繁体（台湾）那一套，
+    # 「、」「。」画在格子正中间；告诉它优先简体中文。
+    if "zh" not in os.environ.get("PANGO_LANGUAGE", ""):
+        os.environ["PANGO_LANGUAGE"] = ":".join(
+            x for x in ("zh-cn", os.environ.get("PANGO_LANGUAGE", "")) if x)
+
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Adw", "1")
+    from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
+except (ImportError, ValueError) as e:
+    missing_gui_libraries(e)
+    sys.exit(1)
 
 APP_ID = "io.github.Gloridust.WowType.Config"
 VERSION = "@VERSION@"
@@ -61,11 +121,187 @@ ISSUES_URL = f"{HOMEPAGE}/issues/new"
 # 界面上的中文标点要用简体中文字体画，见 SettingsApp.update_font_css；装了哪个用哪个
 CJK_SC_FONTS = ["Noto Sans CJK SC", "Source Han Sans SC", "Source Han Sans CN",
                 "WenQuanYi Micro Hei", "WenQuanYi Zen Hei", "Droid Sans Fallback"]
+SYSTEM_DATA_DIR = "/usr/share/wowtype"
 LEXICON_CANDIDATES = [
     os.environ.get("WOWTYPE_LEXICON", ""),
     os.path.join(DATA_DIR, "lexicon.tsv"),
-    "/usr/share/wowtype/lexicon.tsv",
+    os.path.join(SYSTEM_DATA_DIR, "lexicon.tsv"),
 ]
+# 安装包系统数据目录里的数据文件（nnlm.bin 是 WowType 自己的字级神经语言模型，WTNN 格式）
+DATA_FILES = ("lexicon.tsv", "english.txt", "words.lm", "nnlm.bin", "wubi86.tsv", "s2t.tsv")
+# 系统数据目录里的数据清单：每行 名字<TAB>版本<TAB>sha256<TAB>来源（tools/datamark.py manifest 生成）
+DATA_MANIFEST = os.path.join(SYSTEM_DATA_DIR, "DATA-MANIFEST")
+
+# ---- 数据版本标记（docs/DATA.md「数据版本标记」）。和插件的 data_files.h、core/src/datamark.rs、
+# tools/datamark.py 同一套规则：文件前 4096 字节里有一串 `wowtype-data: <名字> <版本> [来源]`，
+# 以换行或 \0 结束；文本文件是头部一行注释，words.lm（WTLM 版本 1）是词表的 1 号词。
+# 版本是点分隔的数字，逐段按数字比，缺的段算 0。
+DATA_MARKER_KEY = b"wowtype-data:"
+DATA_MARKER_SCAN = 4096
+_DATA_MARKER_NAME = re.compile(r"[\x21-\x7e]+")
+_DATA_MARKER_VERSION = re.compile(r"[0-9]+(?:\.[0-9]+)*")
+
+
+def parse_data_marker(text):
+    """`... wowtype-data: 名字 版本 [来源]` -> (名字, 版本, 来源)，不合规矩返回 None。"""
+    at = text.find(DATA_MARKER_KEY.decode())
+    if at < 0:
+        return None
+    rest = re.split(r"[\n\r\0]", text[at + len(DATA_MARKER_KEY):], maxsplit=1)[0]
+    if not rest.startswith(" "):
+        return None
+    name, _, rest = rest.lstrip(" ").partition(" ")
+    version, _, source = rest.lstrip(" ").partition(" ")
+    source = source.strip(" \t")
+    if not (_DATA_MARKER_NAME.fullmatch(name) and _DATA_MARKER_VERSION.fullmatch(version)):
+        return None
+    return name, version, source
+
+
+def scan_data_marker(head):
+    """从文件开头的字节里找标记：WTLM 文件看词表 1 号词，别的找以换行或 \\0 结束的那一串。"""
+    head = head[:DATA_MARKER_SCAN]
+    if head.startswith(b"WTLM"):
+        if len(head) < 17 or int.from_bytes(head[4:8], "little") != 1 \
+                or int.from_bytes(head[8:12], "little") < 2:
+            return None
+        at = 17 + head[16]
+        if at >= len(head):
+            return None
+        word = head[at + 1:at + 1 + head[at]]
+        if len(word) != head[at] or not word.startswith(DATA_MARKER_KEY):
+            return None
+        return parse_data_marker(word.decode("utf-8", "replace"))
+    at = head.find(DATA_MARKER_KEY)
+    if at < 0 or not any(head.find(end, at) >= 0 for end in (b"\n", b"\r", b"\0")):
+        return None
+    return parse_data_marker(head[at:].decode("utf-8", "replace"))
+
+
+def read_data_marker(path):
+    try:
+        with open(path, "rb") as f:
+            return scan_data_marker(f.read(DATA_MARKER_SCAN))
+    except OSError:
+        return None
+
+
+def compare_data_versions(a, b):
+    """逐段按数字比，缺的段算 0；返回 -1、0、1。"""
+    x = [int(n) for n in a.split(".")]
+    y = [int(n) for n in b.split(".")]
+    width = max(len(x), len(y))
+    x += [0] * (width - len(x))
+    y += [0] * (width - len(y))
+    return (x > y) - (x < y)
+
+
+def data_file_version(path, name=None):
+    """数据文件的版本：(版本, 说明)，看不出来时返回 None。
+
+    带标记的读标记（名字要和 name 一样，默认是文件名）；没有标记的 words.lm 字节数是加标记以前
+    某一版官方发布的（OFFICIAL_LM_SIZES），就是那一版。"""
+    name = name or os.path.basename(path)
+    marker = read_data_marker(path)
+    if marker:
+        if marker[0] != name:
+            return None
+        return marker[1], marker[2]
+    if name == "words.lm":
+        try:
+            legacy = OFFICIAL_LM_SIZES.get(os.path.getsize(path))
+        except OSError:
+            return None
+        if legacy:
+            return legacy, f"lm-{legacy}，没有标记，按字节数认出"
+    return None
+
+
+def read_data_manifest(path=DATA_MANIFEST):
+    """系统数据目录里的清单：[(名字, 版本, 来源)]，没有清单（老安装包）返回 []。"""
+    rows = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                cols = line.rstrip("\n").split("\t")
+                if line.startswith("#") or len(cols) < 2:
+                    continue
+                rows.append((cols[0], cols[1], cols[3] if len(cols) > 3 else ""))
+    except OSError:
+        pass
+    return rows
+
+
+# ---- 没有标记的老数据（加标记以前发布的）：按老办法认
+# 安装包自带、WowType 自己生成的数据文件的第一行，见 stale_bundled_copy
+BUNDLED_DATA_MARKERS = {
+    "lexicon.tsv": "# 由 tools/rime2tsv.py 生成",
+    "english.txt": "# Rime dictionary",
+    "wubi86.tsv": "a\t工\t99454797",
+    "s2t.tsv": "# 由 tools/opencc2tsv.py 生成",
+}
+# 加标记以前发布的官方 words.lm：字节数 -> 版本，和插件的 kOfficialLmSizes / kOfficialLmVersions 一样。
+# 以后发布的 words.lm 带标记，这张表不用再加
+OFFICIAL_LM_SIZES = {38455852: "2026.11.09"}  # lm-2026.11.09
+
+
+def stale_bundled_copy(user, system):
+    """用户目录里的这份是不是安装包自带数据的旧副本，插件会改用系统目录里安装包带的那份。
+
+    和插件的 isStaleBundledCopy（fcitx5-addon/src/data_files.h）同一套规则，系统目录里也要有一份：
+    - 用户目录这份带版本标记、名字和文件名一样：版本不比系统目录那份新就是旧副本；比它新（自己下了新数据），
+      或者系统目录那份看不出版本（老安装包），用用户目录的。名字不一样（别的词库）也用用户目录的。
+    - 没有标记（加标记以前发布的数据、或者自己做的）：第一行是 WowType 生成的标准数据，而且不比系统目录的新
+      （系统目录的时间戳早于 2000 年时看不出新旧，也算）；words.lm 看字节数是不是某一版官方发布的。
+    0.3.4 以前 README 让大家把词库拷进用户目录，后来安装包自带了，那份却一直优先。"""
+    name = os.path.basename(user)
+    if not os.path.isfile(system):
+        return False
+    try:
+        if os.path.samefile(user, system):
+            return False
+    except OSError:
+        return False
+    marker = read_data_marker(user)
+    if marker:
+        if marker[0] != name:
+            return False
+        found = data_file_version(system, name)
+        return bool(found) and compare_data_versions(marker[1], found[0]) <= 0
+    legacy = BUNDLED_DATA_MARKERS.get(name)
+    if not (legacy or name == "words.lm"):
+        return False
+    try:
+        if name == "words.lm":
+            return os.path.getsize(user) in OFFICIAL_LM_SIZES
+        with open(user, "rb") as f:
+            first = f.readline().decode("utf-8", "replace")
+        if not first.startswith(legacy):
+            return False
+        user_mtime = os.stat(user).st_mtime
+        system_mtime = os.stat(system).st_mtime
+    except OSError:
+        return False
+    return system_mtime < 946684800 or user_mtime <= system_mtime
+
+
+def without_stale_copy(candidates):
+    """插件找数据文件的顺序（环境变量、用户目录、系统目录），去掉用户目录里的旧副本。"""
+    out = []
+    for path in candidates:
+        if path and path.startswith(DATA_DIR + os.sep) and os.path.isfile(path):
+            system = os.path.join(SYSTEM_DATA_DIR, os.path.relpath(path, DATA_DIR))
+            if stale_bundled_copy(path, system):
+                continue
+        out.append(path)
+    return out
+
+
+def lexicon_in_use_candidates():
+    """插件找默认词库的顺序，去掉用户目录里的旧副本。"""
+    return without_stale_copy(LEXICON_CANDIDATES)
+
+
 # 五笔码表，和插件找数据文件的顺序一样：环境变量、用户数据目录、系统目录
 WUBI_CANDIDATES = [
     os.environ.get("WOWTYPE_WUBI", ""),
@@ -113,6 +349,7 @@ DEFAULTS = {
     "PunctuationStyle": "Fullwidth",
     "SelectKeys": "Off",
     "PickChar": "True",
+    "Association": "False",
     "DateTime": "True",
     "Calculator": "True",
     "Toolbar": "True",
@@ -137,6 +374,7 @@ DEFAULTS = {
     "TranslateLlamaServer": "",
     "TranslateIdleMinutes": "5",
     "CheckUpdate": "True",
+    "BetaUpdates": "False",
     # 词库文件，留空用默认的雾凇；切到万象时是 WANXIANG_LEXICON
     "Lexicon": "",
 }
@@ -430,7 +668,8 @@ def read_config():
 
 def find_wubi_table():
     """五笔码表的路径，找不到是 None（设置里五笔灰掉，说清楚为什么）。"""
-    return next((path for path in WUBI_CANDIDATES if path and os.path.isfile(path)), None)
+    return next((path for path in without_stale_copy(WUBI_CANDIDATES)
+                 if path and os.path.isfile(path)), None)
 
 
 def write_atomic(path, text):
@@ -448,9 +687,27 @@ def quote_value(value):
     return value
 
 
+def config_lines(values):
+    """要写进 wowtype.conf 的设置项：只写和默认值不一样的。没写的项插件读成默认值（reloadConfig 先重置成默认），
+    以后改了默认值，动过设置的老用户也跟着新默认值走。
+
+    例外是读的时候要按别的项推断的（spec/config.json 的 whenMissing）：TranslateBaseUrl 填了时
+    TranslateLocal 缺省读成 False，这时 True 也要明写。InputScheme 推断靠的是旧键 Shuangpin，
+    它读进来就丢了，不会再写回文件，不用管。"""
+    lines = []
+    for key in DEFAULTS:
+        value = values.get(key, DEFAULTS[key])
+        if value == DEFAULTS[key] and not (key == "TranslateLocal"
+                                           and values.get("TranslateBaseUrl", "").strip()):
+            continue
+        lines.append(f"{key}={quote_value(value)}")
+    return lines
+
+
 def write_config(values, extra):
-    lines = [f"{key}={quote_value(values[key])}" for key in DEFAULTS]
-    write_atomic(CONFIG_FILE, "\n".join(lines + extra) + "\n")
+    """存设置：和默认值不一样的项，加上原文里设置界面不认识的行（extra）原样留着。"""
+    lines = config_lines(values) + list(extra)
+    write_atomic(CONFIG_FILE, "\n".join(lines) + "\n" if lines else "")
 
 
 def log(message):
@@ -602,7 +859,7 @@ class PinyinGuesser:
         threading.Thread(target=self._load, daemon=True).start()
 
     def _load(self):
-        for path in LEXICON_CANDIDATES:
+        for path in lexicon_in_use_candidates():
             if path and os.path.exists(path):
                 try:
                     with open(path, "rb") as f:
@@ -716,16 +973,9 @@ class Fcitx:
         self.call("SetConfig", GLib.Variant("(sv)", (uri, raw)),
                   done=lambda value: done and done(value is not None))
 
-    def add_to_group(self, group, layout, items, done):
-        items = list(items) + [("wowtype", "")]
-        self.call("SetInputMethodGroupInfo", GLib.Variant("(ssa(ss))", (group, layout, items)),
-                  done=lambda value: done(value is not None))
-
     def set_hotkeys(self, lists, done=None):
         """改 fcitx5 全局快捷键里的几个按键列表 {选项: [按键…]}，别的不动，立即生效。"""
-        raw = GLib.Variant("a{sv}", {"Hotkey": GLib.Variant(
-            "a{sv}", {option: key_list_variant(keys) for option, keys in lists.items()})})
-        self.call("SetConfig", GLib.Variant("(sv)", (GLOBAL_URI, raw)),
+        self.call("SetConfig", GLib.Variant("(sv)", (GLOBAL_URI, hotkey_config_variant(lists))),
                   done=lambda value: done and done(value is not None))
 
 
@@ -773,6 +1023,12 @@ def key_list(value):
 
 def key_list_variant(keys):
     return GLib.Variant("a{sv}", {str(i): GLib.Variant("s", k) for i, k in enumerate(keys)})
+
+
+def hotkey_config_variant(lists):
+    """{选项: [按键…]} → fcitx5 全局配置 SetConfig 要的值（只含这几项，fcitx5 按部分配置合并）。"""
+    return GLib.Variant("a{sv}", {"Hotkey": GLib.Variant(
+        "a{sv}", {option: key_list_variant(keys) for option, keys in lists.items()})})
 
 
 def bare_shift(key):
@@ -1117,6 +1373,141 @@ def restart_fcitx_sync():
     return fcitx_call_sync("Restart") is not None
 
 
+# ---------------------------------------------------------------- 升级后提醒重启输入法
+#
+# 包管理器或应用内更新换掉了插件，正在跑的 fcitx5 还载着旧的，新功能不生效。
+# 插件在会话总线上的 org.wowtype.Input1 有 Version（0.4.1 起）：和设置界面自己的版本（同一个包装的）不一样，
+# 或者没有这个方法（旧插件），就是要重启输入法。
+
+ADDON_BUS = ("org.wowtype.Input", "/org/wowtype/Input", "org.wowtype.Input1")
+# 服务在、方法不在：旧插件。别的错（服务不在、超时）说不清，不提醒
+OLD_ADDON_ERRORS = frozenset({"org.freedesktop.DBus.Error.UnknownMethod",
+                              "org.freedesktop.DBus.Error.UnknownInterface",
+                              "org.freedesktop.DBus.Error.UnknownObject"})
+RESTART_NOTE = "重启后，Chrome、VS Code、微信等 Chromium / Electron 程序要彻底退出再打开才能打中文。"
+
+
+def addon_version_from(reply, error_name=None):
+    """Version 的回复 → 正在跑的插件版本；"" 是没有 Version 的旧插件（0.4.0 及以前）；None 是说不清。"""
+    if error_name is None:
+        return reply or None
+    return "" if error_name in OLD_ADDON_ERRORS else None
+
+
+def dbus_error_name(error):
+    if Gio.DBusError.is_remote_error(error):
+        return Gio.DBusError.get_remote_error(error)
+    return "?"
+
+
+def running_addon_version():
+    """问正在跑的插件是哪个版本（同步，命令行和 --startup 用），见 addon_version_from。"""
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        value = bus.call_sync(*ADDON_BUS, "Version", None, GLib.VariantType("(s)"),
+                              Gio.DBusCallFlags.NO_AUTO_START, 3000, None)
+    except GLib.Error as e:
+        return addon_version_from(None, dbus_error_name(e))
+    return addon_version_from(value.unpack()[0])
+
+
+def restart_needed(running, installed=None):
+    """正在跑的插件（running_addon_version 的结果）和装好的不是同一版：要重启输入法。
+
+    从源码直接跑的设置界面（版本号还是没替换的占位串，以 @ 开头）不算。"""
+    installed = VERSION if installed is None else installed
+    if running is None or installed.startswith("@"):
+        return False
+    return running != installed
+
+
+def notify(summary, body, actions=(), timeout=24 * 3600, shown=None):
+    """发桌面通知（org.freedesktop.Notifications，notify-send 走的也是它），等用户点。
+
+    actions：[(动作名, 按钮文字)…]，点通知本身是 "default"。发不出去（没有会话总线、没有通知服务）返回 None；
+    发出去了先调 shown()，再等到点了按钮（返回动作名）、关掉或超时（返回 ""）。
+    用自己的主循环上下文，可以在别的线程里等。"""
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    except GLib.Error:
+        return None
+    context = GLib.MainContext.new()
+    context.push_thread_default()
+    loop = GLib.MainLoop.new(context, False)
+    state = {"id": None, "action": ""}
+
+    def on_signal(_bus, _sender, _path, _iface, signal, params):
+        if state["id"] is None or params[0] != state["id"]:
+            return
+        if signal == "ActionInvoked":
+            state["action"] = params[1]
+        loop.quit()
+    subscriptions = [bus.signal_subscribe(None, "org.freedesktop.Notifications", signal,
+                                          "/org/freedesktop/Notifications", None,
+                                          Gio.DBusSignalFlags.NONE, on_signal)
+                     for signal in ("ActionInvoked", "NotificationClosed")]
+    try:
+        flat = [text for action in actions for text in action]
+        hints = {"desktop-entry": GLib.Variant("s", APP_ID)}
+        try:
+            reply = bus.call_sync(
+                "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications", "Notify",
+                GLib.Variant("(susssasa{sv}i)", ("WowType", 0, "wowtype", summary, body, flat, hints, -1)),
+                GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, 10000, None)
+        except GLib.Error as e:
+            log(f"桌面通知发不出去：{e.message}")
+            return None
+        state["id"] = reply.unpack()[0]
+        if shown:
+            shown()
+        if not actions:
+            return ""
+        timer = GLib.timeout_source_new_seconds(timeout)
+        timer.set_callback(lambda *_: loop.quit() or False)
+        timer.attach(context)
+        loop.run()
+        timer.destroy()
+        return state["action"]
+    finally:
+        for sub in subscriptions:
+            bus.signal_unsubscribe(sub)
+        context.pop_thread_default()
+
+
+def open_settings_detached(page):
+    """另起一个设置窗口（不跟着这个进程退出）。"""
+    try:
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "--page", page],
+                         start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        log(f"打不开设置：{e}")
+
+
+def restart_reminder():
+    """--startup 里：升级以后 fcitx5 还载着旧插件时发通知，点了「重启输入法」再重启（不静默重启：
+    Chromium / Electron 程序要跟着重开）。同一版本只提醒一次，通知发不出去不算提醒过。"""
+    running = running_addon_version()
+    if not restart_needed(running):
+        return
+    installed = current_version()
+    if read_state().get("restart_reminded") == installed:
+        return
+    log(f"正在跑的插件是 {running or '0.4.0 及以前'}，装好的是 {installed}：提醒重启输入法")
+    action = notify(f"WowType 已更新到 {installed}，重启输入法后生效",
+                    f"正在用的还是旧版（{running or '0.4.0 及以前'}）。{RESTART_NOTE}",
+                    [("restart", "重启输入法"), ("default", "打开设置")],
+                    shown=lambda: update_state(restart_reminded=installed))
+    if action == "restart":
+        ok = restart_fcitx_sync()
+        log("从通知重启输入法：" + ("好了" if ok else "失败"))
+        if not ok:
+            notify("重启输入法失败", "可以注销后重新登录。")
+    elif action == "default":
+        open_settings_detached("general")
+
+
 def system_keyboard_layout():
     """fcitx5 键盘布局的名字（us、de-nodeadkeys……），从 localectl 读，读不到用 us。"""
     layout = variant = ""
@@ -1135,12 +1526,13 @@ def system_keyboard_layout():
     return f"{layout}-{variant}" if variant else layout
 
 
-def profile_add_wowtype(path=PROFILE_FILE):
-    """fcitx5 没在跑时直接改它的配置文件 profile，把 WowType 加进第一个分组。
+def profile_add_wowtype(path=None):
+    """fcitx5 没在跑时直接改它的配置文件 profile（默认 PROFILE_FILE），把 WowType 加进第一个分组。
 
     没有 profile（fcitx5 还没运行过）就新建一个：系统键盘布局 + WowType。
     fcitx5 退出时会把内存里的分组写回 profile，所以只能在它没在跑时改。返回说明文字。
     """
+    path = path or PROFILE_FILE
     try:
         with open(path, encoding="utf-8") as f:
             text = f.read()
@@ -1178,20 +1570,26 @@ def profile_add_wowtype(path=PROFILE_FILE):
     return f"已把 WowType 加进输入法列表「{first}」（原来的存成 profile.bak-wowtype）"
 
 
-def add_to_group_cli(restart):
+def add_to_group_cli(restart, say=print):
     """安装脚本用（wowtype-config --add-to-group [--restart]）：把 WowType 加进当前输入法分组。
 
     fcitx5 在跑：认得 WowType 就经 D-Bus 加；不认得（刚装完）时带 --restart 先让它重启，
-    否则返回 3。fcitx5 没在跑：直接改 profile。成功（含本来就在）返回 0。
+    否则返回 3。fcitx5 没在跑：直接改 profile。第一次配置 fcitx5 时顺手让出左 Shift
+    （free_left_shift_first_time）。成功（含本来就在）返回 0。
     """
+    first = fcitx_first_time()
     known = fcitx_knows_wowtype()
     if known is None:
-        print(profile_add_wowtype())
+        say(profile_add_wowtype())
+        if first:
+            free_left_shift_first_time(False, say)
         return 0
-    if not known:
-        if not restart:
-            print("fcitx5 还没载入 WowType，要先重启 fcitx5")
-            return 3
+    if not known and not restart:
+        say("fcitx5 还没载入 WowType，要先重启 fcitx5")
+        return 3
+    if restart:
+        # 认得也重启：升级时 fcitx5 里跑着的是旧插件，不重启新版不生效
+        known = False
         restart_fcitx_sync()
         for _ in range(60):  # 最多等 15 秒
             time.sleep(0.25)
@@ -1199,21 +1597,267 @@ def add_to_group_cli(restart):
             if known:
                 break
         if not known:
-            print("重启 fcitx5 以后还是找不到 WowType，请注销重新登录后在 fcitx5 配置里添加")
+            say("重启 fcitx5 以后还是找不到 WowType，请注销重新登录后在 fcitx5 配置里添加")
             return 1
-        print("已重启 fcitx5")
+        say("已重启 fcitx5")
     group = fcitx_call_sync("CurrentInputMethodGroup", None, "(s)").unpack()[0]
     info = fcitx_call_sync("InputMethodGroupInfo", GLib.Variant("(s)", (group,)), "(sa(ss))")
     layout, items = info.unpack()
     if any(name == "wowtype" for name, _ in items):
-        print(f"WowType 已经在输入法列表「{group}」里")
+        say(f"WowType 已经在输入法列表「{group}」里")
         return 0
     items = list(items) + [("wowtype", "")]
     if fcitx_call_sync("SetInputMethodGroupInfo",
                        GLib.Variant("(ssa(ss))", (group, layout, items))) is None:
-        print("添加失败，请在 fcitx5 配置里手动添加 WowType")
+        say("添加失败，请在 fcitx5 配置里手动添加 WowType")
         return 1
-    print(f"已把 WowType 加进输入法列表「{group}」")
+    say(f"已把 WowType 加进输入法列表「{group}」")
+    if first:
+        free_left_shift_first_time(True, say)
+    return 0
+
+
+# ---------------------------------------------------------------- 一键设置
+#
+# 不走 install.sh、直接装 .deb / .rpm / Arch 包的用户：wowtype-config --setup 或设置第一页的「一键设置」
+# 把 install.sh 以前做的几步做完：切输入法框架（im-config）、把 WowType 加进输入法列表、必要时重启 fcitx5。
+# install.sh 现在也是调它。
+
+def fcitx_user_config_file():
+    return os.path.join(_xdg("XDG_CONFIG_HOME", "~/.config"), "fcitx5", "config")
+
+
+def fcitx_first_time():
+    """用户还没有 fcitx5 的配置（输入法列表 profile、全局配置 config 都没有）：第一次配置 fcitx5。"""
+    return not os.path.exists(PROFILE_FILE) and not os.path.exists(fcitx_user_config_file())
+
+
+def fcitx_config_with_hotkeys(text, lists):
+    """fcitx5 全局配置文件的原文里，把 {选项: [按键…]} 这几个快捷键换掉，别的行原样留着。
+
+    写法和 fcitx5 存的一样（parse_fcitx_hotkey 读）：空列表是 [Hotkey] 下的「选项=」，
+    非空是 [Hotkey/选项] 下的 0=、1=…"""
+    drop = {f"Hotkey/{option}" for option in lists}
+    out, section = [], None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1]
+        elif section == "Hotkey" and stripped.partition("=")[0].strip() in lists:
+            continue
+        if section in drop:
+            continue
+        out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    empty = [option for option, keys in lists.items() if not keys]
+    if empty:
+        if "[Hotkey]" not in (line.strip() for line in out):
+            out += ([""] if out else []) + ["[Hotkey]"]
+        at = next(i for i, line in enumerate(out) if line.strip() == "[Hotkey]") + 1
+        out[at:at] = [f"{option}=" for option in empty]
+    for option, keys in lists.items():
+        if keys:
+            out += ([""] if out else []) + [f"[Hotkey/{option}]"] + [f"{i}={k}" for i, k in enumerate(keys)]
+    return "\n".join(out) + "\n"
+
+
+def free_left_shift_first_time(running, say=print):
+    """第一次配置 fcitx5 时（fcitx_first_time），把 fcitx5 默认占着的左 Shift（「临时切换输入法」AltTriggerKeys）
+    让给 WowType，不然单按左 Shift 切不了中英文。只在这一次做，已有配置的用户不动；设置「输入」页的开关能还回去
+    （和那个开关一样记在 state 的 fcitx_shift_freed 里）。
+
+    running：fcitx5 在跑就经 D-Bus 改（fcitx5 自己存文件）；没在跑就直接写 ~/.config/fcitx5/config。返回改了没有。"""
+    toggle = read_config()[0].get("ShiftToggle", "Both")
+    if "Shift_L" not in SHIFT_SIDES.get(toggle, ()):
+        return False
+    path = None
+    if running:
+        value = fcitx_call_sync("GetConfig", GLib.Variant("(s)", (GLOBAL_URI,)), "(va(sa(sssva{sv})))")
+        hotkey = None if value is None else value.unpack()[0].get("Hotkey")
+        if not isinstance(hotkey, dict):
+            return False
+    else:
+        hotkey, path = saved_fcitx_hotkey()
+    keys = key_list(hotkey.get("AltTriggerKeys"))
+    if "Shift_L" not in keys:
+        return False
+    keys.remove("Shift_L")
+    lists = {"AltTriggerKeys": keys}
+    if running:
+        if fcitx_call_sync("SetConfig", GLib.Variant("(sv)", (GLOBAL_URI, hotkey_config_variant(lists)))) is None:
+            return False
+    else:
+        base = ""
+        if path:  # 系统的默认配置（/etc/xdg/fcitx5/config）：用户的文件会整个盖掉它，别的项照抄
+            try:
+                with open(path, encoding="utf-8") as f:
+                    base = f.read()
+            except OSError:
+                pass
+        try:
+            write_atomic(fcitx_user_config_file(), fcitx_config_with_hotkeys(base, lists))
+        except OSError:
+            return False
+    freed = [list(k) for k in read_state().get("fcitx_shift_freed", [])]
+    if ["AltTriggerKeys", "Shift_L"] not in freed:
+        update_state(fcitx_shift_freed=freed + [["AltTriggerKeys", "Shift_L"]])
+    log("第一次配置 fcitx5：把「临时切换输入法」的左 Shift 让给 WowType")
+    say("左 Shift 让给了 WowType（单按切中英文），切换输入法用 Ctrl+空格；"
+        "想还给 fcitx5，到「WowType 设置」的「输入」页关掉")
+    return True
+
+
+SETUP_OK, SETUP_FAILED, SETUP_RELOGIN, SETUP_RESTARTED, SETUP_UNFINISHED = 0, 1, 2, 3, 4
+
+
+def im_config_active():
+    """im-config 的当前设置（用户设过的，没设过用系统的）；没有 im-config 或读不出来是 None。"""
+    tool = shutil.which("im-config")
+    if not tool:
+        return None
+    try:
+        lines = subprocess.run([tool, "-m"], capture_output=True, text=True, timeout=10).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # 第 1 行系统的设置，第 2 行当前用户的（没设过是 missing）
+    active = lines[1].strip() if len(lines) > 1 else ""
+    if active in ("", "missing"):
+        active = lines[0].strip() if lines else ""
+    return active or None
+
+
+def own_im_framework():
+    """系统自己管输入法框架、不该去动的：deepin（默认就是 fcitx5，经 deepin-im）。"""
+    return read_os_release().get("ID", "").lower() == "deepin"
+
+
+def setup_action(known, im_active):
+    """一键设置该做什么。known 是 fcitx_knows_wowtype() 的结果；im_active 是能用 im-config 切时它现在的设置，否则 None。
+
+    add       fcitx5 在跑、认得 WowType：加进输入法列表
+    restart   在跑、不认得（刚装完还没载入新插件）：重启它再加
+    im-config 没在跑，框架不是 fcitx5（Ubuntu 默认 IBus）：im-config -n fcitx5、写好输入法列表，注销重新登录
+    profile   没在跑，框架已经是 fcitx5（或者没有 im-config、不让改）：写好输入法列表，等 fcitx5 下次启动"""
+    if known:
+        return "add"
+    if known is False:
+        return "restart"
+    if im_active is not None and im_active != "fcitx5":
+        return "im-config"
+    return "profile"
+
+
+def setup_question(action, im_active):
+    """这一步要先问用户的话（不用问是 None）。"""
+    if action == "im-config":
+        return f"现在的输入法框架是「{im_active}」，切换到 fcitx5 吗？（要注销重新登录一次）"
+    if action == "restart":
+        return "fcitx5 正在运行，要重启一次才能载入 WowType。现在重启它并把 WowType 加进输入法列表吗？" + RESTART_NOTE
+    return None
+
+
+def framework_hint(im_allowed):
+    """fcitx5 没在跑、也没有 im-config 可用时，告诉用户怎么让桌面启动 fcitx5。"""
+    if not im_allowed or own_im_framework() or shutil.which("im-config"):
+        return None
+    return f"请在桌面设置中启用 Fcitx 5 并注销重新登录；Wayland / X11 的配置见 {INSTALL_GUIDE}"
+
+
+def run_setup(action, confirmed, first=False, say=print, allow_restart=True, hint=None):
+    """按 setup_action 做（confirmed：setup_question 问过、用户答应了）。返回 SETUP_*：
+
+    SETUP_OK 现在就能用；SETUP_RESTARTED 刚重启了 fcitx5（Chromium / Electron 程序要重开）；
+    SETUP_RELOGIN 要注销重新登录；SETUP_UNFINISHED 用户没答应或不让重启，还差一步；SETUP_FAILED 出错。"""
+    if action == "restart" and not (confirmed and allow_restart):
+        say("没重启 fcitx5。之后重启它（wowtype-config --restart-fcitx）或注销再登录，"
+            "再运行 wowtype-config --setup，或在「WowType 设置」第一页点「一键设置」")
+        return SETUP_UNFINISHED
+    if action in ("add", "restart"):
+        if add_to_group_cli(action == "restart", say) != 0:
+            return SETUP_FAILED
+        return SETUP_RESTARTED if action == "restart" else SETUP_OK
+    code = SETUP_RELOGIN
+    if action == "im-config":
+        if not confirmed:
+            say("没切换输入法框架，WowType 要在 fcitx5 下才能用")
+            code = SETUP_UNFINISHED
+        elif subprocess.run(["im-config", "-n", "fcitx5"], stdin=subprocess.DEVNULL).returncode == 0:
+            log("一键设置：im-config -n fcitx5")
+            say("已把输入法框架切到 fcitx5（im-config）")
+        else:
+            say("im-config 切换失败，请手动运行：im-config -n fcitx5，然后注销重新登录")
+            code = SETUP_UNFINISHED
+    elif hint:
+        say(hint)
+    try:
+        say(profile_add_wowtype())
+    except (OSError, RuntimeError) as e:
+        say(str(e))
+        return SETUP_FAILED
+    if first:
+        free_left_shift_first_time(False, say)
+    return code
+
+
+def ask_terminal(question, yes=False):
+    """命令行里问一句，默认「是」；没有终端（或 --yes）时直接按「是」（和 install.sh 一样）。"""
+    if yes or not sys.stdin.isatty():
+        return True
+    try:
+        answer = input(f"{question} [Y/n] ").strip()
+    except EOFError:
+        return True
+    return not answer or answer[0] in "Yy是"
+
+
+def setup_cli(args):
+    """wowtype-config --setup [--yes] [--no-im-config] [--no-restart]：见 run_setup，退出码是它的 SETUP_*。
+
+    环境变量 WOWTYPE_YES、WOWTYPE_NO_IM_CONFIG、WOWTYPE_NO_RESTART 和对应的选项一样（install.sh 也认这几个）。"""
+    yes = "--yes" in args or bool(os.environ.get("WOWTYPE_YES"))
+    im_allowed = not ("--no-im-config" in args or os.environ.get("WOWTYPE_NO_IM_CONFIG"))
+    allow_restart = not ("--no-restart" in args or os.environ.get("WOWTYPE_NO_RESTART"))
+    first = fcitx_first_time()
+    known = fcitx_knows_wowtype()
+    im_active = im_config_active() if im_allowed and known is None and not own_im_framework() else None
+    if known and restart_needed(running_addon_version()):
+        known = False  # 认得，但跑着的还是旧插件（刚升级）：照「不认得」处理，先问再重启一次载入新版
+    action = setup_action(known, im_active)
+    question = setup_question(action, im_active)
+    confirmed = (question is None or (action == "restart" and not allow_restart)
+                 or ask_terminal(question, yes))
+    code = run_setup(action, confirmed, first, lambda text: print(f"WowType：{text}"),
+                     allow_restart, framework_hint(im_allowed))
+    log(f"一键设置（命令行）：{action}，结果 {code}")
+    return code
+
+
+def setup_hint(known, in_group):
+    """装完还差哪一步（给 --notify-setup 的通知）：(标题, 正文)，什么都不差是 None。"""
+    if known and in_group:
+        return None
+    where = "打开应用菜单里的「WowType 设置」，"
+    if known:
+        return "WowType 已安装，还没加进输入法列表", where + "在第一页点「添加」。"
+    if known is False:
+        return "WowType 已安装，要重启一次输入法", where + "在第一页点「重启并添加」。" + RESTART_NOTE
+    return ("WowType 已安装，还差一步",
+            where + "在第一页点「一键设置」：切到 fcitx5 输入法框架、写好输入法列表，然后注销重新登录。")
+
+
+def notify_setup_cli():
+    """wowtype-config --notify-setup：deb 的 postinst 以已登录的图形会话用户身份调它。
+    还差哪一步就发一条通知（不带按钮，不等，GNOME 上点通知会打开设置），不改任何设置。"""
+    known = fcitx_knows_wowtype()
+    in_group = False
+    if known:
+        group = fcitx_call_sync("CurrentInputMethodGroup", None, "(s)")
+        info = group and fcitx_call_sync("InputMethodGroupInfo", GLib.Variant("(s)", group.unpack()), "(sa(ss))")
+        in_group = bool(info) and any(name == "wowtype" for name, _ in info.unpack()[1])
+    hint = setup_hint(known, in_group)
+    if hint:
+        notify(*hint)
     return 0
 
 
@@ -1281,6 +1925,14 @@ def startup_tasks():
         init_default_theme()
     except Exception as e:  # 主题弄不好也别耽误检查更新
         log(f"默认主题失败：{e!r}")
+
+    # 提醒重启的通知要等用户点（最长一天），放到另一个线程里等，不耽误检查更新；进程等它结束再退出
+    def remind():
+        try:
+            restart_reminder()
+        except Exception as e:  # noqa: BLE001
+            log(f"提醒重启输入法失败：{e!r}")
+    threading.Thread(target=remind).start()
     return background_check()
 
 
@@ -1321,6 +1973,21 @@ def _file_line(path):
         size = st.st_size
     stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))
     return f"  {path}：{size / 1e6:.1f} MB，{stamp}"
+
+
+def _data_version_note(path):
+    """诊断信息里数据文件的版本：「版本 2026.11.14.6（来源）」或「没有版本标记」。"""
+    if not os.path.isfile(path):
+        return ""
+    marker = read_data_marker(path)
+    if marker and marker[0] != os.path.basename(path):
+        # 别的数据（万象词库包的标记名字是 wanxiang/lexicon.tsv）
+        return f"，{marker[0]} 版本 {marker[1]}" + (f"（{marker[2]}）" if marker[2] else "")
+    found = data_file_version(path)
+    if not found:
+        return "，没有版本标记"
+    version, source = found
+    return f"，版本 {version}" + (f"（{source}）" if source else "")
 
 
 def _count_lines(path):
@@ -1410,17 +2077,39 @@ def collect_diagnostics():
     label = {"rime-ice": "雾凇（默认）", "wanxiang": "万象", "custom": "自己指定"}[kind]
     add(f"  词库：{label}" + (f"，{path}" if path else ""))
     add(f"  万象词库包：{lexicon_pack_version() or '没装'}")
+    nnlm_kind, nnlm_path = active_nnlm()
+    nnlm_label = {"env": "环境变量 WOWTYPE_NNLM 指定的", "imported": "导入的微信输入法模型",
+                  "bundled": "WowType 自带的 nnlm.bin", None: "没有"}[nnlm_kind]
+    add(f"  整句增强模型：{nnlm_label}" + (f"，{nnlm_path}" if nnlm_path else ""))
+    data_files = {os.path.join(folder, name) for folder in (DATA_DIR, SYSTEM_DATA_DIR)
+                  for name in DATA_FILES} | {WANXIANG_LEXICON}
     for path in [*LEXICON_CANDIDATES, WANXIANG_LEXICON, WANXIANG_LEXICON + ".wcache",
                  os.path.join(DATA_DIR, "english.txt"), "/usr/share/wowtype/english.txt",
                  os.environ.get("WOWTYPE_LM", ""),
                  os.path.join(DATA_DIR, "words.lm"), "/usr/share/wowtype/words.lm",
+                 os.environ.get("WOWTYPE_NNLM", ""),
+                 os.path.join(DATA_DIR, "nnlm.bin"), os.path.join(SYSTEM_DATA_DIR, "nnlm.bin"),
                  *WUBI_CANDIDATES,
+                 os.path.join(DATA_DIR, "s2t.tsv"), os.path.join(SYSTEM_DATA_DIR, "s2t.tsv"),
                  os.path.join(DATA_DIR, "lexicon.tsv.wcache"),
                  os.path.join(DATA_DIR, "wetype", "nlrgpt2_nnlm.bin"),
                  VOICE_MODEL_DIR]:
         line = _file_line(path)
         if line:
+            if path in data_files or os.path.basename(path) in DATA_FILES:
+                line += _data_version_note(path)
+            system = os.path.join(SYSTEM_DATA_DIR, os.path.basename(path))
+            if (path.startswith(DATA_DIR + os.sep) and os.path.isfile(path)
+                    and stale_bundled_copy(path, system)):
+                line += "（安装包自带数据的旧副本，版本不比安装包带的新，插件改用系统目录那份，这份可以删掉）"
             add(line)
+    manifest = read_data_manifest()
+    if manifest:
+        add(f"  数据清单 {DATA_MANIFEST}：")
+        for name, version, source in manifest:
+            add(f"    {name} {version}" + (f"（{source}）" if source else ""))
+    else:
+        add(f"  数据清单 {DATA_MANIFEST}：没有（老安装包）")
     for label, path in (("自定义词", CUSTOM_FILE),
                         ("自动学到的词", os.path.join(DATA_DIR, "user.tsv")),
                         ("输入习惯", os.path.join(DATA_DIR, "history.tsv"))):
@@ -1453,6 +2142,8 @@ def export_diagnostics(path):
 
 REPO = "Gloridust/WowType"
 RELEASE_API = f"https://api.github.com/repos/{REPO}/releases/latest"
+# Beta 计划：最近的几十个发布（含预发布），挑版本号最大的
+RELEASES_API = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
 RELEASES_PAGE = f"{HOMEPAGE}/releases"
 CACHE_DIR = os.path.join(_xdg("XDG_CACHE_HOME", "~/.cache"), "wowtype")
 UPDATE_DIR = os.path.join(CACHE_DIR, "updates")
@@ -1688,17 +2379,51 @@ def markdown_to_pango(md):
     return '<span lang="zh-cn">' + "\n".join(lines) + "</span>"
 
 
-def fetch_latest():
-    """GitHub 上最新的正式版：{tag, version, notes, url, assets: {文件名: 下载地址}}。"""
-    with http_open(RELEASE_API, timeout=20) as response:
-        data = json.load(response)
+def release_info(data):
+    """GitHub 发布的 JSON -> {tag, version, notes, url, prerelease, assets: {文件名: 下载地址}}。"""
     return {
         "tag": data.get("tag_name", ""),
         "version": data.get("tag_name", "").lstrip("vV"),
         "notes": data.get("body") or "",
         "url": data.get("html_url") or RELEASES_PAGE,
+        "prerelease": bool(data.get("prerelease")),
         "assets": {a["name"]: a["browser_download_url"] for a in data.get("assets", [])},
     }
+
+
+def pick_release(releases):
+    """Beta 计划：发布列表（GitHub 的 JSON）里版本号最大的那个，预发布也算；一样大时要正式版。
+
+    只看 v 加数字开头的 tag：数据的发布（lm-…、nnlm-…）也是预发布，不是新版本。草稿不算。没有合适的返回 None。"""
+    best = None
+    for data in releases:
+        tag = data.get("tag_name") or ""
+        if data.get("draft") or not re.fullmatch(r"[vV]\d+(\.\d+)*", tag):
+            continue
+        key = (parse_version(tag), not data.get("prerelease"))
+        if best is None or key > best[0]:
+            best = (key, data)
+    return release_info(best[1]) if best else None
+
+
+def beta_updates(values=None):
+    """设置里开了 Beta 计划（接收预发布版）。"""
+    if values is None:
+        values, _ = read_config()
+    return values.get("BetaUpdates") == "True"
+
+
+def fetch_latest(beta=None):
+    """GitHub 上最新的正式版；Beta 计划开着时是最新的版本（预发布也算）。beta 不给时按设置。"""
+    if beta is None:
+        beta = beta_updates()
+    if beta:
+        with http_open(RELEASES_API, timeout=20) as response:
+            picked = pick_release(json.load(response))
+        if picked:
+            return picked
+    with http_open(RELEASE_API, timeout=20) as response:
+        return release_info(json.load(response))
 
 
 def is_newer(release):
@@ -1801,30 +2526,35 @@ def background_check():
     if time.time() - state.get("checked", 0) < CHECK_INTERVAL:
         return 0
     try:
-        release = fetch_latest()
+        release = fetch_latest(beta_updates(values))
     except Exception:  # 没网、被限流：下次再说
         return 0
     state["checked"] = time.time()
     write_update_state(state)
-    if not is_newer(release) or state.get("notified") == release["tag"]:
+    try:
+        auto_update_lexicon(values, release, state)
+    except Exception as e:  # noqa: BLE001  词库没更新好也别耽误提醒新版本
+        log(f"万象词库自动更新出错：{e!r}")
+    if not is_newer(release):
+        # 已经是最新版：应用内更新下载的安装包用不上了（每版三十多 MB），清掉
+        shutil.rmtree(UPDATE_DIR, ignore_errors=True)
         return 0
-    state["notified"] = release["tag"]
-    write_update_state(state)
+    if state.get("notified") == release["tag"]:
+        return 0
     # NixOS、Manjaro、源码安装等没法一键装，通知里别说「一键安装」
     manager, _distro, _arch, reason = update_platform()
     one_click = not reason and package_version(manager) is not None
     hint = "一键安装" if one_click else "看怎么更新"
-    try:
-        chosen = subprocess.run(
-            ["notify-send", "--app-name=WowType", "--icon=wowtype",
-             "--action=open=查看更新", "--action=default=查看更新",
-             f"WowType {release['version']} 可以更新了",
-             f"当前是 {current_version()}。打开设置可以看更新内容，{hint}。"],
-            capture_output=True, text=True, timeout=24 * 3600).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return 0
+
+    def shown():  # 同一版本只提醒一次；发不出去的下次再发
+        state["notified"] = release["tag"]
+        write_update_state(state)
+    beta = "（预发布）" if release.get("prerelease") else ""
+    chosen = notify(f"WowType {release['version']}{beta} 可以更新了",
+                    f"当前是 {current_version()}。打开设置可以看更新内容，{hint}。",
+                    [("open", "查看更新"), ("default", "查看更新")], shown=shown)
     if chosen in ("open", "default"):
-        os.execv(sys.executable, [sys.executable, os.path.abspath(__file__), "--page", "update"])
+        open_settings_detached("update")
     return 0
 
 # ---------------------------------------------------------------- 词库
@@ -1932,6 +2662,55 @@ def remove_lexicon_pack(folder=WANXIANG_DIR):
     return size
 
 
+# 后台更新万象词库失败（下不全、包不对）后，同一版本隔这么久再试，免得每小时都下一遍
+LEXICON_RETRY = 24 * 3600
+
+
+def lexicon_update_plan(values, installed, release, failed=None, now=None):
+    """后台要不要更新万象词库：要就返回发布里的 (文件名, 地址, 版本)，不要是 None。
+
+    只更新装了、正在用的万象（装了没在用的，打开设置「输入 → 词库」时再手动更新）；
+    发布页上的包比装好的新才更新（装好的没写版本也算旧）。failed 是上次失败的 {version, at}。"""
+    if not installed or active_lexicon(values)[0] != "wanxiang":
+        return None
+    asset = find_lexicon_asset(release)
+    if not asset or parse_version(asset[2]) <= parse_version(installed):
+        return None
+    now = time.time() if now is None else now
+    if failed and failed.get("version") == asset[2] and now - failed.get("at", 0) < LEXICON_RETRY:
+        return None
+    return asset
+
+
+def auto_update_lexicon(values, release, state):
+    """--startup 的后台检查顺带做：万象词库有新版就在后台下载、按 SHA256SUMS 校验、换进去
+    （install_lexicon_pack：先解到旁边，检查好了再整个换），再让插件重新读（换词库几秒后生效），不打扰用户。
+    state 是 update-check.json 的内容，失败时记下版本，隔一天再试。"""
+    folder = WANXIANG_DIR
+    installed = lexicon_pack_version(folder)
+    asset = lexicon_update_plan(values, installed, release, state.get("lexicon_failed"))
+    if not asset:
+        return None
+    name, url, version = asset
+    log(f"万象词库 {installed} 有新版 {version}，在后台更新")
+    try:
+        path = download_updates(release, [(name, url)], lambda _done, _total: None)[0]
+        try:
+            version = install_lexicon_pack(path, folder)
+        finally:
+            os.unlink(path)
+    except Exception as e:  # noqa: BLE001  网络错误各式各样；包不对时 install_lexicon_pack 什么都不动
+        state["lexicon_failed"] = {"version": version, "at": time.time()}
+        write_update_state(state)
+        log(f"万象词库 {version} 没更新好：{e}")
+        return None
+    state.pop("lexicon_failed", None)
+    write_update_state(state)
+    running = fcitx_call_sync("ReloadAddonConfig", GLib.Variant("(s)", ("wowtype",))) is not None
+    log(f"万象词库更新到 {version}" + ("，插件在后台换词库" if running else "，fcitx5 下次启动时生效"))
+    return version
+
+
 def install_lexicon_cli(args):
     """命令行：--install-lexicon wanxiang|<文件.tar.gz> 下载/装上万象并切过去，--use-lexicon rime-ice 切回。"""
     values, extra = read_config()
@@ -1971,6 +2750,326 @@ def install_lexicon_cli(args):
     print("已切到" + ("万象拼音" if values["Lexicon"] else "雾凇拼音（默认）") +
           ("，fcitx5 正在后台换词库，过几秒生效" if running else "，fcitx5 下次启动时生效"))
     return 0
+
+
+# ---------------------------------------------------------------- 神经语言模型
+# 整句增强模型（字级神经语言模型），有它长句的第一候选更准。安装包自带 WowType 自己训的 nnlm.bin
+# （系统数据目录，CC BY-SA 4.0）。也可以导入微信输入法自带的那个（16 MB，效果相近）：模型是腾讯的，
+# WowType 不分发，用户自己下载微信输入法的 macOS 安装包（.zip），在设置里点「导入」，这里从包里取出来、
+# 试着解析后放好。不看版本号：腾讯出了小版本，只要结构没变照样能用；解析不了才不装（核心的读取代码说了算）。
+# 和命令行的 tools/install_wetype_nnlm.py 做的一样。插件先用导入的，没有再用自带的（wowtype_engine.cpp 的 findNnlm）。
+NNLM_NAME = "nlrgpt2_nnlm.bin"
+NNLM_FILE = os.environ.get("WOWTYPE_NNLM") or os.path.join(DATA_DIR, "wetype", NNLM_NAME)
+BUNDLED_NNLM_NAME = "nnlm.bin"
+
+
+def bundled_nnlm():
+    """没导入微信输入法的模型时插件用的 nnlm.bin：用户目录里自己放的（不是安装包那份的旧副本）> 系统目录里
+    安装包自带的；都没有返回 None。"""
+    mine = os.path.join(DATA_DIR, BUNDLED_NNLM_NAME)
+    system = os.path.join(SYSTEM_DATA_DIR, BUNDLED_NNLM_NAME)
+    if os.path.isfile(mine) and not stale_bundled_copy(mine, system):
+        return mine
+    return system if os.path.isfile(system) else None
+
+
+def active_nnlm():
+    """插件会用哪一份整句增强模型：(种类, 路径)，种类是 "env"（环境变量 WOWTYPE_NNLM 指定）、
+    "imported"（导入的微信输入法模型）、"bundled"（WowType 自带的 nnlm.bin），都没有是 (None, None)。"""
+    if os.environ.get("WOWTYPE_NNLM"):
+        return "env", os.environ["WOWTYPE_NNLM"]
+    if os.path.isfile(NNLM_FILE):
+        return "imported", NNLM_FILE
+    bundled = bundled_nnlm()
+    return ("bundled", bundled) if bundled else (None, None)
+
+
+def nnlm_subtitle(kind):
+    """设置界面「整句增强模型」那行的说明。"""
+    if kind == "env":
+        return "用的是环境变量 WOWTYPE_NNLM 指定的模型"
+    if kind == "imported":
+        return "用的是导入的微信输入法模型，长句的第一候选更准"
+    if kind == "bundled":
+        return "已自带 WowType 的整句增强模型，长句的第一候选更准；也可以导入微信输入法的（效果相近）"
+    return ("可选。微信输入法自带的小模型（16 MB），长句的第一候选更准。"
+            "它是腾讯的，WowType 不带：先到微信输入法官网下载 macOS 版安装包（.zip），再点「导入」")
+NNLM_MAX_BYTES = 200 << 20
+# 和设置界面装在一起的自检工具：用核心的读取代码试解析模型
+CHECK_TOOL = shutil.which("wowtype-check") or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                           "wowtype-check")
+
+
+def check_nnlm_file(path):
+    """用核心的读取代码试着解析模型：读得出来返回字表大小，读不出来抛 ValueError。"""
+    if not os.access(CHECK_TOOL, os.X_OK):
+        raise ValueError("找不到 wowtype-check，没法检查模型（重装 WowType 可以修好）")
+    try:
+        done = subprocess.run([CHECK_TOOL, "--nnlm", path], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise ValueError(f"检查模型时出错：{e}") from e
+    if done.returncode != 0:
+        reason = (done.stderr.strip().splitlines() or ["格式不对"])[-1]
+        raise ValueError(f"读不出这个模型（{reason}），可能是微信输入法改了模型格式")
+    return int(done.stdout.strip() or 0)
+
+
+def read_wetype_nnlm(src):
+    """从微信输入法的安装包（.zip）、程序目录（.app）或模型文件本身读出模型；不是就抛 ValueError。"""
+    import zipfile
+    if os.path.isdir(src):
+        for root, _dirs, files in os.walk(src):
+            if NNLM_NAME in files:
+                with open(os.path.join(root, NNLM_NAME), "rb") as f:
+                    return f.read(NNLM_MAX_BYTES)
+        raise ValueError(f"这个目录里没有 {NNLM_NAME}")
+    if zipfile.is_zipfile(src):
+        with zipfile.ZipFile(src) as z:
+            hits = [i for i in z.infolist()
+                    if i.filename == NNLM_NAME or i.filename.endswith("/" + NNLM_NAME)]
+            if not hits:
+                raise ValueError(f"这个安装包里没有 {NNLM_NAME}，要微信输入法 macOS 版的安装包（.zip）")
+            if hits[0].file_size > NNLM_MAX_BYTES:
+                raise ValueError("包里的模型文件大得不对，不装")
+            return z.read(hits[0])
+    if os.path.getsize(src) > NNLM_MAX_BYTES:
+        raise ValueError("这不是微信输入法的安装包（.zip），也不是模型文件")
+    with open(src, "rb") as f:
+        return f.read()
+
+
+def install_wetype_nnlm(src, dest=None, check=None):
+    """导入神经语言模型，返回字节数。先写到临时文件试着解析，解析不了抛 ValueError，不装。"""
+    dest = dest or NNLM_FILE
+    check = check or check_nnlm_file
+    data = read_wetype_nnlm(src)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = dest + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    try:
+        check(tmp)
+    except BaseException:
+        os.remove(tmp)
+        raise
+    os.replace(tmp, dest)
+    return len(data)
+
+
+def nnlm_self_test():
+    """神经语言模型导入：从 zip、目录、文件本身取；解析不了、包里没有都不装（不联网，不跑 wowtype-check）。"""
+    import tempfile
+    import zipfile
+    model = b"fake nnlm " * 100
+
+    def check(path):  # 内容就是 model 才算读得出来
+        with open(path, "rb") as f:
+            if f.read() != model:
+                raise ValueError("读不出这个模型")
+        return 1
+
+    with tempfile.TemporaryDirectory() as root:
+        dest = os.path.join(root, "out", "wetype", NNLM_NAME)
+        pack = os.path.join(root, "WeType.zip")
+        with zipfile.ZipFile(pack, "w") as z:
+            z.writestr("WeType.app/Contents/Resources/" + NNLM_NAME, model)
+            z.writestr("WeType.app/Contents/Info.plist", "x")
+        assert install_wetype_nnlm(pack, dest, check) == len(model)
+        with open(dest, "rb") as f:
+            assert f.read() == model
+        os.remove(dest)
+        app = os.path.join(root, "WeType.app", "Contents", "Resources")
+        os.makedirs(app)
+        with open(os.path.join(app, NNLM_NAME), "wb") as f:
+            f.write(model)
+        assert install_wetype_nnlm(os.path.join(root, "WeType.app"), dest, check) == len(model)
+        assert install_wetype_nnlm(os.path.join(app, NNLM_NAME), dest, check) == len(model)
+        os.remove(dest)
+        empty = os.path.join(root, "other.zip")
+        with zipfile.ZipFile(empty, "w") as z:
+            z.writestr("readme.txt", "x")
+        wrong = os.path.join(root, "wrong.zip")
+        with zipfile.ZipFile(wrong, "w") as z:
+            z.writestr(NNLM_NAME, b"another format")
+        for bad in (empty, wrong, os.path.join(root, "WeType.app", "Contents", "Info.plist")):
+            try:
+                install_wetype_nnlm(bad, dest, check)
+            except (ValueError, OSError):
+                pass
+            else:
+                raise AssertionError(f"{bad} 不该装上")
+            assert not os.path.exists(dest) and not os.path.exists(dest + ".tmp")
+        # 没有 wowtype-check 时说清楚，不装
+        global CHECK_TOOL
+        saved, CHECK_TOOL = CHECK_TOOL, os.path.join(root, "missing")
+        try:
+            check_nnlm_file(pack)
+        except ValueError as e:
+            assert "wowtype-check" in str(e)
+        else:
+            raise AssertionError("没有 wowtype-check 时不该算通过")
+        finally:
+            CHECK_TOOL = saved
+
+
+def nnlm_choice_self_test():
+    """整句增强模型用哪一份：环境变量 > 导入的微信输入法模型 > 用户目录自己放的 nnlm.bin > 安装包自带的。"""
+    import tempfile
+    global DATA_DIR, SYSTEM_DATA_DIR, NNLM_FILE
+    saved =DATA_DIR, SYSTEM_DATA_DIR, NNLM_FILE, os.environ.pop("WOWTYPE_NNLM", None)
+    with tempfile.TemporaryDirectory() as root:
+        DATA_DIR = os.path.join(root, "user")
+        SYSTEM_DATA_DIR = os.path.join(root, "system")
+        NNLM_FILE = os.path.join(DATA_DIR, "wetype", NNLM_NAME)
+        try:
+            os.makedirs(os.path.join(DATA_DIR, "wetype"))
+            os.makedirs(SYSTEM_DATA_DIR)
+            assert active_nnlm() == (None, None)
+            assert "WowType 不带" in nnlm_subtitle(None)
+            system = os.path.join(SYSTEM_DATA_DIR, "nnlm.bin")
+            with open(system, "wb") as f:
+                f.write(b"WTNN\x01\0\0\0wowtype-data: nnlm.bin 2026.11.17.0 x\0")
+            assert active_nnlm() == ("bundled", system)
+            assert nnlm_subtitle("bundled").startswith("已自带 WowType 的整句增强模型")
+            mine = os.path.join(DATA_DIR, "nnlm.bin")
+            with open(mine, "wb") as f:
+                f.write(b"WTNN\x01\0\0\0wowtype-data: nnlm.bin 2026.11.17.0 x\0")
+            assert active_nnlm() == ("bundled", system), "用户目录里同一版的旧副本让给系统目录"
+            with open(mine, "wb") as f:
+                f.write(b"WTNN\x01\0\0\0wowtype-data: nnlm.bin 2026.12.01.0 x\0")
+            assert active_nnlm() == ("bundled", mine), "用户目录里更新的 nnlm.bin 先用"
+            with open(NNLM_FILE, "wb") as f:
+                f.write(b"fake")
+            assert active_nnlm() == ("imported", NNLM_FILE), "导入的微信输入法模型最先用"
+            assert nnlm_subtitle("imported").startswith("用的是导入的微信输入法模型")
+            os.environ["WOWTYPE_NNLM"] = os.path.join(root, "x.bin")
+            assert active_nnlm() == ("env", os.path.join(root, "x.bin"))
+        finally:
+            DATA_DIR, SYSTEM_DATA_DIR, NNLM_FILE, env = saved
+            os.environ.pop("WOWTYPE_NNLM", None)
+            if env is not None:
+                os.environ["WOWTYPE_NNLM"] = env
+
+
+def stale_copy_self_test():
+    """用户目录里老版本拷进来的自带词库让给安装包的；用户自己的照旧（和插件的按键测试同几种情况）。"""
+    import tempfile
+    stock = "# 由 tools/rime2tsv.py 生成，来源：rime_ice.dict.yaml\nni hao\t你好\t1\n"
+    now = time.time()
+    with tempfile.TemporaryDirectory() as root:
+        user = os.path.join(root, "user", "lexicon.tsv")
+        system = os.path.join(root, "system", "lexicon.tsv")
+        os.makedirs(os.path.dirname(user))
+        os.makedirs(os.path.dirname(system))
+
+        def write(path, text, days_ago):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.utime(path, (now - days_ago * 86400, now - days_ago * 86400))
+
+        write(system, stock, 2)
+        write(user, stock, 7)
+        assert stale_bundled_copy(user, system)
+        write(user, stock, 0)
+        assert not stale_bundled_copy(user, system), "自己重新生成的新词库照旧优先"
+        write(user, "ni hao\t你好\t1\n", 7)
+        assert not stale_bundled_copy(user, system), "自己做的词库照旧优先"
+        write(user, stock, 0)
+        os.utime(system, (0, 0))
+        assert stale_bundled_copy(user, system), "系统目录时间戳是 1970 年时也算旧副本"
+        os.remove(system)
+        assert not stale_bundled_copy(user, system)
+        # words.lm：字节数和官方发布的一样才算拷进来的官方模型
+        user_lm = os.path.join(root, "user", "words.lm")
+        system_lm = os.path.join(root, "system", "words.lm")
+        write(system_lm, "lm2", 2)
+        write(user_lm, "lm", 7)
+        assert not stale_bundled_copy(user_lm, system_lm), "自己训的 words.lm 照旧优先"
+        with open(user_lm, "wb") as f:
+            f.truncate(next(iter(OFFICIAL_LM_SIZES)))  # 稀疏文件，不占盘
+        assert stale_bundled_copy(user_lm, system_lm)
+        user_wubi = os.path.join(root, "user", "wubi86.tsv")
+        system_wubi = os.path.join(root, "system", "wubi86.tsv")
+        write(system_wubi, "a\t工\t99454797\n", 2)
+        write(user_wubi, "a\t工\t99454797\n", 7)
+        assert stale_bundled_copy(user_wubi, system_wubi)
+        write(user_wubi, "a\t工\t5\n", 7)
+        assert not stale_bundled_copy(user_wubi, system_wubi), "自己做的五笔码表照旧优先"
+        assert without_stale_copy([]) == [] and without_stale_copy(["", "/x"]) == ["", "/x"]
+
+        # 版本标记：和插件的按键测试（runDataFileCase）同几种情况
+        assert parse_data_marker("# wowtype-data: lexicon.tsv 2026.11.14.5 rime-ice abc (2026-11-14)\n") \
+            == ("lexicon.tsv", "2026.11.14.5", "rime-ice abc (2026-11-14)")
+        assert parse_data_marker("# wowtype-data: lexicon.tsv 2026-11-14.5") is None
+        assert parse_data_marker("# wowtype-data:lexicon.tsv 1") is None
+        assert scan_data_marker(b"x" * DATA_MARKER_SCAN + b"\n# wowtype-data: lexicon.tsv 1\n") is None
+        assert compare_data_versions("2026.11.9", "2026.11.10") < 0
+        assert compare_data_versions("2026.11.14", "2026.11.14.0") == 0
+        assert compare_data_versions("2026.11.09", "2026.11.9") == 0
+
+        def marked(name, version, rest):
+            return (f"# 由 tools/rime2tsv.py 生成，来源：rime_ice.dict.yaml\n"
+                    f"# wowtype-data: {name} {version} rime-ice\n{rest}")
+        os.makedirs(os.path.dirname(system), exist_ok=True)
+        write(system, marked("lexicon.tsv", "2026.11.20.0", "ni hao\t你好\t2\n"), 2)
+        write(user, marked("lexicon.tsv", "2026.11.14.5", "ni hao\t你好\t1\n"), 0)
+        assert stale_bundled_copy(user, system), "版本比安装包旧的是旧副本（不看修改时间）"
+        write(user, marked("lexicon.tsv", "2026.11.20.0", "ni hao\t你好\t1\n"), 0)
+        assert stale_bundled_copy(user, system), "版本和安装包一样的也是旧副本"
+        write(user, marked("lexicon.tsv", "2026.11.20.1", "ni hao\t你好\t1\n"), 30)
+        assert not stale_bundled_copy(user, system), "版本比安装包新的照旧优先"
+        write(user, marked("lexicon-wanxiang", "2026.12.01.0", "ni hao\t你好\t1\n"), 30)
+        assert not stale_bundled_copy(user, system), "标记名字和文件名不一样（别的词库）照旧优先"
+        write(user, stock, 7)
+        assert stale_bundled_copy(user, system), "没有标记的老自带词库照老办法认"
+        write(system, stock, 2)
+        write(user, marked("lexicon.tsv", "2026.11.14.5", "ni hao\t你好\t1\n"), 7)
+        assert not stale_bundled_copy(user, system), "安装包那份没有标记（老安装包）时用用户目录的"
+        assert data_file_version(user) == ("2026.11.14.5", "rime-ice") and data_file_version(system) is None
+        assert _data_version_note(user) == "，版本 2026.11.14.5（rime-ice）"
+        assert _data_version_note(system) == "，没有版本标记"
+        write(system_wubi, "# wowtype-data: wubi86.tsv 2023.10.25.1 rime-wubi\na\t工\t99454797\n", 2)
+        write(user_wubi, "# wowtype-data: wubi86.tsv 2023.10.25.0 rime-wubi\na\t工\t99454797\n", 0)
+        assert stale_bundled_copy(user_wubi, system_wubi), "五笔码表按版本认旧副本"
+
+        def wtlm(marker):  # <s> 和标记两个词、没有搭配的 WTLM 版本 1
+            raw = marker.encode()
+            return (b"WTLM" + (1).to_bytes(4, "little") + (2).to_bytes(4, "little") + bytes(4)
+                    + b"\x03<s>" + bytes([len(raw)]) + raw + bytes(4 * 5))
+
+        def write_bytes(path, data, days_ago):
+            with open(path, "wb") as f:
+                f.write(data)
+            os.utime(path, (now - days_ago * 86400, now - days_ago * 86400))
+        write_bytes(system_lm, wtlm("wowtype-data: words.lm 2026.11.20.0 lm-2026.11.20"), 2)
+        write_bytes(user_lm, wtlm("wowtype-data: words.lm 2026.11.20.0 lm-2026.11.20"), 0)
+        assert data_file_version(user_lm) == ("2026.11.20.0", "lm-2026.11.20")
+        assert stale_bundled_copy(user_lm, system_lm), "和安装包同一版的 words.lm 是旧副本"
+        write_bytes(user_lm, wtlm("wowtype-data: words.lm 2026.12.01.0 自己训的"), 7)
+        assert not stale_bundled_copy(user_lm, system_lm), "版本比安装包新的 words.lm 照旧优先"
+        with open(user_lm, "wb") as f:
+            f.truncate(38455852)
+        assert data_file_version(user_lm)[0] == "2026.11.09", "没有标记的 lm-2026.11.09 按字节数认出版本"
+        assert stale_bundled_copy(user_lm, system_lm), "拷进来的老官方 words.lm 让给带标记的新版"
+        with open(system_lm, "wb") as f:
+            f.truncate(38455852)
+        write_bytes(user_lm, wtlm("wowtype-data: words.lm 2026.11.20.0 lm-2026.11.20"), 7)
+        assert not stale_bundled_copy(user_lm, system_lm), "自己下的新版比安装包的 lm-2026.11.09 新"
+        write_bytes(user_lm, wtlm("wowtype-data: words.lm 2026.11.01.0 更早的"), 7)
+        assert stale_bundled_copy(user_lm, system_lm), "比安装包的 lm-2026.11.09 旧的是旧副本"
+        user_nn = os.path.join(root, "user", "nnlm.bin")
+        system_nn = os.path.join(root, "system", "nnlm.bin")
+        tail = b"\0" + b"\xff" * 64
+        write_bytes(system_nn, b"WTNN\x01\0\0\0wowtype-data: nnlm.bin 2026.11.20.0 nnlm-2026.11.20" + tail, 2)
+        write_bytes(user_nn, b"WTNN\x01\0\0\0wowtype-data: nnlm.bin 2026.11.19.0 nnlm-2026.11.19" + tail, 0)
+        assert stale_bundled_copy(user_nn, system_nn), "nnlm.bin 同样按版本认旧副本"
+        write_bytes(user_nn, b"WTNN\x01\0\0\0" + b"\xff" * 64, 7)
+        assert not stale_bundled_copy(user_nn, system_nn), "没有标记的 nnlm.bin（自己训的）照旧优先"
+        manifest = os.path.join(root, "DATA-MANIFEST")
+        with open(manifest, "w", encoding="utf-8") as f:
+            f.write("# 注释\nlexicon.tsv\t2026.11.14.6\t" + "0" * 64 + "\trime-ice abc\n")
+        assert read_data_manifest(manifest) == [("lexicon.tsv", "2026.11.14.6", "rime-ice abc")]
+        assert read_data_manifest(os.path.join(root, "没有")) == []
 
 
 def lexicon_self_test():
@@ -2422,6 +3521,218 @@ def translate_engine_self_test():
             values, extra = read_config()
             write_config(values, extra)  # 写回去以后这一项是明确的，不再靠推断
             assert "TranslateLocal=False" in open(CONFIG_FILE, encoding="utf-8").read()
+        finally:
+            CONFIG_FILE = saved
+
+
+def restart_self_test():
+    """升级后要不要提醒重启输入法。"""
+    assert addon_version_from("0.4.1") == "0.4.1"
+    assert addon_version_from(None, "org.freedesktop.DBus.Error.UnknownMethod") == ""
+    assert addon_version_from(None, "org.freedesktop.DBus.Error.UnknownObject") == ""
+    assert addon_version_from(None, "org.freedesktop.DBus.Error.ServiceUnknown") is None
+    assert addon_version_from(None, "org.freedesktop.DBus.Error.NoReply") is None
+    assert addon_version_from(None, "?") is None
+    assert not restart_needed("0.4.1", "0.4.1")
+    assert restart_needed("0.4.0", "0.4.1") and restart_needed("0.4.2", "0.4.1")  # 降级也要重启
+    # Beta 计划：版本号最大的（预发布也算），一样大要正式版；数据的发布（nnlm-…）、草稿不算
+    rel = lambda tag, pre=False, draft=False: {"tag_name": tag, "prerelease": pre, "draft": draft, "assets": []}
+    assert pick_release([rel("v0.4.0"), rel("v0.5.0", True), rel("nnlm-2026.11.17", True)])["tag"] == "v0.5.0"
+    assert pick_release([rel("v0.5.0", True), rel("v0.5.0")])["prerelease"] is False
+    assert pick_release([rel("v0.4.0"), rel("v0.6.0", draft=True), rel("lm-2026.11.09", True)])["version"] == "0.4.0"
+    assert pick_release([rel("v0.10.0"), rel("v0.9.9", True)])["tag"] == "v0.10.0"
+    assert pick_release([rel("nnlm-2026.11.17", True)]) is None and pick_release([]) is None
+    assert release_info(rel("v0.5.0", True))["prerelease"] and not beta_updates({}) and beta_updates({"BetaUpdates": "True"})
+    assert restart_needed("", "0.4.1")  # 没有 Version 的旧插件
+    assert not restart_needed(None, "0.4.1")  # 插件没在跑、总线连不上：说不清，不提醒
+    # 源码直接跑（版本号还是占位串）。占位串拼出来写：安装时 configure_file 会把字面上的占位串全换成真实版本号，
+    # 以前这里直接写占位串，装好以后这条断言就变成「新旧版本一样」，自测失败、安装脚本说「设置界面用不了」
+    unconfigured = "@" + "VERSION@"
+    assert not restart_needed("0.4.0", unconfigured) and not restart_needed("", unconfigured)
+    assert restart_needed("0.4.1~git1.a", "0.4.1~git2.b")
+
+
+def lexicon_update_self_test():
+    """后台更新万象词库：什么时候更新，更新的整个过程（假的下载，不连 fcitx5）。"""
+    global WANXIANG_DIR, WANXIANG_LEXICON, UPDATE_STATE, LOG_FILE, download_updates, fcitx_call_sync
+    import io
+    import tarfile
+    import tempfile
+    release = {"tag": "v9.9.9", "assets": {"wowtype-data-wanxiang-2026.11.10.0.tar.gz": "u1", "SHA256SUMS": "s"}}
+    saved = (WANXIANG_DIR, WANXIANG_LEXICON, UPDATE_STATE, LOG_FILE, download_updates, fcitx_call_sync)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            WANXIANG_DIR = os.path.join(tmp, "dicts", "wanxiang")
+            WANXIANG_LEXICON = os.path.join(WANXIANG_DIR, "lexicon.tsv")
+            UPDATE_STATE = os.path.join(tmp, "update-check.json")
+            LOG_FILE = "0"
+            using = {**DEFAULTS, "Lexicon": WANXIANG_LEXICON}
+            asset = ("wowtype-data-wanxiang-2026.11.10.0.tar.gz", "u1", "2026.11.10.0")
+            # 没装、装了没在用：不更新（active_lexicon 要文件在）
+            assert lexicon_update_plan(using, None, release) is None
+            os.makedirs(WANXIANG_DIR)
+            with open(WANXIANG_LEXICON, "w", encoding="utf-8") as f:
+                f.write("ni hao\t你好\t1\n")
+            assert lexicon_update_plan(DEFAULTS, "2026.11.1.0", release) is None
+            assert lexicon_update_plan(using, "2026.11.1.0", release) == asset
+            assert lexicon_update_plan(using, "?", release) == asset  # 没写版本的算旧
+            assert lexicon_update_plan(using, "2026.11.10.0", release) is None
+            assert lexicon_update_plan(using, "2026.12.1.0", release) is None
+            assert lexicon_update_plan(using, "2026.11.1.0", {"assets": {}}) is None
+            failed = {"version": "2026.11.10.0", "at": 1000}
+            assert lexicon_update_plan(using, "2026.11.1.0", release, failed, now=1000 + 3600) is None
+            assert lexicon_update_plan(using, "2026.11.1.0", release, failed, now=1000 + LEXICON_RETRY) == asset
+            assert lexicon_update_plan(using, "2026.11.1.0", release, {"version": "2026.11.9.0", "at": 1000},
+                                       now=1001) == asset
+            # 整个过程：下载（假的）、换进去、让插件重读
+            calls = []
+
+            def fake_call(method, params=None, reply=None):
+                calls.append((method, params.unpack() if params is not None else None))
+                return GLib.Variant("()", ())
+            fcitx_call_sync = fake_call
+            with open(os.path.join(WANXIANG_DIR, "VERSION"), "w", encoding="utf-8") as f:
+                f.write("2026.11.1.0\n")
+
+            def fake_download(_release, files, _progress, text=None):
+                path = os.path.join(tmp, files[0][0])
+                lexicon = text if text is not None else "".join(
+                    f"ce shi\t测试{i}\t{i}\n" for i in range(LEXICON_PACK_MIN))
+                with tarfile.open(path, "w:gz") as tar:
+                    for name, data in (("lexicon.tsv", lexicon), ("VERSION", "2026.11.10.0\n"),
+                                       ("LICENSE", "x"), ("SOURCE.txt", "x")):
+                        info = tarfile.TarInfo(name)
+                        info.size = len(data.encode())
+                        tar.addfile(info, io.BytesIO(data.encode()))
+                return [path]
+            # 坏包：原来的留着，记下失败，不让插件重读；隔一天之内不再试
+            download_updates = lambda r, f, p: fake_download(r, f, p, "ni hao\t你好\t1\n")  # noqa: E731
+            state = {}
+            assert auto_update_lexicon(using, release, state) is None
+            assert lexicon_pack_version(WANXIANG_DIR) == "2026.11.1.0" and calls == []
+            assert state["lexicon_failed"]["version"] == "2026.11.10.0"
+            assert json.load(open(UPDATE_STATE))["lexicon_failed"]["version"] == "2026.11.10.0"
+            assert auto_update_lexicon(using, release, state) is None
+            state["lexicon_failed"]["at"] -= LEXICON_RETRY
+            download_updates = fake_download
+            assert auto_update_lexicon(using, release, state) == "2026.11.10.0"
+            assert lexicon_pack_version(WANXIANG_DIR) == "2026.11.10.0" and "lexicon_failed" not in state
+            assert calls == [("ReloadAddonConfig", ("wowtype",))]
+            assert not [n for n in os.listdir(tmp) if n.endswith(".tar.gz")]  # 下载的包删掉了
+            assert auto_update_lexicon(using, release, state) is None  # 已经是最新
+    finally:
+        WANXIANG_DIR, WANXIANG_LEXICON, UPDATE_STATE, LOG_FILE, download_updates, fcitx_call_sync = saved
+
+
+def setup_self_test():
+    """一键设置的分支判断，第一次配置时让出左 Shift（只动临时目录，不连 fcitx5）。"""
+    global PROFILE_FILE, STATE_FILE, CONFIG_FILE, LOG_FILE
+    import tempfile
+    assert setup_action(True, None) == "add" and setup_action(True, "ibus") == "add"
+    assert setup_action(False, None) == "restart"
+    assert setup_action(None, "ibus") == "im-config" and setup_action(None, "default") == "im-config"
+    assert setup_action(None, "fcitx5") == "profile" and setup_action(None, None) == "profile"
+    assert setup_question("add", None) is None and setup_question("profile", None) is None
+    assert "ibus" in setup_question("im-config", "ibus") and "Chromium" in setup_question("restart", None)
+    assert setup_hint(True, True) is None
+    assert "「添加」" in setup_hint(True, False)[1] and "「重启并添加」" in setup_hint(False, False)[1]
+    assert "「一键设置」" in setup_hint(None, False)[1]
+    # fcitx5 全局配置：换掉 AltTriggerKeys，别的原样
+    text = ("[Hotkey]\nTriggerKeys=\nEnumerateWithTriggerKeys=True\n\n[Hotkey/AltTriggerKeys]\n0=Shift_L\n\n"
+            "[Behavior]\nActiveByDefault=False\n")
+    out = fcitx_config_with_hotkeys(text, {"AltTriggerKeys": []})
+    hotkey = parse_fcitx_hotkey(out)
+    assert hotkey["AltTriggerKeys"] == "" and hotkey["TriggerKeys"] == "", out
+    assert "EnumerateWithTriggerKeys=True" in out and "[Behavior]\nActiveByDefault=False" in out, out
+    again = fcitx_config_with_hotkeys(out, {"AltTriggerKeys": ["Shift_R"]})
+    assert key_list(parse_fcitx_hotkey(again)["AltTriggerKeys"]) == ["Shift_R"], again
+    assert "AltTriggerKeys=" not in again, again
+    assert fcitx_config_with_hotkeys("", {"AltTriggerKeys": []}) == "[Hotkey]\nAltTriggerKeys=\n"
+    saved = (PROFILE_FILE, STATE_FILE, CONFIG_FILE, LOG_FILE, os.environ.get("XDG_CONFIG_HOME"),
+             os.environ.get("XDG_CONFIG_DIRS"))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["XDG_CONFIG_HOME"] = os.path.join(tmp, "config")
+            os.environ["XDG_CONFIG_DIRS"] = os.path.join(tmp, "etc")
+            PROFILE_FILE = os.path.join(tmp, "config", "fcitx5", "profile")
+            STATE_FILE = os.path.join(tmp, "state.json")
+            CONFIG_FILE = os.path.join(tmp, "config", "fcitx5", "conf", "wowtype.conf")
+            LOG_FILE = "0"
+            user_config = fcitx_user_config_file()
+            # 第一次：新建输入法列表，左 Shift 让给 WowType，记下来（「输入」页的开关能还回去）
+            assert fcitx_first_time()
+            lines = []
+            assert run_setup("profile", True, True, lines.append, hint="启用 Fcitx 5") == SETUP_RELOGIN
+            assert lines[0] == "启用 Fcitx 5" and "新建" in lines[1] and "左 Shift" in lines[2], lines
+            assert "Name=wowtype" in open(PROFILE_FILE, encoding="utf-8").read()
+            assert saved_fcitx_hotkey() == (parse_fcitx_hotkey("[Hotkey]\nAltTriggerKeys=\n"), user_config)
+            assert read_state()["fcitx_shift_freed"] == [["AltTriggerKeys", "Shift_L"]]
+            assert not fcitx_first_time()
+            # 已有配置：不再动快捷键
+            with open(user_config, "w", encoding="utf-8") as f:
+                f.write("[Hotkey/AltTriggerKeys]\n0=Shift_L\n")
+            lines = []
+            assert run_setup("profile", True, fcitx_first_time(), lines.append) == SETUP_RELOGIN
+            assert lines == ["WowType 已经在输入法列表「Default」里"], lines
+            assert open(user_config, encoding="utf-8").read() == "[Hotkey/AltTriggerKeys]\n0=Shift_L\n"
+            # 没答应切框架：不跑 im-config，输入法列表照样写好，还差一步
+            os.unlink(PROFILE_FILE)
+            os.unlink(user_config)
+            os.unlink(STATE_FILE)
+            # 系统有默认配置（/etc/xdg/fcitx5/config）：用户的文件会盖掉它，别的项照抄过来
+            os.makedirs(os.path.join(tmp, "etc", "fcitx5"))
+            with open(os.path.join(tmp, "etc", "fcitx5", "config"), "w", encoding="utf-8") as f:
+                f.write("[Hotkey/TriggerKeys]\n0=Super+space\n\n[Hotkey/AltTriggerKeys]\n0=Shift_L\n1=Shift_R\n")
+            lines = []
+            assert run_setup("im-config", False, True, lines.append) == SETUP_UNFINISHED
+            assert "没切换" in lines[0] and os.path.exists(PROFILE_FILE), lines
+            hotkey = saved_fcitx_hotkey()[0]
+            assert key_list(hotkey["AltTriggerKeys"]) == ["Shift_R"] and key_list(hotkey["TriggerKeys"]) == ["Super+space"]
+            # 单按 Shift 只用右边的：左 Shift 不用让
+            for path in (PROFILE_FILE, user_config, STATE_FILE):
+                os.unlink(path)
+            write_config({**DEFAULTS, "ShiftToggle": "Right"}, [])
+            assert not free_left_shift_first_time(False, lines.append)
+            assert not os.path.exists(user_config)
+            # 不让重启 / 没答应重启：什么都不做（不连 fcitx5）
+            assert run_setup("restart", True, False, lines.append, allow_restart=False) == SETUP_UNFINISHED
+            assert run_setup("restart", False, False, lines.append) == SETUP_UNFINISHED
+    finally:
+        PROFILE_FILE, STATE_FILE, CONFIG_FILE, LOG_FILE = saved[:4]
+        for name, value in (("XDG_CONFIG_HOME", saved[4]), ("XDG_CONFIG_DIRS", saved[5])):
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def config_write_self_test():
+    """存盘只写和默认值不一样的项；不认识的行留着；要推断的 TranslateLocal 照写。"""
+    global CONFIG_FILE
+    import tempfile
+    saved = CONFIG_FILE
+    with tempfile.TemporaryDirectory() as tmp:
+        CONFIG_FILE = os.path.join(tmp, "wowtype.conf")
+        try:
+            assert config_lines(DEFAULTS) == []
+            write_config(dict(DEFAULTS), [])
+            assert open(CONFIG_FILE, encoding="utf-8").read() == ""
+            assert read_config()[0] == DEFAULTS
+            # 老文件：每一项都写着（包括默认值），外加不认识的键和 [Hotkey] 分组
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                f.write("".join(f"{k}={v}\n" for k, v in DEFAULTS.items()) +
+                        "PageSize=5\nFutureKey=x\n[Hotkey]\nTriggerKeys=\n")
+            values, extra = read_config()
+            write_config(values, extra)
+            text = open(CONFIG_FILE, encoding="utf-8").read()
+            assert text == "PageSize=5\nFutureKey=x\n[Hotkey]\nTriggerKeys=\n", text
+            assert read_config()[0] == {**DEFAULTS, "PageSize": "5"}
+            # 填了翻译接口又选回本地模型：TranslateLocal=True 不写的话读回来是 False
+            values = {**DEFAULTS, "TranslateBaseUrl": "https://a/v1", "TranslateLocal": "True"}
+            assert config_lines(values) == ["TranslateBaseUrl=https://a/v1", "TranslateLocal=True"]
+            write_config(values, [])
+            assert read_config()[0]["TranslateLocal"] == "True"
+            assert config_lines({**DEFAULTS, "Lexicon": " /a b "}) == ['Lexicon=" /a b "']
         finally:
             CONFIG_FILE = saved
 
@@ -3286,6 +4597,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.show_page(page or "general")
 
         self.refresh_status()
+        self.refresh_restart_hint()
         self.refresh_theme()
         self.refresh_font()
         self.refresh_shift_conflict()
@@ -3339,6 +4651,14 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.status_button.connect("clicked", self.on_add_to_group)
         self.status_row.add_suffix(self.status_button)
         status.add(self.status_row)
+        # 升级以后 fcitx5 还载着旧插件（refresh_restart_hint）
+        self.restart_hint_row = Adw.ActionRow(title="WowType 已更新，重启输入法后生效", visible=False)
+        self.restart_hint_row.add_css_class("wt-warning")
+        restart_hint_button = Gtk.Button(label="重启输入法", valign=Gtk.Align.CENTER)
+        restart_hint_button.add_css_class("suggested-action")
+        restart_hint_button.connect("clicked", self.on_restart_hint)
+        self.restart_hint_row.add_suffix(restart_hint_button)
+        status.add(self.restart_hint_row)
         page.add(status)
 
         cands = Adw.PreferencesGroup(title="候选词")
@@ -3466,6 +4786,21 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.custom_lexicon_row.add_prefix(self.custom_lexicon_check)
         self.custom_lexicon_row.set_activatable_widget(self.custom_lexicon_check)
         group.add(self.custom_lexicon_row)
+
+        # 整句增强模型：安装包自带 WowType 的 nnlm.bin；微信输入法的（腾讯的，不随 WowType 分发）
+        # 用户下载微信输入法的安装包后在这里导入，导入了就先用它。删除按钮只删导入的那份
+        self.nnlm_row = Adw.ActionRow(title="整句增强模型")
+        self.nnlm_import = Gtk.Button(label="导入…", valign=Gtk.Align.CENTER,
+                                      tooltip_text="选下载好的微信输入法 macOS 版安装包（.zip）")
+        self.nnlm_import.connect("clicked", self.on_nnlm_import)
+        self.nnlm_row.add_suffix(self.nnlm_import)
+        self.nnlm_delete = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER,
+                                      tooltip_text="删除导入的微信输入法模型")
+        self.nnlm_delete.add_css_class("flat")
+        self.nnlm_delete.connect("clicked", self.on_nnlm_delete)
+        self.nnlm_row.add_suffix(self.nnlm_delete)
+        group.add(self.nnlm_row)
+        self.refresh_nnlm()
         self.rime_check.connect("toggled", self.on_lexicon_choice)
         self.wanxiang_check.connect("toggled", self.on_lexicon_choice)
         self.refresh_lexicon()
@@ -3581,6 +4916,51 @@ class SettingsWindow(Adw.ApplicationWindow):
                 return  # 取消
             self.start_lexicon_install(path)
         dialog.open(self, None, chosen)
+
+    def refresh_nnlm(self):
+        have = os.path.isfile(NNLM_FILE)  # 导入的那份（删除按钮只删它）
+        self.nnlm_row.set_subtitle(nnlm_subtitle(active_nnlm()[0]))
+        self.nnlm_import.set_label("重新导入…" if have else "导入…")
+        self.nnlm_delete.set_visible(have)
+
+    def on_nnlm_import(self, _button):
+        dialog = FileDialog(title="选微信输入法的安装包")
+        packs = Gtk.FileFilter(name="微信输入法安装包（*.zip）或模型文件（*.bin）")
+        packs.add_pattern("*.zip")
+        packs.add_pattern("*.bin")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(packs)
+        dialog.set_filters(filters)
+
+        def chosen(dialog, result):
+            try:
+                path = dialog.open_finish(result).get_path()
+            except GLib.Error:
+                return  # 取消
+            try:
+                size = install_wetype_nnlm(path)
+            except (ValueError, OSError) as e:
+                log(f"导入整句增强模型失败：{e}")
+                self.toast(f"没导入：{e}")
+                return
+            log(f"导入了整句增强模型（{human_size(size)}）")
+            self.fcitx.reload()  # 插件重新读设置时发现模型文件变了就载入，不用重启
+            self.toast("已导入，马上生效")
+            self.refresh_nnlm()
+        dialog.open(self, None, chosen)
+
+    def on_nnlm_delete(self, _button):
+        try:
+            os.remove(NNLM_FILE)
+        except OSError:
+            pass
+        log("删掉了导入的整句增强模型")
+        if active_nnlm()[0] == "bundled":
+            self.fcitx.reload()  # 插件重新读设置时换回自带的 nnlm.bin，不用重启
+            self.toast("已删除，换回 WowType 自带的整句增强模型")
+        else:
+            self.toast("已删除，重启输入法后不再使用")
+        self.refresh_nnlm()
 
     def on_lexicon_delete(self, _button):
         if active_lexicon(self.values)[0] == "wanxiang":
@@ -3718,6 +5098,11 @@ class SettingsWindow(Adw.ApplicationWindow):
             "SelectKeys", self.select_names[row.get_selected()]))
         extras.add(self.select_row)
         extras.add(self.make_switch("PickChar", "以词定字", "按 [ 取第一个字，按 ] 取最后一个字"))
+        association = self.make_switch("Association", "联想", "上屏以后给出常跟在后面的词，按 Tab 选")
+        self.add_info(association, "联想出来以后接着打字、数字、标点、空格、回车都照常，不会选到联想；"
+                                   "按 Tab 进联想行，再用空格、回车或数字上屏，Esc 退出，也可以用鼠标点。"
+                                   "五笔、互译和密码框里不出。")
+        extras.add(association)
         auto_space = Adw.ExpanderRow(
             title="中英文之间自动加空格", subtitle="第5章 → 第 5 章", show_enable_switch=True)
         self.add_info(auto_space, "你好Linux → 你好 Linux。只在程序告诉输入法光标前是什么字时加，"
@@ -4056,15 +5441,13 @@ class SettingsWindow(Adw.ApplicationWindow):
         return button
 
     def refresh_status(self):
-        def done(info):
+        """第一页「输入法」：fcitx5 在不在跑、认不认得 WowType、在不在输入法列表里；差哪一步，按钮就做哪一步
+        （和 wowtype-config --setup 一样，见 setup_action）。"""
+        def got_group(info):
             if info is None:
-                self.status_row.set_title("没检测到 fcitx5")
-                self.status_row.set_subtitle("先启动 fcitx5，设置会在它下次启动时生效")
-                self.status_button.set_visible(False)
-                self.group_info = None
+                show(None)
                 return
-            group, layout, items = info
-            self.group_info = info
+            group, _layout, items = info
             if any(name == "wowtype" for name, _ in items):
                 self.status_row.set_title("WowType 已在输入法列表里")
                 self.status_row.set_subtitle("用 Ctrl+空格（或你设的快捷键）切换到 WowType")
@@ -4073,18 +5456,117 @@ class SettingsWindow(Adw.ApplicationWindow):
                 self.status_row.set_title("WowType 还没加到输入法列表")
                 self.status_row.set_subtitle(
                     GLib.markup_escape_text(f"加到「{group}」里就能切换过去用"))
+                self.status_button.set_label("添加")
                 self.status_button.set_visible(True)
-        self.fcitx.group_info(done)
+
+        def show(known):
+            im_active = im_config_active() if known is None and not own_im_framework() else None
+            action = setup_action(known, im_active)
+            self.setup_state = (action, im_active)
+            if action == "add":
+                self.fcitx.group_info(got_group)
+                return
+            if action == "restart":
+                self.status_row.set_title("fcitx5 还没载入 WowType")
+                subtitle = "刚装完要重启一次 fcitx5 才能用"
+                label = "重启并添加"
+            else:
+                self.status_row.set_title("fcitx5 没在运行")
+                subtitle = (f"输入法框架是「{im_active}」，一键切到 fcitx5（要注销重新登录）"
+                            if action == "im-config" else "一键写好输入法列表，fcitx5 下次启动时生效")
+                label = "一键设置"
+            self.status_row.set_subtitle(GLib.markup_escape_text(subtitle))
+            self.status_button.set_label(label)
+            self.status_button.set_visible(True)
+
+        self.fcitx.call("AvailableInputMethods", None, "(a(ssssssb))", lambda value: show(
+            None if value is None else any(item[0] == "wowtype" for item in value.unpack()[0])))
 
     def on_add_to_group(self, _button):
-        if not self.group_info:
-            return
-        group, layout, items = self.group_info
+        action, im_active = getattr(self, "setup_state", ("add", None))
+        question = setup_question(action, im_active)
+        if question:
+            self.confirm("一键设置", question, "切换" if action == "im-config" else "重启并添加",
+                         lambda: self.start_setup(action))
+        else:
+            self.start_setup(action)
 
-        def done(ok):
-            self.toast("已添加，可以切换到 WowType 了" if ok else "添加失败")
-            self.refresh_status()
-        self.fcitx.add_to_group(group, layout, items, done)
+    def start_setup(self, action):
+        """一键设置（run_setup，要等 fcitx5 重启、跑 im-config，放到线程里）。"""
+        self.status_button.set_sensitive(False)
+        self.status_row.set_subtitle("正在设置…")
+        first = fcitx_first_time()
+        hint = framework_hint(True)
+
+        def work():
+            lines = []
+            try:
+                code = run_setup(action, True, first, lines.append, True, hint)
+            except Exception as e:  # noqa: BLE001
+                code = SETUP_FAILED
+                lines.append(str(e))
+            GLib.idle_add(self.setup_done, action, code, lines)
+        threading.Thread(target=work, daemon=True).start()
+
+    def setup_done(self, action, code, lines):
+        self.status_button.set_sensitive(True)
+        log(f"一键设置：{action}，结果 {code}")
+        if code == SETUP_OK:
+            self.toast("已添加，可以切换到 WowType 了")
+        else:
+            heading = {SETUP_RESTARTED: "fcitx5 已重启，WowType 已添加",
+                       SETUP_RELOGIN: "注销并重新登录后就能用了",
+                       SETUP_UNFINISHED: "还差一步"}.get(code, "没设置好")
+            body = "\n".join(lines)
+            if code == SETUP_RESTARTED:
+                body += "\n" + RESTART_NOTE
+            dialog = AlertDialog(heading=heading, body=body)
+            dialog.add_response("ok", "好")
+            dialog.present(self)
+        self.refresh_status()
+        self.refresh_restart_hint()
+        self.refresh_shift_conflict()
+        return GLib.SOURCE_REMOVE
+
+    def confirm(self, heading, body, yes_label, on_yes, no_label="取消"):
+        """问一句，点了 yes_label 才 on_yes()。"""
+        dialog = AlertDialog(heading=heading, body=body)
+        dialog.add_response("cancel", no_label)
+        dialog.add_response("yes", yes_label)
+        dialog.set_response_appearance("yes", ResponseAppearance.SUGGESTED)
+        dialog.connect("response", lambda _d, response: response == "yes" and on_yes())
+        dialog.present(self)
+        return dialog
+
+    def refresh_restart_hint(self):
+        """正在跑的插件和装好的不是同一版（升级了还没重启输入法）时，第一页提示重启。"""
+        bus = self.fcitx.bus
+        if not bus:
+            return
+
+        def finished(bus, result):
+            try:
+                running = addon_version_from(bus.call_finish(result).unpack()[0])
+            except GLib.Error as e:
+                running = addon_version_from(None, dbus_error_name(e))
+            needed = restart_needed(running)
+            self.restart_hint_row.set_visible(needed)
+            if needed:
+                self.restart_hint_row.set_subtitle(GLib.markup_escape_text(
+                    f"正在用的还是 {running or '旧版'}，装好的是 {current_version()}"))
+        bus.call(*ADDON_BUS, "Version", None, GLib.VariantType("(s)"),
+                 Gio.DBusCallFlags.NO_AUTO_START, 2000, None, finished)
+
+    def on_restart_hint(self, _button):
+        def restart():
+            def done(ok):
+                self.toast("输入法已重启" if ok else "重启失败，可以注销后重新登录")
+                if ok:
+                    self.restart_hint_row.set_visible(False)
+                self.refresh_status()
+                self.refresh_restart_hint()
+            self.fcitx.restart(done)
+        self.confirm("重启输入法？", "WowType 的新版要重启输入法才生效。" + RESTART_NOTE, "重启输入法", restart)
 
     # ---------------- 语音
 
@@ -4934,8 +6416,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         group.add(self.progress)
 
         self.restart_row = Adw.ActionRow(title="已更新，重启输入法后生效", visible=False)
-        self.add_info(self.restart_row, "设置界面会跟着重新打开。"
-                                        "重启后，浏览器等正在打开的应用可能要重新打开才能打字。")
+        self.add_info(self.restart_row, "设置界面会跟着重新打开。" + RESTART_NOTE)
         restart = Gtk.Button(label="重启输入法", valign=Gtk.Align.CENTER)
         restart.add_css_class("suggested-action")
         restart.connect("clicked", self.on_restart_fcitx)
@@ -4959,6 +6440,12 @@ class SettingsWindow(Adw.ApplicationWindow):
         check = self.make_switch("CheckUpdate", "自动检查更新", "有新版本时发通知")
         self.add_info(check, "切到 WowType 时在后台检查，最多一小时一次。")
         auto.add(check)
+        beta = self.make_switch("BetaUpdates", "Beta 计划", "也接收预发布版的更新")
+        self.add_info(beta, "预发布版（pre-release）先带上新功能给想尝鲜的人试，可能不稳定。"
+                            "关掉以后已经装上的预发布版不会退回，等下一个正式版出来再提示更新。")
+        # 开关一换就按新的规矩再查一次
+        beta.connect("notify::active", lambda _r, _p: self.quiet_switch or self.on_check_update())
+        auto.add(beta)
         page.add(auto)
         return page
 
@@ -4969,7 +6456,7 @@ class SettingsWindow(Adw.ApplicationWindow):
 
         def work():
             try:
-                release = fetch_latest()
+                release = fetch_latest(self.values.get("BetaUpdates") == "True")
                 files, reason = plan_update(release) if is_newer(release) else ([], "")
                 result = (release, files, reason, None)
             except Exception as e:  # noqa: BLE001  网络错误各式各样
@@ -4992,7 +6479,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         write_update_state(state)
         newer = is_newer(release)
         if newer:
-            self.latest_row.set_title(f"有新版本 {release['version']}")
+            self.latest_row.set_title(f"有新版本 {release['version']}" + ("（预发布）" if release.get("prerelease") else ""))
             self.latest_row.set_subtitle("")
         elif development_build():
             # 开发版不说「已经是最新」：它可能在最新正式版之前，也可能之后
@@ -5080,7 +6567,7 @@ class SettingsWindow(Adw.ApplicationWindow):
                     self.latest_row.set_title(f"已安装 {self.release['version']}")
                     self.updated = True
                     log(f"更新已安装：{self.release['version']}")
-                    self.toast("更新已安装，重启输入法后生效")
+                    self.ask_restart_after_update()
                 elif code in (126, 127):  # pkexec：取消授权 / 没通过
                     self.install_failed("没有授权，已取消")
                 else:
@@ -5097,6 +6584,12 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.check_button.set_sensitive(True)
         self.toast(text)
         return GLib.SOURCE_REMOVE
+
+    def ask_restart_after_update(self):
+        """装好更新马上问要不要重启输入法；不重启的话「更新」页留着「重启输入法」按钮。"""
+        self.confirm(f"已更新到 {self.release['version']}，现在重启输入法吗？",
+                     "重启输入法后新版才生效，设置界面会跟着重新打开。" + RESTART_NOTE,
+                     "重启输入法", lambda: self.on_restart_fcitx(None), no_label="稍后")
 
     def on_restart_fcitx(self, _button):
         def done(ok):
@@ -5282,6 +6775,10 @@ if __name__ == "__main__":
         sys.exit(startup_tasks())
     if "--check-update" in sys.argv:  # 旧版插件叫的是这个
         sys.exit(startup_tasks())
+    if "--setup" in sys.argv:
+        sys.exit(setup_cli(sys.argv[1:]))
+    if "--notify-setup" in sys.argv:
+        sys.exit(notify_setup_cli())
     if "--add-to-group" in sys.argv:
         sys.exit(add_to_group_cli("--restart" in sys.argv))
     if "--restart-fcitx" in sys.argv:
@@ -5326,8 +6823,15 @@ if __name__ == "__main__":
         download_self_test()
         llama_self_test()
         translate_engine_self_test()
+        config_write_self_test()
+        restart_self_test()
+        setup_self_test()
+        lexicon_update_self_test()
         voice_model_self_test()
         lexicon_self_test()
+        stale_copy_self_test()
+        nnlm_self_test()
+        nnlm_choice_self_test()
         # fcitx5 默认配置：左 Shift 是「临时切换输入法」
         hotkey = {"TriggerKeys": {"0": "Control+space", "1": "Zenkaku_Hankaku"},
                   "AltTriggerKeys": {"0": "Shift_L"}}
