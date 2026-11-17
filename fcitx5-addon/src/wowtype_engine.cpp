@@ -2294,7 +2294,11 @@ bool WowtypeEngine::handleShiftKey(fcitx::InputContext *ic, WowtypeState *state,
         return false;
     }
     followSessionMode(ic, state, frame);
-    event.filterAndAccept();
+    // 这一下是松开 Shift（切了模式）：不接受，照常交给应用。外壳只在输入法没接受的时候才把键
+    // 转给应用（Wayland 上经 KWin 的虚拟键盘），吞掉松开的 Shift，应用会以为它还按着：之后
+    // shift+单击开新窗口、滚轮变横向、快捷键错乱（#225）。按下那一下本来就没接受（见上），
+    // 单独按下、松开 Shift 不出字，交给应用不会多打东西。
+    event.filter();
     return true;
 }
 

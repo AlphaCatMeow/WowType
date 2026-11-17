@@ -1629,15 +1629,18 @@ void runCases(Instance &instance) {
           "默认（都用来选词）左键不动编辑区的光标：@" + std::to_string(ic->inputPanel().preedit().cursor()));
     fresh(ic.get());
 
-    // 单按 Shift 切英文（#28）：右 Shift 不是 fcitx 默认的临时切换键，走的是 WowType 自己的英文模式
+    // 单按 Shift 切英文（#28）：右 Shift 不是 fcitx 默认的临时切换键，走的是 WowType 自己的英文模式。
+    // 按下、松开都不接受（照常交给应用）：外壳只在没接受时才把键转给应用，吞掉松开的 Shift，
+    // Wayland 上的应用会以为它一直按着（#225）
     const auto tapShift = [&](KeySym sym) {
         KeyEvent press(ic.get(), Key(sym), false);
-        ic->keyEvent(press);
+        const bool pressTaken = ic->keyEvent(press);
         KeyEvent release(ic.get(), Key(sym, KeyState::Shift), true);
-        return ic->keyEvent(release);
+        const bool releaseTaken = ic->keyEvent(release);
+        return !pressTaken && !releaseTaken;
     };
     check(instance.inputMethodLabel(ic.get()) == "中", "中文时提示「中」：" + instance.inputMethodLabel(ic.get()));
-    check(tapShift(FcitxKey_Shift_R), "单按右 Shift 被接住");
+    check(tapShift(FcitxKey_Shift_R), "单按右 Shift 切英文，按下和松开都交给应用（#225）");
     check(instance.inputMethodLabel(ic.get()) == "英", "英文时提示「英」：" + instance.inputMethodLabel(ic.get()));
     type(ic.get(), "nihao,");
     check(ic->committed.empty() && ic->passed == "nihao," && preedit(ic.get()).empty(),
@@ -1654,11 +1657,13 @@ void runCases(Instance &instance) {
     fresh(ic.get());
     {
         // Shift 按着打了别的键（大写字母）就不算单按
+        const std::string before = instance.inputMethodLabel(ic.get());
         KeyEvent press(ic.get(), Key(FcitxKey_Shift_R), false);
         ic->keyEvent(press);
         send(ic.get(), Key(FcitxKey_A, KeyState::Shift));
         KeyEvent release(ic.get(), Key(FcitxKey_Shift_R, KeyState::Shift), true);
-        check(!ic->keyEvent(release), "Shift+字母后松开 Shift 不切换");
+        check(!ic->keyEvent(release) && instance.inputMethodLabel(ic.get()) == before,
+              "Shift+字母后松开 Shift 不切换");
         type(ic.get(), "<esc>nihao<sp>");
         check(ic->committed == "你好", "仍是中文：" + ic->committed);
     }
@@ -1713,10 +1718,12 @@ void runCases(Instance &instance) {
             return ascii;
         };
         const auto tapCoded = [&](Key down, Key up) {
+            const std::string before = instance.inputMethodLabel(ic.get());
             KeyEvent press(ic.get(), down, false);
             ic->keyEvent(press);
             KeyEvent release(ic.get(), up, true);
-            return ic->keyEvent(release);
+            ic->keyEvent(release);
+            return instance.inputMethodLabel(ic.get()) != before;
         };
         check(tapCoded(Key(FcitxKey_Shift_L, KeyStates(), 50),
                        Key(FcitxKey_ISO_Next_Group, KeyState::Shift, 50)) &&
@@ -1739,7 +1746,10 @@ void runCases(Instance &instance) {
             KeyEvent repeat(ic.get(), Key(FcitxKey_Shift_R, KeyState::Repeat, 62), false);
             ic->keyEvent(repeat);
             KeyEvent release(ic.get(), Key(FcitxKey_Shift_R, KeyState::Shift, 62), true);
-            check(ic->keyEvent(release) && english(), "按住 Shift 有自动重复也算单按");
+            const std::string before = instance.inputMethodLabel(ic.get());
+            ic->keyEvent(release);
+            check(instance.inputMethodLabel(ic.get()) != before && english(),
+                  "按住 Shift 有自动重复也算单按");
             tapShift(FcitxKey_Shift_R);
             check(!english(), "再按一下回中文");
         }
@@ -1763,6 +1773,19 @@ void runCases(Instance &instance) {
         check(tapShift(FcitxKey_Shift_R) && english(), "清掉以后右 Shift 又归 WowType");
         tapShift(FcitxKey_Shift_R);
         check(!english(), "回中文");
+    }
+    {
+        // #225：Wayland 上 KWin 把键交给输入法，外壳（fcitx5）只在没接受的时候才经虚拟键盘
+        // 把键转给应用。单按 Shift 切了模式也不能吞掉松开的 Shift：应用收不到松开，会以为
+        // Shift 还按着——之后 shift+单击开新窗口、滚轮变横向、快捷键错乱。
+        // Shift 单独按下、松开不出字，交给应用没有副作用。
+        KeyEvent press(ic.get(), Key(FcitxKey_Shift_R), false);
+        check(!ic->keyEvent(press), "#225：Shift 按下交给应用");
+        KeyEvent release(ic.get(), Key(FcitxKey_Shift_R, KeyState::Shift), true);
+        check(!ic->keyEvent(release), "#225：单按 Shift 切了模式，松开的 Shift 也交给应用");
+        check(instance.inputMethodLabel(ic.get()) == "英", "#225：这一下仍然切到了英文");
+        tapShift(FcitxKey_Shift_R);
+        check(instance.inputMethodLabel(ic.get()) == "中", "#225：再单按一下回到中文");
     }
     fresh(ic.get());
 
