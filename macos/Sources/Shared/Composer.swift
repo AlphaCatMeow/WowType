@@ -240,6 +240,9 @@ public final class Composer {
     /// 上屏里有引擎学到的选词时调用（frame->learned；外壳攒够次数存一次学习数据）。
     /// 只上屏了标点、emoji、计算结果的不调。
     public var onCommit: ((String) -> Void)?
+    /// 每次真正上屏时调用（text, source, scheme, candidateIndex），给打字统计用；
+    /// 只分类计数，不保存文字。candidateIndex 是选中的候选位置（1 起），0 表示不是选候选。
+    public var onCommitStats: ((String, String, String, Int) -> Void)?
     /// Ctrl+Delete 忘掉了学错的词以后调用（外壳马上存学习数据，免得重启又回来）。
     public var onForget: (() -> Void)?
     /// 打开工具栏的剪贴板页时调用（设置里 ClipboardHistory 开着时）：外壳看一眼系统剪贴板，
@@ -637,6 +640,7 @@ public final class Composer {
             // 会话已经补好了空格、记了上文；互译时上屏的是译文、原文
             let text = String(cString: commit)
             client?.insertText(text)
+            onCommitStats?(text, statsSource, statsScheme, Int(frame.pointee.choice_index))
             if frame.pointee.learned != 0 {
                 onCommit?(text)
             }
@@ -653,6 +657,18 @@ public final class Composer {
     func insert(_ text: String) {
         guard !text.isEmpty else { return }
         apply(wowtype_session_commit_text(session, text, reliablePreviousCharacter))
+    }
+
+    /// 统计用的输入模式：互译 / 英文 / 双拼 / 全拼。
+    private var statsSource: String {
+        if mode == .translate { return "translate" }
+        if mode == .english { return "english" }
+        return config.shuangpin ? "shuangpin" : "quanpin"
+    }
+
+    /// 双拼方案在统计里的名字（小写）；不是双拼时为空。
+    private var statsScheme: String {
+        config.shuangpin ? config.shuangpinScheme.lowercased() : ""
     }
 
     func refresh() {
@@ -706,8 +722,7 @@ public final class Composer {
     // MARK: 互译
 
     /// 外壳每 50 毫秒调一次（会话的 wake_after_ms）：到时间就发请求，按过回车的译好了就上屏，
-    /// 结果变了就重画。返回 false 表示不用再调了（下一次原文变了会再叫 onTranslatePoll）。
-    @discardableResult
+    /// 结果变了就重画。返回 false 表示不用再调了（下一次原文变了会再叫 onTranslatePoll）。    @discardableResult
     public func pollTranslation() -> Bool {
         guard let frame = wowtype_session_tick(session, UInt64(max(clock(), 0) * 1000)) else {
             return false
@@ -726,8 +741,7 @@ public final class Composer {
     private func translateSignature(_ frame: UnsafePointer<WowtypeFrame>) -> String {
         let f = frame.pointee
         return [f.translate_source, f.translate_text, f.translate_status, f.translate_title]
-            .map { String(cString: $0) }.joined(separator: "|") + "|\(f.translate_done)"
-    }
+            .map { String(cString: $0) }.joined(separator: "|") + "|\(f.translate_done)"    }
 
     /// 互译时画编辑区和候选框（Linux 的 fillTranslateView）：编辑区里是译文，
     /// 候选框顶上是「中→英 互译：」+ 原文 + 正在打的拼音，底下是状态。内容都是会话给的。
