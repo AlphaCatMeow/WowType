@@ -364,6 +364,15 @@ fn read_key(path: &Option<PathBuf>) -> String {
         .unwrap_or_default()
 }
 
+/// 这次请求带的 Key。哔哩哔哩的接口不用 Key：Key 文件里存的是用户给别的服务商的，不能发给哔哩哔哩。
+fn request_key(config: &TranslateConfig) -> String {
+    if config.is_bilibili() {
+        String::new()
+    } else {
+        read_key(&config.key_file)
+    }
+}
+
 /// 去掉思考模型的 `<think>…</think>`。还没想完时返回 None（没有可显示的译文）。
 fn strip_think(raw: &str) -> Option<String> {
     let mut text = raw.to_string();
@@ -742,7 +751,7 @@ fn run_job(
     source: String,
     cache_key: String,
 ) {
-    let key = read_key(&config.key_file);
+    let key = request_key(&config);
     // 错误要显示在面板上、写进日志：有的服务会把收到的 Key 原样写进错误里，先抹掉
     let fail = |message: String| {
         let message = redact(&message, &key);
@@ -1207,6 +1216,23 @@ mod tests {
         assert!(text.contains("url = \"https://index-translate.bilibili.com/v1/chat/completions\""));
         assert!(!text.contains("Authorization"), "{text}");
         assert!(!text.contains("noproxy"));
+        // 存着给别的服务商的 Key：不发给哔哩哔哩，换回别的服务照常带
+        let dir = std::env::temp_dir().join(format!("wowtype-bili-key-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_file = dir.join("key");
+        std::fs::write(&key_file, "sk-other-provider\n").unwrap();
+        let with_key = TranslateConfig {
+            key_file: Some(key_file.clone()),
+            ..bilibili("")
+        };
+        assert_eq!(request_key(&with_key), "");
+        let own = TranslateConfig {
+            key_file: Some(key_file),
+            model: "Index-Translate-2B".into(),
+            ..config("https://my-server.example.com/v1")
+        };
+        assert_eq!(request_key(&own), "sk-other-provider");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
