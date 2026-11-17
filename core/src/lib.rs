@@ -1768,6 +1768,7 @@ impl Engine {
         // 打 hm（后面、好吗）一个中文候选都没有。一个认识的词都凑不出来就接着试简拼。
         if full.has_exact_path() {
             let mut found = self.query_once(&full, at_ms, fuzzy)?;
+            self.keep_exact_syllable(&full, &mut found, at_ms, fuzzy)?;
             if !fuzzy && self.config.fuzzy_fallback && !self.config.shuangpin {
                 self.fuzzy_fallback(&full, &mut found);
             }
@@ -1799,6 +1800,68 @@ impl Engine {
         });
         result.truncate(self.config.max_candidates.max(1));
         Ok(result)
+    }
+
+    /// 输入正好是一个完整音节，但束搜索的名额全被补全出来的字占了、本音节的字一个也没留下时
+    /// （lia：lian、liang、liao 的字几百个，「俩」只有词频 99，以前排第 60 个；dia 的「嗲」也是），
+    /// 只按这个音节（不补全、不纠错）再搜一遍，把本音节不是生僻字的字补进来，
+    /// 再照 [`exact_syllable_first`] 排在补全出来的字前面（和 den 的「扽」、nou 的「耨」一样）。
+    ///
+    /// 束搜索里已经有本音节的字时什么都不做，多花的只是很少见的这一种输入上的一次单音节搜索。
+    fn keep_exact_syllable(
+        &self,
+        graph: &SyllableGraph,
+        found: &mut Vec<Candidate>,
+        at_ms: u64,
+        fuzzy: bool,
+    ) -> Result<()> {
+        let n = graph.len();
+        let one_syllable = graph.edges_from(0).iter().any(|e| {
+            e.end == n
+                && !e.typo
+                && e.completion == 0
+                && matches!(e.kind, EdgeKind::Full { erhua: false, .. })
+        });
+        let exact_char = |c: &Candidate| {
+            c.features.typo_count == 0.0
+                && c.features.prefix_completion == 0.0
+                && c.words.len() == 1
+                && c.words[0].known
+                && !c.pinyin.contains(' ')
+        };
+        if !one_syllable || found.iter().any(exact_char) {
+            return Ok(());
+        }
+        let exact = SyllableGraph::build(
+            graph.input(),
+            GraphOptions {
+                mode: GraphMode::Full,
+                allow_erhua: false,
+                typo: false,
+                completion: false,
+            },
+        );
+        let mut extra: Vec<Candidate> = self
+            .query_once(&exact, at_ms, fuzzy)?
+            .into_iter()
+            .filter(|c| exact_char(c) && !is_rare_char(c))
+            .filter(|c| !found.iter().any(|f| f.text == c.text))
+            .collect();
+        if extra.is_empty() {
+            return Ok(());
+        }
+        // 放在最前面，分数抬到刚好高过原来的第一名：原来那些候选之间的分差不动
+        // （compose_candidates 按分差判断硬凑的整句）；不再整体走 exact_syllable_first，
+        // 它会把换切法凑出来的整句（li | a 的「理啊」）也当成本音节的提到前面
+        if let Some(top) = found.first().map(|c| c.score) {
+            let k = extra.len();
+            for (i, c) in extra.iter_mut().enumerate() {
+                c.score = top + 1e-3 * (k - i) as f64;
+            }
+        }
+        found.splice(0..0, extra);
+        found.truncate(self.config.max_candidates.max(1));
+        Ok(())
     }
 
     /// 模糊音关着时的兜底：精确读音的第一名偏弱（几个词硬凑的、纠错或补全出来的），
@@ -3562,6 +3625,31 @@ mod tests {
         // 没打全时照样出补全
         let texts: Vec<String> = e.input("xia").into_iter().map(|c| c.text).collect();
         assert!(texts.iter().any(|t| t == "想"), "{texts:?}");
+    }
+
+    #[test]
+    fn complete_syllable_chars_survive_crowded_completions() {
+        // lia 只有「俩」（词频 99）：lian、liang、liao 补全出来的字比它常用得多，以前把束搜索
+        // 这一段的名额全占了，「俩」排到第 60 个（#172）。打全的音节，本音节的字照样排在补全前面
+        let mut tsv = String::from("lia\t俩\t99\nlia\t倆\t0.5\nli a\t理啊\t50\n");
+        let chars: Vec<char> = ('\u{4E00}'..).take(60).collect();
+        for (i, c) in chars.iter().enumerate() {
+            let syllable = ["lian", "liang", "liao"][i % 3];
+            tsv.push_str(&format!("{syllable}\t{c}\t{}\n", 100_000 - i * 1000));
+        }
+        let lexicon: Arc<dyn Lexicon> = Arc::new(MemoryLexicon::from_tsv_str(&tsv).unwrap());
+        let mut e = Engine::new(lexicon, Arc::new(BigramLm::default()));
+        e.set_max_candidates(300);
+        let texts: Vec<String> = e.input("lia").into_iter().map(|c| c.text).collect();
+        assert_eq!(texts.first().map(String::as_str), Some("俩"), "{texts:?}");
+        // 补全出来的字接着排，生僻的异体字（倆）不提前，换切法凑的「理啊」也不提前
+        assert_eq!(texts.get(1), Some(&chars[0].to_string()), "{texts:?}");
+        let at = |w: &str| texts.iter().position(|t| t == w);
+        assert!(at("倆").is_none_or(|i| i > 10), "{texts:?}");
+        assert!(at("理啊").is_none_or(|i| i > 10), "{texts:?}");
+        // 没打全的音节不受影响：lian 的字照样按词频
+        let texts: Vec<String> = e.input("lian").into_iter().map(|c| c.text).collect();
+        assert_eq!(texts.first(), Some(&chars[0].to_string()), "{texts:?}");
     }
 
     #[test]
