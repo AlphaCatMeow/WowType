@@ -38,6 +38,8 @@ pub struct WowtypeKey {
     pub repeat: u32,
     /// 1.10 起：按键时刻（毫秒，单调递增），不知道给 0。
     pub time_ms: u64,
+    /// 1.12 起：应用里光标后一个字符，读不到给 0（带 `WOWTYPE_KEY_HINT_NEXT_CHAR` 时 0 是光标后没有字）。
+    pub next_char: u32,
 }
 
 pub const WOWTYPE_KEY_HINT_NO_AUTO_SPACE: u32 = crate::session::key_hints::NO_AUTO_SPACE;
@@ -45,6 +47,7 @@ pub const WOWTYPE_KEY_HINT_PANEL_OPEN: u32 = crate::session::key_hints::PANEL_OP
 pub const WOWTYPE_KEY_HINT_NO_TRANSLATE: u32 = crate::session::key_hints::NO_TRANSLATE;
 pub const WOWTYPE_KEY_HINT_SURROUNDING: u32 = crate::session::key_hints::SURROUNDING;
 pub const WOWTYPE_KEY_HINT_NO_LEARN: u32 = crate::session::key_hints::NO_LEARN;
+pub const WOWTYPE_KEY_HINT_NEXT_CHAR: u32 = crate::session::key_hints::NEXT_CHAR;
 
 /// 外壳自己的翻译器（C 布局，1.10 起）：macOS 用它把自己的翻译器（测试里是假的）交给会话。
 /// 函数都不阻塞。poll 把这次的原文、译文、出错原因写进三个出参（在下一次 poll 前有效），
@@ -239,6 +242,8 @@ pub struct WowtypeSessionConfig {
     pub translate_key: c_int,
     /// 1.11 起：上屏以后的联想，默认 0（旧外壳不认识联想、画不出来；设置里的默认值是开，外壳照设置填）。
     pub association: c_int,
+    /// 1.12 起：中文标点自动配对，默认 0（外壳要会按 frame 的 `cursor_delta`、`delete_next` 挪光标、删字才开）。
+    pub auto_pair_punct: c_int,
 }
 
 impl Default for WowtypeSessionConfig {
@@ -280,6 +285,7 @@ impl Default for WowtypeSessionConfig {
             wubi_hint: c_int::from(config.wubi_hint),
             translate_key: c_int::from(config.translate_key),
             association: c_int::from(config.association),
+            auto_pair_punct: c_int::from(config.auto_pair_punct),
         }
     }
 }
@@ -334,6 +340,7 @@ impl WowtypeSessionConfig {
             wubi_hint: self.wubi_hint != 0,
             translate_key: self.translate_key != 0,
             association: self.association != 0,
+            auto_pair_punct: self.auto_pair_punct != 0,
         }
     }
 }
@@ -443,6 +450,10 @@ pub struct WowtypeFrame {
     pub translate_status: *const c_char,
     /// 1.10 起：translate_text 是译完的最终结果。
     pub translate_done: c_int,
+    /// 1.12 起：上屏以后让外壳把应用里的光标挪几格（负数左移、正数右移），自动配对用。
+    pub cursor_delta: c_int,
+    /// 1.12 起：1 表示这次没接的退格要连光标后的右标点一起删（成对删）。
+    pub delete_next: c_int,
 }
 
 impl Default for WowtypeFrame {
@@ -470,6 +481,8 @@ impl Default for WowtypeFrame {
             translate_title: EMPTY.as_ptr(),
             translate_status: EMPTY.as_ptr(),
             translate_done: 0,
+            cursor_delta: 0,
+            delete_next: 0,
         }
     }
 }
@@ -582,6 +595,8 @@ impl WowtypeSession {
             self.frame.translate_status = self.translate[3].as_ptr();
             self.frame.translate_done = c_int::from(view.done);
         }
+        self.frame.cursor_delta = frame.cursor_delta as c_int;
+        self.frame.delete_next = c_int::from(frame.delete_next);
         &self.frame
     }
 
@@ -752,6 +767,7 @@ pub unsafe extern "C" fn wowtype_session_key(
         code: raw.code,
         repeat: raw.repeat != 0,
         time_ms: raw.time_ms,
+        next_char: char::from_u32(raw.next_char).filter(|&c| c != '\0'),
     };
     handle.run("key", |session| session.key(&key))
 }
@@ -1156,6 +1172,7 @@ mod tests {
             code: 0,
             repeat: 0,
             time_ms: 0,
+            next_char: 0,
         };
         let frame = unsafe { &*wowtype_session_key(session, &key) };
         assert_eq!(frame.handled, 1);

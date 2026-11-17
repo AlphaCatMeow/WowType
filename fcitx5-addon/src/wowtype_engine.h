@@ -247,6 +247,9 @@ FCITX_CONFIGURATION(
     fcitx::Option<bool> autoSpace{this, "AutoSpace", "汉字和英文、数字之间自动加空格", false};
     fcitx::Option<bool> autoSpaceLetters{this, "AutoSpaceLetters", "汉字和英文字母之间", true};
     fcitx::Option<bool> autoSpaceDigits{this, "AutoSpaceDigits", "汉字和数字之间", true};
+    fcitx::Option<bool> autoPairPunct{this, "AutoPairPunct",
+                                      "中文标点自动配对（输入左标点自动补全右标点并移到中间）",
+                                      false};
     fcitx::Option<bool> voice{this, "Voice", "语音输入", true};
     fcitx::Option<fcitx::Key, fcitx::KeyConstrain> voiceKey{
         this, "VoiceKey", "语音输入键（按住说话，或点一下开始）", fcitx::Key(FcitxKey_Alt_R),
@@ -512,6 +515,8 @@ private:
                                    uint32_t action = WOWTYPE_KEY_ACTION_NONE);
     /// 应用里光标前一个字（Unicode 码位）：光标前没有字是 0，应用不报告周围文字时没有值。
     std::optional<uint32_t> prevChar(fcitx::InputContext *ic) const;
+    /// 应用里光标后一个字。不报告周围文字、有选区、光标在报来的文字末尾（有的应用只报光标前的字）时没有值。
+    std::optional<uint32_t> nextChar(fcitx::InputContext *ic) const;
     /// 这个键对应的 fcitx5 全局翻页、移动候选热键（方向键不算，照横排竖排的规则走）。
     uint32_t keyAction(const fcitx::Key &key) const;
     /// 会话处理了一个键以后：上屏、记 emoji、照会话的候选框重画（或只挪页码和光标）。
@@ -602,6 +607,8 @@ private:
     bool shuangpinShowKeys_ = false;
     /// 自动补空格（wowtype_autospace 的 flags）：1 字母、2 数字，0 关。
     int autoSpaceFlags_ = 0;
+    /// 中文标点自动配对（AutoPairPunct）。
+    bool autoPairPunct_ = false;
     bool shuangpin_ = false;
     /// 五笔（设置里选了五笔；码表在 applyCoreSettings 里载入，没载入时会话照全拼打并提示）。
     bool wubi_ = false;
@@ -667,6 +674,32 @@ private:
     /// 到这个时刻（单调时钟，微秒）发请求；0 表示不用发。
     /// 上次画面板时的结果，没变就不重画。
     std::string translateDrawn_;
+
+    // 自动配对（AutoPairPunct）要发给应用的键：挪光标（frame->cursor_delta）和成对删（frame->delete_next）。
+    // 都走 sendAppKeys 一条路按顺序发；上屏后挪光标的那几下攒在 pendingCursorDelta_ 里，等上屏落到应用
+    // （kCursorDelayUsec 以后，或者下一个键来的时候先发）
+    fcitx::TrackableObjectReference<fcitx::InputContext> cursorTarget_;
+    /// 还没发的光标挪动（负数左移），几次的加在一起。
+    int pendingCursorDelta_ = 0;
+    std::unique_ptr<fcitx::EventSourceTime> cursorTimer_;
+    /// 上次自己给应用发键的输入框和时刻（单调时钟，微秒）：GTK 挪光标、删字时会重置输入法，
+    /// 紧跟着自己发的键来的重置不算用户点了别处
+    fcitx::TrackableObjectReference<fcitx::InputContext> appKeysTarget_;
+    uint64_t appKeysAtUsec_ = 0;
+    /// 这次按键开头刚把攒着的光标挪动发出去：应用报的周围文字还是挪之前的，不能拿来核对
+    bool surroundingStale_ = false;
+    /// frame 要挪光标就攒上；afterCommit：这次上屏了字，等上屏落到应用再发，不然（前面没有攒着的时）马上发。
+    void applyCursorDelta(fcitx::InputContext *ic, const WowtypeFrame *frame, bool afterCommit);
+    /// 把攒着的光标挪动发出去。发了返回 true。
+    bool flushCursorDelta();
+    /// 不发攒着的光标挪动（应用重置了输入法、失去焦点：光标已经在别处）。
+    void dropCursorDelta(fcitx::InputContext *ic);
+    /// 给应用发 count 下 sym（按下、松开）。
+    void sendAppKeys(fcitx::InputContext *ic, fcitx::KeySym sym, int count);
+    /// 会话没接的键要成对删（frame->delete_next）：吃掉这个退格，按顺序发 Delete、退格。删了返回 true。
+    bool pairDelete(fcitx::InputContext *ic, const WowtypeFrame *frame, fcitx::KeyEvent &event);
+    /// 这次重置是应用对自己刚发的键的反应（GTK 挪光标、删字时会重置输入法），不是用户点了别处。
+    bool resetFromOwnKeys(fcitx::InputContext *ic) const;
 
     // 语音浮条（GNOME 扩展画）：单独一条会话总线连接，盯着扩展注册的名字
     std::unique_ptr<fcitx::dbus::Bus> overlayBus_;

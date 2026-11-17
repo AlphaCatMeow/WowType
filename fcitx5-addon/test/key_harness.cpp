@@ -82,10 +82,16 @@ public:
     const char *frontend() const override { return "wowtype-harness"; }
     void commitStringImpl(const std::string &text) override { committed += text; }
     void deleteSurroundingTextImpl(int, unsigned int) override {}
-    void forwardKeyImpl(const ForwardKeyEvent &) override {}
+    void forwardKeyImpl(const ForwardKeyEvent &event) override {
+        if (!event.isRelease()) {
+            forwarded += Key::keySymToString(event.rawKey().sym()) + " ";
+        }
+    }
     void updatePreeditImpl() override {}
 
     std::string committed;
+    /// 输入法发给应用的键（按下的那一下），空格隔开
+    std::string forwarded;
     /// 输入法没接的键（直接交给应用的）
     std::string passed;
 };
@@ -183,6 +189,7 @@ void fresh(HarnessInputContext *ic) {
     type(ic, "<esc>");
     ic->committed.clear();
     ic->passed.clear();
+    ic->forwarded.clear();
 }
 
 /// 单按一个修饰键（按下 + 松开），比如单按 Shift 切中英文。
@@ -2216,6 +2223,89 @@ void runCases(Instance &instance) {
     addon->reloadConfig();
     ic->setCapabilityFlags(CapabilityFlags{});
     fresh(ic.get());
+
+    // 中文标点自动配对（AutoPairPunct）：上屏「（）」后发一下左键把光标放中间（等上屏落到应用，最晚在下一个键
+    // 之前；这里没跑事件循环，是在松开的那一下发的），跳过补好的右括号发右键，空的一对退格吃掉、按顺序发 Delete 和退格
+    {
+        std::ofstream(configDir + "/wowtype.conf") << "AutoPairPunct=True\nEmojiSuggest=False\n";
+    }
+    addon->reloadConfig();
+    // 换个焦点：清掉配对和「刚给应用发过键」的记号
+    const auto pairFresh = [&ic] {
+        ic->focusOut();
+        ic->focusIn();
+        fresh(ic.get());
+    };
+    const auto pairReport = [&ic] {
+        return "上屏「" + ic->committed + "」交给应用「" + ic->passed + "」发的键「" + ic->forwarded + "」";
+    };
+    pairFresh();
+    type(ic.get(), "(");
+    check(ic->committed == "（）" && ic->forwarded == "Left ", "( 上屏（），再发左键：" + pairReport());
+    type(ic.get(), "3)");
+    check(ic->committed == "（）" && ic->passed == "3" && ic->forwarded == "Left Right ",
+          "( 3 ) 是（3）：左键在 3 之前发，) 跳过补好的右括号：" + pairReport());
+    pairFresh();
+    type(ic.get(), "(<sp>)");
+    check(ic->committed == "（）" && ic->passed == " " && ic->forwarded == "Left Right ",
+          "( 空格 ) 是（ ）：" + pairReport());
+    pairFresh();
+    type(ic.get(), "(nihao)");
+    check(ic->committed == "（）你好" && ic->forwarded == "Left Right ",
+          "( nihao ) 上屏你好再跳过右括号：" + pairReport());
+    pairFresh();
+    type(ic.get(), "((");
+    check(ic->committed == "（）（）" && ic->forwarded == "Left Left ", "连着两个 (：" + pairReport());
+    type(ic.get(), "))");
+    check(ic->forwarded == "Left Left Right Right ", "套着的两层都跳过：" + pairReport());
+    pairFresh();
+    type(ic.get(), "(");
+    const bool tookBackspace = send(ic.get(), Key(FcitxKey_BackSpace));
+    check(tookBackspace && ic->forwarded == "Left Delete BackSpace ",
+          "空的一对退格：吃掉退格，按顺序发左键、Delete、退格：" + pairReport());
+    pairFresh();
+    type(ic.get(), "(1<bs>");
+    check(ic->passed == "1" && ic->forwarded == "Left ", "里面有字时退格照常交给应用：" + pairReport());
+    // 应用因为发的左键重置了输入法（GTK 挪光标时会）：不算点了别处，) 照样跳过
+    pairFresh();
+    type(ic.get(), "(1");
+    ic->reset();
+    type(ic.get(), ")");
+    check(ic->forwarded == "Left Right ", "自己发的左键引起的重置不打断配对：" + pairReport());
+    // 方向键、失去焦点以后不跳了
+    pairFresh();
+    type(ic.get(), "(<left>)");
+    check(ic->committed == "（））" && ic->forwarded == "Left ", "按了方向键以后 ) 照常上屏：" + pairReport());
+    pairFresh();
+    type(ic.get(), "(1");
+    ic->focusOut();
+    ic->focusIn();
+    type(ic.get(), ")");
+    check(ic->committed == "（））" && ic->passed == "1" && ic->forwarded == "Left ",
+          "失去焦点以后 ) 照常上屏：" + pairReport());
+    // 读得到周围文字：光标后面不是补好的右括号（点到了别处）就不跳
+    ic->setCapabilityFlags(CapabilityFlag::SurroundingText);
+    pairFresh();
+    ic->surroundingText().setText("", 0, 0);
+    type(ic.get(), "(1");
+    ic->surroundingText().setText("（1）", 2, 2);
+    type(ic.get(), ")");
+    check(ic->forwarded == "Left Right ", "光标后面是补好的右括号：跳过：" + pairReport());
+    pairFresh();
+    ic->surroundingText().setText("", 0, 0);
+    type(ic.get(), "(1");
+    ic->surroundingText().setText("别的字", 1, 1);
+    type(ic.get(), ")");
+    check(ic->committed == "（））" && ic->passed == "1" && ic->forwarded == "Left ",
+          "光标后面不是补好的右括号：不跳：" + pairReport());
+    ic->surroundingText().invalidate();
+    ic->setCapabilityFlags(CapabilityFlags{});
+    std::filesystem::remove(configDir + "/wowtype.conf");
+    addon->reloadConfig();
+    pairFresh();
+    type(ic.get(), "(");
+    check(ic->committed == "（" && ic->forwarded.empty(), "默认不配对：" + pairReport());
+    pairFresh();
 
     // 换词库（设置里切到万象就是写 Lexicon=）：reloadConfig 后在后台换，换好前按键照常进编辑区
     {

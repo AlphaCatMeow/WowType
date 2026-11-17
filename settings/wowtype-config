@@ -357,6 +357,7 @@ DEFAULTS = {
     "AutoSpace": "False",
     "AutoSpaceLetters": "True",
     "AutoSpaceDigits": "True",
+    "AutoPairPunct": "False",
     "Voice": "True",
     "VoiceCopy": "False",
     "VoiceKey": "Alt_R",
@@ -5075,6 +5076,12 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.punct_row.connect("notify::selected", lambda row, _p: self.set_value(
             "PunctuationStyle", self.punct_names[row.get_selected()]))
         pinyin.add(self.punct_row)
+        auto_pair = self.make_switch("AutoPairPunct", "中文标点自动配对", "打（【《「“‘ 时自动补上右半边")
+        self.add_info(auto_pair, "中文标点下打左括号、左引号，上屏成对的，光标放到中间；"
+                                 "在里面打完再按右半边，跳过补好的那个，不会多出一个。"
+                                 "里面空着时按退格，两个一起删。按了方向键、回车，或者点到别处以后照常打字。"
+                                 "数字后面的括号照常是英文的。")
+        pinyin.add(auto_pair)
         page.add(pinyin)
 
         extras = Adw.PreferencesGroup(title="快捷输入")

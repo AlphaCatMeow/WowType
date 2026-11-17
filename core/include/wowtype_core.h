@@ -16,7 +16,7 @@
  * 删函数或改参数含义时升主版本。外壳启动时用 wowtype_abi_version() 比对主版本。
  * 规则见 docs/ABI.md。 */
 #define WOWTYPE_ABI_VERSION_MAJOR 1
-#define WOWTYPE_ABI_VERSION_MINOR 11
+#define WOWTYPE_ABI_VERSION_MINOR 12
 
 #ifdef __cplusplus
 extern "C" {
@@ -401,6 +401,8 @@ typedef struct {
     uint32_t code;      /* 1.10 起：按键码（硬件键码），不知道给 0。单按 Shift 时按下、松开按它对上 */
     uint32_t repeat;    /* 1.10 起：按住不放的自动重复 */
     uint64_t time_ms;   /* 1.10 起：按键时刻（毫秒，单调递增的任意起点），不知道给 0 */
+    uint32_t next_char; /* 1.12 起：应用里光标后一个字符，读不到给 0；带 WOWTYPE_KEY_HINT_NEXT_CHAR 时
+                         * 0 是光标后确实没有字。自动配对跳过右标点、成对删之前拿它核对 */
 } WowtypeKey;
 
 /* WowtypeKey.hints（1.10 起）。 */
@@ -409,6 +411,7 @@ typedef struct {
 #define WOWTYPE_KEY_HINT_NO_TRANSLATE (1u << 2)  /* 不能翻译的输入框（密码框）：「译」里也照常上屏 */
 #define WOWTYPE_KEY_HINT_SURROUNDING (1u << 3)   /* 应用告诉了光标周围的文字：prev_char 为 0 是光标前确实没有字 */
 #define WOWTYPE_KEY_HINT_NO_LEARN (1u << 4)      /* 确定是密码框：选的词也不学（回车上屏的原始字母串本来就不学）（1.11） */
+#define WOWTYPE_KEY_HINT_NEXT_CHAR (1u << 5)     /* 应用告诉了光标后面的字：next_char 为 0 是光标后确实没有字；有选区时别带（1.12） */
 
 /* 输入模式（1.10 起）。单按 Shift（Shift_L 0xffe1 / Shift_R 0xffe2 的按下、松开都交给会话）
  * 在中 → 英 →（WowtypeSessionConfig.translate_mode 时）译 → 中 之间切换，frame->mode_changed 为 1；
@@ -477,6 +480,10 @@ typedef struct {
     int association;     /* 1.11 起：上屏以后的联想（选词、整句上屏以后给出一页常跟在后面的词，
                           * frame->panel 是 WOWTYPE_PANEL_ASSOCIATION），默认 0：外壳要会画联想才开，
                           * 设置里 Association 的默认值是开。五笔、「译」、密码框（KEY_HINT_NO_TRANSLATE）不出 */
+    int auto_pair_punct; /* 1.12 起：中文标点自动配对：全角标点下打 ( [ < { " ' 上屏成对的（）【】《》「」“”‘’，
+                          * frame->cursor_delta 让外壳把光标挪到中间；在里面打完再按右半边跳过补好的那个
+                          * （cursor_delta 为 +1），空的一对按退格两个一起删（frame->delete_next）。
+                          * 默认 0：外壳要会挪光标、删字才开，设置里 AutoPairPunct 的默认值也是关 */
 } WowtypeSessionConfig;
 
 /* 一次调用之后外壳要做的事。归会话所有，和里面的字符串一起在同一个会话的下一次调用前有效。
@@ -512,6 +519,11 @@ typedef struct {
     const char *translate_title;  /* 候选框上方：方向标签 +「互译：」 */
     const char *translate_status; /* 候选框下方的一行：出错原因、「翻译中…」、怎么上屏，没有是空串 */
     int translate_done;     /* translate_text 是译完的最终结果 */
+    int cursor_delta;       /* 1.12 起：commit 落到应用以后把应用里的光标挪几格：负数左移、正数右移，0 不动
+                             * （自动配对：上屏「（）」后 -1，跳过补好的右标点 +1，这时 commit 可能是先上屏的候选）。
+                             * 外壳要保证先后：挪光标在这次的 commit 之后、下一个键之前 */
+    int delete_next;        /* 1.12 起：1 时这次的退格没接（handled 为 0），成对删：外壳除了删光标前的字（退格），
+                             * 还要删光标后的右标点（Delete），和挪光标的键走同一条路按顺序发 */
 } WowtypeFrame;
 
 /* 建会话。engine 可以传 NULL（词库没载入好时也能打字，载入好了用 set_engine 补上）；
