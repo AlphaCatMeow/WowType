@@ -2015,6 +2015,20 @@ do {
 // MARK: 万象词库包（规矩和 Linux 设置的 install_lexicon_pack 一样）
 
 do {
+    // 检查更新顺带在后台更新万象（和 Linux 设置的 lexicon_update_plan 一样）
+    let new = "2026.11.10.0"
+    check(LexiconPack.autoUpdate(installed: "2026.10.31.0", inUse: true, available: new) == new, "正在用的万象有新版：后台更新")
+    check(LexiconPack.autoUpdate(installed: "?", inUse: true, available: new) == new, "装好的没写版本也算旧")
+    check(LexiconPack.autoUpdate(installed: "2026.10.31.0", inUse: false, available: new) == nil
+          && LexiconPack.autoUpdate(installed: nil, inUse: true, available: new) == nil
+          && LexiconPack.autoUpdate(installed: new, inUse: true, available: new) == nil
+          && LexiconPack.autoUpdate(installed: "2026.10.31.0", inUse: true, available: nil) == nil,
+          "没在用、没装、已经是最新、发布页上没有：不更新")
+    check(LexiconPack.autoUpdate(installed: "2026.10.31.0", inUse: true, available: new,
+                                 failedVersion: new, failedAt: 1000, now: 1000 + 3600) == nil
+          && LexiconPack.autoUpdate(installed: "2026.10.31.0", inUse: true, available: new,
+                                    failedVersion: new, failedAt: 1000, now: 1000 + 24 * 3600) == new,
+          "这一版没更新好：一天以内不再试")
     check(LexiconPack.assetVersion("wowtype-data-wanxiang-2026.11.12.0.tar.gz") == "2026.11.12.0", "认出万象包和版本")
     check(LexiconPack.assetVersion("wowtype-data-wanxiang-latest.tar.gz") == nil
           && LexiconPack.assetVersion("wowtype-data-wanxiang-1.0.zip") == nil

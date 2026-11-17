@@ -552,6 +552,46 @@ final class AppState {
                 if let version = self.availableUpdate {
                     NSLog("WowType: 有新版本 %@（现在 %@）", version, appVersion)
                 }
+                self.autoUpdateLexicon(release)
+            }
+        }
+    }
+
+    /// 后台更新万象词库没成功的那一版和时刻（Unix 秒）：一天以内不再试（只记在这个进程里）
+    private var lexiconFailed: (version: String, at: Int64)?
+    private var lexiconUpdating = false
+
+    /// 检查更新顺带：正在用的万象词库在发布页上有新版，就在后台下载、按 SHA256SUMS 校验、整个换进去
+    /// （和 Linux 的 auto_update_lexicon 一样，不打扰用户）。词库文件变了，下一次按键时在后台换上新的。
+    private func autoUpdateLexicon(_ release: LexiconPackInstaller.Release) {
+        let dir = supportDir
+        let wanxiang = LexiconPackInstaller.lexicon(in: dir)
+        let inUse = !config.lexicon.isEmpty && (config.lexicon as NSString).expandingTildeInPath == wanxiang
+        let now = Int64(Date().timeIntervalSince1970)
+        guard !lexiconUpdating,
+              let version = LexiconPack.autoUpdate(
+                installed: LexiconPack.installedVersion(folder: LexiconPackInstaller.folder(in: dir).path),
+                inUse: inUse, available: release.wanxiang?.version,
+                failedVersion: lexiconFailed?.version, failedAt: lexiconFailed?.at ?? 0, now: now)
+        else { return }
+        lexiconUpdating = true
+        NSLog("WowType: 万象词库有新版 %@，在后台更新", version)
+        DispatchQueue.global(qos: .utility).async {
+            let result = Result { () -> String in
+                let tarball = try LexiconPackInstaller.download(release) { _, _ in }
+                defer { try? FileManager.default.removeItem(at: tarball) }
+                return try LexiconPackInstaller.install(tarball, supportDir: dir)
+            }
+            DispatchQueue.main.async {
+                self.lexiconUpdating = false
+                switch result {
+                case .success(let installed):
+                    self.lexiconFailed = nil
+                    NSLog("WowType: 万象词库更新到 %@", installed)
+                case .failure(let error):
+                    self.lexiconFailed = (version, now)
+                    NSLog("WowType: 万象词库 %@ 没更新好：%@", version, String(describing: error))
+                }
             }
         }
     }

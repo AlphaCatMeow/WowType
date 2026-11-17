@@ -407,7 +407,8 @@ cargo run --release -p wowtype-core --bin wowtype-lmbuild -- \
   `~/Library/Application Support/WowType/dicts/wanxiang/`。命令行是
   `"~/Library/Input Methods/WowType.app/Contents/MacOS/WowType" --install-lexicon wanxiang`（或 `.tar.gz` 路径）、
   `--use-lexicon rime-ice|wanxiang`。包里只许有哪几个文件、少于多少条不装、怎么校验，和 Linux 的规矩一样
-  （`macos/Sources/Shared/LexiconPack.swift`）。
+  （`macos/Sources/Shared/LexiconPack.swift`）。正在用万象、开着 `CheckUpdate` 时，输入法每天检查更新时顺带看一眼：
+  发布页上有新版万象就在后台下载、校验、换上（和 Linux 设置界面的后台检查一样，不打扰人；没成功的那一版一天以内不再试）。
 - **代价**：多占约 300 MB 内存，第一次载入（建快照）慢一些，之后启动约 2 秒。
 - 只用了万象的词条，没有用它的 `.gram` 语法模型（那是 librime 专用的格式）；整句仍靠 WowType 自己的 `words.lm`。
   万象故意收的错音错字词库（`dicts/cuoyin`，如「秘鲁 mì lǔ」）没收，因为 WowType 没有在候选旁提示正确读音的功能。
