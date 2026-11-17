@@ -413,15 +413,15 @@ final class CandidatePanel {
             : line
         let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main
         let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 10000, height: 10000)
-        // 第一个候选的序号对着编辑区的第一个字母
-        var x = anchor.minX - CandidateLayout.inset.width - CandidateLayout.cellPadding.width
-        var y = anchor.minY - size.height - gap
-        if y < visible.minY {
-            // 下面放不下就放到这一行上面
-            y = anchor.maxY + gap
-        }
-        x = min(max(x, visible.minX), visible.maxX - size.width)
-        y = min(max(y, visible.minY), visible.maxY - size.height)
-        return NSPoint(x: x, y: y)
+        // 每次都从光标这一行算，夹在这块屏幕的可见区域里；左边不出屏幕（#227），见 Shared/PanelPlacement.swift
+        let point = PanelPlacement.origin(width: Double(size.width), height: Double(size.height),
+                                          line: Self.rect(anchor), visible: Self.rect(visible),
+                                          leading: Double(CandidateLayout.inset.width + CandidateLayout.cellPadding.width),
+                                          gap: Double(gap))
+        return NSPoint(x: CGFloat(point.x), y: CGFloat(point.y))
+    }
+
+    private static func rect(_ r: NSRect) -> PanelRect {
+        PanelRect(x: Double(r.origin.x), y: Double(r.origin.y), width: Double(r.size.width), height: Double(r.size.height))
     }
 }

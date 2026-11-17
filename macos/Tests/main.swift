@@ -2115,6 +2115,37 @@ do {
     }
 }
 
+// MARK: 候选框摆在哪（PanelPlacement，#227）
+
+do {
+    // 1440×900 的屏幕，菜单栏 25 点；光标这一行在 (100, 500)，高 18
+    let visible = PanelRect(x: 0, y: 0, width: 1440, height: 875)
+    let line = PanelRect(x: 100, y: 500, width: 0, height: 18)
+    var p = PanelPlacement.origin(width: 300, height: 40, line: line, visible: visible, leading: 15, gap: 4)
+    check(p.x == 85 && p.y == 456, "候选框在光标这一行下面，序号对着编辑区", "\(p)")
+    // 右边放不下往左挪，贴着屏幕右边
+    let right = PanelRect(x: 1400, y: 500, width: 0, height: 18)
+    p = PanelPlacement.origin(width: 300, height: 40, line: right, visible: visible, leading: 15, gap: 4)
+    check(p.x == 1140, "右边放不下往左挪", "\(p)")
+    // 长句的候选把框撑得比屏幕还宽：左边贴着屏幕左边，第一个候选看得见（以前被推到屏幕左边外面）
+    p = PanelPlacement.origin(width: 2000, height: 40, line: right, visible: visible, leading: 15, gap: 4)
+    check(p.x == 0, "候选框比屏幕宽时左边不出屏幕（#227）", "\(p)")
+    // 副屏在主屏左边（x 是负数）：一样夹在它自己的可见区域里
+    let left = PanelRect(x: -1920, y: 0, width: 1920, height: 1055)
+    p = PanelPlacement.origin(width: 2500, height: 40, line: PanelRect(x: -100, y: 300, width: 0, height: 18),
+                              visible: left, leading: 15, gap: 4)
+    check(p.x == -1920, "副屏上太宽时也是左边贴着它的左边", "\(p)")
+    // 每次都从光标算：框变窄了、光标没动，就回到光标下面（不接着上一次往左挪）
+    p = PanelPlacement.origin(width: 300, height: 40, line: line, visible: visible, leading: 15, gap: 4)
+    check(p.x == 85, "框变窄以后回到光标下面", "\(p)")
+    // 下面放不下放到这一行上面；太高时顶上留在屏幕里
+    p = PanelPlacement.origin(width: 300, height: 40, line: PanelRect(x: 100, y: 10, width: 0, height: 18),
+                              visible: visible, leading: 15, gap: 4)
+    check(p.y == 32, "下面放不下放到这一行上面", "\(p)")
+    p = PanelPlacement.origin(width: 300, height: 1000, line: line, visible: visible, leading: 15, gap: 4)
+    check(p.y + 1000 == 875, "太高时第一行留在屏幕里", "\(p)")
+}
+
 // MARK: 诊断信息里的设置打码（DiagnosticsText）
 
 do {
