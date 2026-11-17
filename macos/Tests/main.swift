@@ -173,7 +173,8 @@ do {
         c.select(1)
         check(firstPage.count > 1 && client.committed == firstPage[1], "点第二个候选", client.committed)
         c.turnPage(forward: true)
-        check(client.committed == all[1] && !c.isComposing, "没在打字时点翻页什么都不做（不交给应用）")
+        check(firstPage.count > 1 && client.committed == firstPage[1] && !c.isComposing, "没在打字时点翻页什么都不做（不交给应用）",
+              "\(client.committed) \(c.isComposing)")
     }
 }
 
