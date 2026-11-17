@@ -108,20 +108,20 @@ pub fn fullwidth_punct(ascii: char) -> Option<&'static str> {
     Some(text)
 }
 
-/// 左标点自动配对表：返回 `(成对全角文本, 左标点, 右标点)`。
-pub fn auto_pair(ascii: char) -> Option<(&'static str, char, char)> {
+/// 自动配对：左标点的 ASCII 键给出的 `(左半边, 右半边)`，和 [`fullwidth_punct`] 一致。
+pub fn auto_pair(ascii: char) -> Option<(char, char)> {
     Some(match ascii {
-        '(' => ("（）", '（', '）'),
-        '[' => ("【】", '【', '】'),
-        '<' => ("《》", '《', '》'),
-        '{' => ("「」", '「', '」'),
-        '"' => ("“”", '“', '”'),
-        '\'' => ("‘’", '‘', '’'),
+        '(' => ('（', '）'),
+        '[' => ('【', '】'),
+        '<' => ('《', '》'),
+        '{' => ('「', '」'),
+        '"' => ('“', '”'),
+        '\'' => ('‘', '’'),
         _ => return None,
     })
 }
 
-/// 右标点对应的中文闭合字符（用于跳过已补全的右标点）。
+/// 自动配对：右标点的 ASCII 键对应的右半边（跳过补好的那个时比对）。引号左右是同一个键。
 pub fn closing_punct(ascii: char) -> Option<char> {
     Some(match ascii {
         ')' => '）',
