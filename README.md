@@ -361,7 +361,7 @@ neovim 里：
 local bin = vim.fn.expand("~/Library/Input Methods/WowType.app/Contents/MacOS/WowType")
 local mode = "zh"
 vim.api.nvim_create_autocmd("InsertLeave", { callback = function()
-  mode = vim.fn.system({ bin, "--mode" }):match("%a+") or mode
+  mode = vim.fn.system({ bin, "--mode" }):match("^(%l+)%s*$") or mode
   vim.fn.system({ bin, "--mode", "en" })
 end })
 vim.api.nvim_create_autocmd("InsertEnter", { callback = function() vim.fn.system({ bin, "--mode", mode }) end })

@@ -250,19 +250,20 @@ func voiceTest(_ wav: String) -> Bool {
 }
 
 /// --mode：不带参数打印现在的模式；带 zh / en / translate / toggle 切过去，打印切完的模式（和 Linux 的
-/// busctl … SetMode 一样）。切的是最近用过的输入框，不弹提示。没切成（互译没配好）、输入法没在跑时返回 false。
+/// busctl … SetMode 一样）。切的是最近用过的输入框，不弹提示。没切成（互译没配好）、输入法没在跑时返回 false，
+/// 原因写到标准错误（标准输出只有模式，脚本好读）。
 func modeCommand(_ args: [String]) -> Bool {
     let request = args.count > 1 ? args[1] : ""
     guard args.count <= 2, request.isEmpty || ExternalControl.modes.contains(request) else {
-        print("用法：WowType --mode [zh | en | translate | toggle]")
+        fputs("用法：WowType --mode [zh | en | translate | toggle]\n", stderr)
         return false
     }
     guard let mode = ExternalControlClient().send(request) else {
-        print("WowType 输入法没在运行（切到 WowType 打一个字以后再试）")
+        fputs("WowType 输入法没在运行（切到 WowType 打一个字以后再试）\n", stderr)
         return false
     }
     guard !mode.isEmpty else {
-        print("还没有输入框用过 WowType")
+        fputs("还没有输入框用过 WowType\n", stderr)
         return false
     }
     print(mode)
