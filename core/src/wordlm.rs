@@ -43,9 +43,8 @@ pub const OOV_FLOOR: f64 = -1.5;
 const EMPTY_SLOT: u32 = 0;
 
 pub struct WordLm {
-    /// Open-addressed word index. A slot stores word id + 1; zero is empty.
-    /// Keeping the hash table separate from the owned strings avoids a heap
-    /// allocation and a `String` hash on every beam-search lookup.
+    /// 词 -> 编号的开放寻址表：存「编号 + 1」，0 是空位。和词本身分开放，
+    /// 束搜索每次查词不用为 String 分配内存、算 SipHash（#227）
     slots: Vec<u32>,
     words: Vec<String>,
     backoff: Vec<f32>,
@@ -81,9 +80,8 @@ impl WordLm {
                 .context("词表不是 UTF-8")?
                 .to_string();
             if i == 1 && w.starts_with(datamark::KEY) {
-                // 版本标记：不当词查
+                // 版本标记：不当词查（下面建查找表时跳过它）
                 marker = DataMarker::parse(&w);
-            } else {
             }
             words.push(w);
         }
@@ -93,14 +91,15 @@ impl WordLm {
         }
         let mut slots = vec![EMPTY_SLOT; slot_count];
         for (id, word) in words.iter().enumerate() {
-            // The data marker is kept in `words` for stable bigram IDs, but
-            // intentionally has no lookup slot.
+            // 版本标记留在 words 里（搭配的编号不变），但不进查找表
             if id == 1 && word.starts_with(datamark::KEY) {
                 continue;
             }
             let mut slot = hash_word(word) as usize & (slot_count - 1);
             loop {
-                if slots[slot] == EMPTY_SLOT {
+                let stored = slots[slot];
+                // 空位放下；同一个词出现两次时用后面的编号（和原来 HashMap::insert 一样）
+                if stored == EMPTY_SLOT || words[stored as usize - 1] == *word {
                     slots[slot] = id as u32 + 1;
                     break;
                 }
