@@ -739,7 +739,7 @@ impl Engine {
         let mut result = if self.config.shuangpin {
             self.shuangpin_candidates(raw, at_ms)?
         } else {
-            self.pinyin_candidates(raw, None, at_ms)?
+            self.pinyin_candidates(raw, None, true, at_ms)?
         };
         self.prepend_custom_codes(raw, &mut result);
         if let Ok(mut last) = self.last_words.write() {
@@ -791,7 +791,8 @@ impl Engine {
     fn shuangpin_candidates(&self, raw: &str, at_ms: u64) -> Result<Vec<Candidate>> {
         let display = raw.trim();
         let leading = raw.len() - raw.trim_start().len();
-        let variants = crate::shuangpin::decode(self.config.shuangpin_scheme, display);
+        let scheme = self.config.shuangpin_scheme;
+        let variants = crate::shuangpin::decode(scheme, display);
         let Some(first) = variants.first() else {
             // 翻不了（不是双拼）：只给原始串
             let mut result = Vec::new();
@@ -801,7 +802,16 @@ impl Engine {
             }
             return Ok(result);
         };
-        let mut result = self.pinyin_candidates(&first.pinyin, Some(display), at_ms)?;
+        // 双拼里每个音节固定两键：配成对的音节已经打全，不能再当前缀补成别的音节
+        // （lo'ji 的 ji 不是 jiu 的前缀）；只有奇数键末尾悬空的声母才需要补全（vsg -> zhong'g）。
+        let completion = display
+            .bytes()
+            .filter(|&b| scheme.is_key(b.to_ascii_lowercase()))
+            .count()
+            % 2
+            == 1;
+        let mut result =
+            self.pinyin_candidates(&first.pinyin, Some(display), completion, at_ms)?;
         result.retain_mut(|c| {
             let used = if is_raw_candidate(c) {
                 display.len()
@@ -815,16 +825,13 @@ impl Engine {
             };
             used > 0
         });
-        // 有重码时，其他读法的整句候选补在后面
+        // 有重码时，其他读法的候选和第一个读法的一起按分数排，不能直接尾追加：
+        // loji 里 lo 读法的「咯 | 就」是硬凑的，luo 读法打全的「逻辑」分数高得多；
+        // 先追加会让前一组的长尾把候选数填满，后一组连出现的机会都没有。
         let max = self.config.max_candidates.max(1);
+        let mut extra = Vec::new();
         for other in variants.iter().skip(1) {
-            for mut c in self.query_plain(&other.pinyin.to_ascii_lowercase(), at_ms)? {
-                if result.len() >= max {
-                    break;
-                }
-                if result.iter().any(|r| r.text == c.text) {
-                    continue;
-                }
+            for mut c in self.query_plain(&other.pinyin.to_ascii_lowercase(), completion, at_ms)? {
                 if self.config.traditional {
                     if let Ok(conv) = self.converter.read() {
                         if !conv.is_empty() {
@@ -833,22 +840,35 @@ impl Engine {
                     }
                 }
                 c.consumed = raw.len();
-                result.push(c);
+                extra.push(c);
             }
+        }
+        if !extra.is_empty() {
+            result.extend(extra);
+            result = dedupe_by_text(result);
+            result.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then_with(|| a.text.cmp(&b.text))
+            });
+            self.promote_custom(&mut result);
+            result.truncate(max);
         }
         Ok(result)
     }
 
     /// 全拼的完整流程。`raw_display` 给了的话（双拼），原始串候选用它而不是 raw。
+    /// `completion` 控制末音节前缀补全：双拼配成对的音节已打全，只有悬空声母才开。
     fn pinyin_candidates(
         &self,
         raw: &str,
         raw_display: Option<&str>,
+        completion: bool,
         at_ms: u64,
     ) -> Result<Vec<Candidate>> {
         let display = raw.trim();
         let normalized = display.to_ascii_lowercase();
-        let mut result = self.query_plain(&normalized, at_ms)?;
+        let mut result = self.query_plain(&normalized, completion, at_ms)?;
 
         protect_exact_input(&mut result);
         promote_picked(&mut result);
@@ -889,7 +909,7 @@ impl Engine {
             compose_candidates(&mut result, prefix, self.config.max_candidates.max(1));
         }
         if self.config.more_candidates {
-            self.append_more_candidates(raw, display, &normalized, &mut result)?;
+            self.append_more_candidates(raw, display, &normalized, completion, &mut result)?;
         }
         Ok(result)
     }
@@ -977,6 +997,7 @@ impl Engine {
         raw: &str,
         display: &str,
         normalized: &str,
+        completion: bool,
         result: &mut Vec<Candidate>,
     ) -> Result<()> {
         let max = self.config.max_candidates.max(1);
@@ -996,7 +1017,7 @@ impl Engine {
                 mode: GraphMode::Full,
                 allow_erhua: true,
                 typo,
-                completion: true,
+                completion,
             },
         );
         let graph = if full.has_exact_path() || !self.config.jianpin_fallback {
@@ -1243,15 +1264,26 @@ impl Engine {
     ///
     /// 模糊音视图里精确读音和模糊读音都有（模糊词扣 `fuzzy_penalty`），一次搜索就够了，
     /// 两种读音的词按各自的分数排在一起。
-    fn query_plain(&self, normalized: &str, at_ms: u64) -> Result<Vec<Candidate>> {
-        self.run_query(normalized, at_ms, self.config.fuzzy)
+    fn query_plain(
+        &self,
+        normalized: &str,
+        completion: bool,
+        at_ms: u64,
+    ) -> Result<Vec<Candidate>> {
+        self.run_query(normalized, at_ms, self.config.fuzzy, completion)
     }
 
     /// 跑一次查询；fuzzy=true 时精确读音和模糊音读音的词一起搜。
     ///
     /// 末音节补全（zhongg -> 中国、zhonggu -> 中国）和纠错都做成了音节图里的边，
     /// 一次搜索就能同时给出精确、补全、纠错三类候选。
-    fn run_query(&self, normalized: &str, at_ms: u64, fuzzy: bool) -> Result<Vec<Candidate>> {
+    fn run_query(
+        &self,
+        normalized: &str,
+        at_ms: u64,
+        fuzzy: bool,
+        completion: bool,
+    ) -> Result<Vec<Candidate>> {
         let parsed = parse(normalized)?;
         if parsed.is_empty() {
             return Ok(Vec::new());
@@ -1263,7 +1295,7 @@ impl Engine {
                 mode: GraphMode::Full,
                 allow_erhua: true,
                 typo,
-                completion: true,
+                completion,
             },
         );
         // 不靠补全、纠错就能完整解析：直接用全拼。
@@ -3259,6 +3291,36 @@ mod tests {
             e.input("nihk").iter().any(|c| c.text == "你好"),
             "双拼 nihk 应当命中 你好"
         );
+    }
+
+    #[test]
+    fn shuangpin_colliding_readings_rank_together() {
+        use crate::shuangpin::Scheme;
+        let lexicon: Arc<dyn Lexicon> = Arc::new(
+            MemoryLexicon::from_tsv_str(
+                "luo ji\t逻辑\t100000\nlian luo\t联络\t100000\n\
+                 luo\t洛\t20000\nluo\t络\t30000\nlo\t咯\t5000\n\
+                 ji\t机\t80000\njiu\t就\t90000\n\
+                 lian\t连\t80000\nlian\t练\t60000\nlian\t脸\t50000\nlong\t龙\t70000\n",
+            )
+            .unwrap(),
+        );
+        let lm: Arc<dyn LanguageModel> = Arc::new(BigramLm::default());
+        let mut e = Engine::new(lexicon, lm);
+        e.set_shuangpin(true);
+        e.set_shuangpin_scheme(Scheme::Ziranma);
+        let texts = |input: &str| -> Vec<String> {
+            e.input(input).into_iter().map(|c| c.text).collect()
+        };
+        // lo 和 luo 撞码：两个读法的候选要按分数一起排，luo 读法打全的「逻辑」不能被
+        // lo 读法的长尾压在后面（#226）
+        let loji = texts("loji");
+        assert_eq!(loji.first().map(String::as_str), Some("逻辑"), "{loji:?}");
+        // 配成对的 ji 已经打全，不能再补成 jiu：两个读法都会补出「咯就」「络就」这类硬凑词
+        assert!(!loji.iter().any(|t| t.contains('就')), "{loji:?}");
+        // lian 和 lo/luo 同理，不能让单字长尾把「联络」挤出候选
+        let lmlo = texts("lmlo");
+        assert_eq!(lmlo.first().map(String::as_str), Some("联络"), "{lmlo:?}");
     }
 
     #[test]
