@@ -19,6 +19,30 @@ sys.stdout.reconfigure(line_buffering=True)
 errors = []
 sys.excepthook = lambda t, v, tb: errors.append("".join(traceback.format_exception(t, v, tb)))
 
+# 会切主题、改字号、开关 GNOME 扩展、调 fcitx5 的 SetConfig：只许在私有的会话总线上跑
+# （CI：dbus-run-session -- xvfb-run -a python3 scripts/test-settings-gui.py）。在桌面上直接跑会改掉
+# 正在用的 fcitx5 主题和字号；gsettings 读的是临时 HOME 里的空库、写的却是本机的 dconf，
+# GNOME 已启用的扩展会被清空。所以 gsettings 一律放内存里，总线上有 fcitx5 就不跑。
+os.environ["GSETTINGS_BACKEND"] = "memory"
+
+
+def _fcitx5_on_bus():
+    from gi.repository import Gio
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        reply = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                              "NameHasOwner", __import__("gi").repository.GLib.Variant("(s)", ("org.fcitx.Fcitx5",)),
+                              None, Gio.DBusCallFlags.NONE, 3000, None)
+        return reply.unpack()[0]
+    except Exception:  # noqa: BLE001  连不上总线：反正碰不到正在用的 fcitx5
+        return False
+
+
+if _fcitx5_on_bus():
+    print("会话总线上有正在跑的 fcitx5：这个测试会改它的设置。请在私有总线上跑：\n"
+          "  dbus-run-session -- xvfb-run -a python3 scripts/test-settings-gui.py")
+    sys.exit(2)
+
 # 会改设置、加自定义词：放到临时目录里，不动本机的
 home = tempfile.mkdtemp(prefix="wowtype-gui-test-")
 os.environ.update(HOME=home, XDG_CONFIG_HOME=f"{home}/.config", XDG_DATA_HOME=f"{home}/.local/share",
