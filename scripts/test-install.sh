@@ -196,7 +196,7 @@ run > "$work/output" 2>&1 || fail "apt install: $(cat "$work/output")"
 assert_log 'apt-get update -qq'
 assert_log 'apt-get install -y'
 assert_log 'fcitx5-config-qt fcitx5-frontend-all im-config'
-assert_log 'python3-gi gir1.2-gtk-4.0 gir1.2-adw-1'
+assert_log 'python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1'
 assert_log 'wowtype_0.3.8_ubuntu24.04_amd64.deb'
 assert_log 'wowtype-data-rime-ice_20260101_all.deb'
 assert_log 'wowtype-config --setup --yes --no-im-config --no-restart'

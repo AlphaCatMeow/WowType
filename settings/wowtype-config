@@ -91,6 +91,13 @@ try:
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
     from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
+    # 打字统计的图表用 cairo 画：要 PyGObject 的 cairo 支持（Debian / Ubuntu 是单独的 python3-gi-cairo 包）。
+    # 没有时图表换成文字，别的照常
+    try:
+        gi.require_foreign("cairo")
+        HAVE_CAIRO = True
+    except ImportError:
+        HAVE_CAIRO = False
 except (ImportError, ValueError) as e:
     missing_gui_libraries(e)
     sys.exit(1)
@@ -5333,12 +5340,15 @@ class SettingsWindow(Adw.ApplicationWindow):
         if not any(count for _key, count in series):
             page.append(self.stats_empty("这 30 天还没有输入记录。"))
             return
-        area = Gtk.DrawingArea()
-        area.set_content_height(150)
-        area.set_hexpand(True)
-        area.set_draw_func(lambda _area, cr, width, height:
-                           self.stats_draw_bars(cr, width, height, series))
-        page.append(area)
+        if HAVE_CAIRO:
+            area = Gtk.DrawingArea()
+            area.set_content_height(150)
+            area.set_hexpand(True)
+            area.set_draw_func(lambda _area, cr, width, height:
+                               self.stats_draw_bars(cr, width, height, series))
+            page.append(area)
+        else:
+            page.append(self.stats_empty("画图表要装 python3-gi-cairo（PyGObject 的 cairo 支持）。"))
         labels = Gtk.Box(spacing=6)
         first = Gtk.Label(label=stats_day_label(series[0][0]), xalign=0, hexpand=True)
         last = Gtk.Label(label=stats_day_label(series[-1][0]), xalign=1)
@@ -5438,12 +5448,13 @@ class SettingsWindow(Adw.ApplicationWindow):
             page.append(self.stats_empty(empty_text))
             return
         total = sum(value for _label, value, _color in parts)
-        area = Gtk.DrawingArea()
-        area.set_content_height(14)
-        area.set_hexpand(True)
-        area.set_draw_func(lambda _area, cr, width, height:
-                           self.stats_draw_ratio(cr, width, height, parts, total))
-        page.append(area)
+        if HAVE_CAIRO:
+            area = Gtk.DrawingArea()
+            area.set_content_height(14)
+            area.set_hexpand(True)
+            area.set_draw_func(lambda _area, cr, width, height:
+                               self.stats_draw_ratio(cr, width, height, parts, total))
+            page.append(area)
         for label, value, color in parts:
             row = Gtk.Box(spacing=8)
             swatch = Gtk.Label()

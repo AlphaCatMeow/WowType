@@ -278,7 +278,7 @@ install_packages() {
       esac
       "${SUDO[@]}" apt-get update -qq || warn "apt-get update 失败，接着用现有的软件源列表安装"
       "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y "${paths[@]}" \
-        "${extra[@]}" python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
+        "${extra[@]}" python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1
       ;;
     pacman)
       # 不替用户 -Syu（整机升级该由用户自己决定）；-S 不带 y 不会造成部分升级。
