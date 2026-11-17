@@ -76,6 +76,82 @@ public struct WowtypeConfig: Equatable {
         ("其他（自己填地址）", "", ""),
     ]
 
+    /// 设置里的「翻译引擎」：本地翻译、哔哩哔哩、自定义翻译服务（和 Linux 设置的 TRANSLATE_ENGINES 一样，
+    /// 见 spec/config.json 的 translateEngines）。不是单独的设置项，从 TranslateLocal 和 TranslateBaseUrl 推出来，
+    /// 见 translateEngine。
+    public enum TranslateEngine: String, CaseIterable {
+        case local, bilibili, custom
+
+        /// 下拉框里的名字
+        public var name: String {
+            switch self {
+            case .local: return "本地翻译（离线）"
+            case .bilibili: return "哔哩哔哩（免费，不用 API Key）"
+            case .custom: return "自定义翻译服务"
+            }
+        }
+
+        /// 选中时下拉框那一行的说明
+        public var note: String {
+            switch self {
+            case .local: return "不联网、不用账号，打的字不出这台电脑；一句话等 1–3 秒"
+            case .bilibili: return "哔哩哔哩的 Index-Translate，不用注册；要联网，一句话不到 1 秒"
+            case .custom: return "填你自己的翻译接口（DeepSeek、通义千问、Ollama……），要联网"
+            }
+        }
+    }
+
+    /// 哔哩哔哩 Index-Translate 的免费公开接口（不用 API Key），和 Linux 设置的 BILIBILI_*、核心的
+    /// translate::BILIBILI_* 一样（见 spec/config.json 的 translateBilibili）。核心看到这个主机就用 Index-Translate
+    /// 的提示词、模型空着用 2B、不带 Key
+    public static let bilibiliURL = "https://index-translate.bilibili.com/v1"
+    public static let bilibiliHost = "index-translate.bilibili.com"
+    public static let bilibiliDefaultModel = "Index-Translate-2B"
+    public static let bilibiliModels: [(id: String, name: String)] = [
+        ("Index-Translate-2B", "Index-Translate-2B（最快）"),
+        ("Index-Translate-9B", "Index-Translate-9B"),
+        ("Index-Translate-35B-A3B", "Index-Translate-35B-A3B（预览）"),
+    ]
+    public static let bilibiliPrivacy = "要翻译的文字会发到哔哩哔哩的服务器（index-translate.bilibili.com）"
+
+    /// 网址里的主机名（小写，不带协议、用户名、端口；IPv6 去掉方括号），和核心的 url_host 一样。没写协议也行
+    public static func urlHost(_ url: String) -> String {
+        var chars = Array(url.lowercased().filter { $0 != " " && $0 != "\t" && $0 != "\r" && $0 != "\n" })
+        var i = 0
+        while i + 2 < chars.count {
+            if chars[i] == ":" && chars[i + 1] == "/" && chars[i + 2] == "/" {
+                chars = Array(chars[(i + 3)...])
+                break
+            }
+            i += 1
+        }
+        if let end = chars.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "#" }) {
+            chars = Array(chars[..<end])
+        }
+        if let at = chars.lastIndex(of: "@") {
+            chars = Array(chars[(at + 1)...])
+        }
+        if chars.first == "[" {
+            let end = chars.firstIndex(of: "]") ?? chars.count
+            return String(chars[1..<end])
+        }
+        if let colon = chars.firstIndex(of: ":") {
+            chars = Array(chars[..<colon])
+        }
+        return String(chars)
+    }
+
+    /// 接口地址是哔哩哔哩的吗
+    public static func isBilibili(_ url: String) -> Bool {
+        urlHost(url) == bilibiliHost
+    }
+
+    /// 现在用的翻译引擎：TranslateLocal 是本地；否则接口地址是哔哩哔哩的就是哔哩哔哩，别的都是自定义
+    public var translateEngine: TranslateEngine {
+        if translateLocal { return .local }
+        return WowtypeConfig.isBilibili(translateBaseUrl) ? .bilibili : .custom
+    }
+
     public var horizontal = true
     public var arrowKeys = ArrowKeys.candidates
     public var pageSize = 9
