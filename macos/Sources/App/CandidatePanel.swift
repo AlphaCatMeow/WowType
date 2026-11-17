@@ -287,8 +287,51 @@ final class CandidateView: NSView {
     var layout: CandidateLayout? {
         didSet { needsDisplay = true }
     }
+    /// 点了第几个候选（显示的这一页 / 这一屏里的位置），和按数字键一样
+    var onSelect: ((Int) -> Void)?
+    /// 点了翻页箭头、滚了滚轮：true 下一页，false 上一页
+    var onPage: ((Bool) -> Void)?
+    /// 滚轮（触控板）攒着还没翻页的距离
+    private var scrolled: CGFloat = 0
+    /// 触控板滚这么多点翻一页
+    private static let scrollStep: CGFloat = 24
 
     override var isFlipped: Bool { true }
+
+    /// 输入法的窗口不会是前台的：第一下点击就要算（和 Linux 的候选框一样，鼠标能点候选、翻页箭头）
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseUp(with event: NSEvent) {
+        guard let layout else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        if let arrows = layout.arrows {
+            if arrows.prev.contains(point) {
+                if layout.hasPrev { onPage?(false) }
+                return
+            }
+            if arrows.next.contains(point) {
+                if layout.hasNext { onPage?(true) }
+                return
+            }
+        }
+        if let index = layout.cells.firstIndex(where: { $0.frame.contains(point) }) {
+            onSelect?(index)
+        }
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        // 鼠标滚轮一格一页；触控板攒够 scrollStep 翻一页。往下滚是下一页
+        scrolled += event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * Self.scrollStep
+        if abs(scrolled) >= Self.scrollStep {
+            onPage?(scrolled < 0)
+            scrolled = 0
+        }
+        if event.phase == .ended || event.momentumPhase == .ended {
+            scrolled = 0
+        }
+    }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -372,6 +415,15 @@ final class CandidatePanel {
     private(set) var layout: CandidateLayout?
     /// false：排好、摆好位置，但不把窗口放上屏幕（外壳测试 macos/ShellTests 用）
     var onScreen = true
+    /// 鼠标点了第几个候选、点了翻页箭头（正在用候选框的输入控制器设的）
+    var onSelect: ((Int) -> Void)? {
+        get { view.onSelect }
+        set { view.onSelect = newValue }
+    }
+    var onPage: ((Bool) -> Void)? {
+        get { view.onPage }
+        set { view.onPage = newValue }
+    }
 
     init() {
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 100, height: 30),
@@ -382,7 +434,8 @@ final class CandidatePanel {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
-        panel.ignoresMouseEvents = true
+        // 鼠标能点候选、翻页箭头，能滚轮翻页（CandidateView）；面板不会变成前台窗口，应用的输入框一直是焦点
+        panel.ignoresMouseEvents = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.contentView = view
     }

@@ -616,6 +616,13 @@ public final class Composer {
         apply(frame)
     }
 
+    /// 候选框上点了翻页箭头、滚了滚轮（和 Linux 的 panelListKey 一样，当成按了 Page Up / Page Down）。
+    /// 只在打字途中、工具栏或表情面板开着时翻；上屏以后的联想只有一页，不翻（不然这个键会交给应用）。
+    public func turnPage(forward: Bool) {
+        guard isComposing || openPanel != nil else { return }
+        _ = handle(.key(forward ? Keysym.pageDown : Keysym.pageUp))
+    }
+
     // MARK: 内部
 
     private func configure() {

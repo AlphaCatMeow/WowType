@@ -157,6 +157,17 @@ do {
         _ = c.handle(.key(Keysym.pageDown))
         _ = c.handle(.char("1"))
         check(client.committed == all[c.pageSize], "第二页按 1 选第二页的第一个", client.committed)
+        // 鼠标：点翻页箭头、滚轮（和 Page Up / Page Down 一样），点候选
+        client.committed = ""
+        type(c, "shi")
+        c.turnPage(forward: true)
+        check(client.page?.hasPrev == true && client.page?.texts.first == all[c.pageSize], "点下一页箭头")
+        c.turnPage(forward: false)
+        check(client.page?.texts.first == all[0], "点上一页箭头")
+        c.select(1)
+        check(client.committed == all[1], "点第二个候选", client.committed)
+        c.turnPage(forward: true)
+        check(client.committed == all[1] && !c.isComposing, "没在打字时点翻页什么都不做（不交给应用）")
     }
 }
 

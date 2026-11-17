@@ -86,6 +86,13 @@ class WowTypeInputController: IMKInputController {
         }
     }
 
+    /// 候选框上的鼠标操作：和按键一样先跟上设置，挪光标的位置从头算
+    fileprivate func mouseAction(_ action: (Composer) -> Void) {
+        caretAfterInsert = nil
+        syncComposer()
+        action(composer)
+    }
+
     /// 外部命令切模式（AppState.externalMode）：request 空串只问。和 Linux 一样不弹提示；
     /// 打到一半切英文时打的字母原样上屏（会话做）。
     func externalMode(_ request: String) -> String {
@@ -353,6 +360,13 @@ extension WowTypeInputController: TextClient {
         }
         var line = NSRect.zero
         client.attributes(forCharacterIndex: 0, lineHeightRectangle: &line)
+        // 鼠标点候选、翻页箭头、滚轮：交给这个输入框的组字（候选框所有输入框共用，谁画的归谁）
+        panel.onSelect = { [weak self] index in
+            self?.mouseAction { $0.select(index) }
+        }
+        panel.onPage = { [weak self] forward in
+            self?.mouseAction { $0.turnPage(forward: forward) }
+        }
         panel.show(page, below: line)
     }
 
