@@ -158,14 +158,20 @@ do {
         _ = c.handle(.char("1"))
         check(client.committed == all[c.pageSize], "第二页按 1 选第二页的第一个", client.committed)
         // 鼠标：点翻页箭头、滚轮（和 Page Up / Page Down 一样），点候选
+        // 和按 Page Down 比（前面选过字，学到的会改顺序，别拿开头记的 all 比）
         client.committed = ""
         type(c, "shi")
+        let firstPage = client.page?.texts ?? []
+        _ = c.handle(.key(Keysym.pageDown))
+        let byKey = client.page?.texts ?? []
+        _ = c.handle(.key(Keysym.pageUp))
         c.turnPage(forward: true)
-        check(client.page?.hasPrev == true && client.page?.texts.first == all[c.pageSize], "点下一页箭头")
+        check(client.page?.hasPrev == true && !byKey.isEmpty && client.page?.texts == byKey, "点下一页箭头",
+              "\(String(describing: client.page)) vs \(byKey)")
         c.turnPage(forward: false)
-        check(client.page?.texts.first == all[0], "点上一页箭头")
+        check(client.page?.texts == firstPage, "点上一页箭头", "\(client.page?.texts ?? []) vs \(firstPage)")
         c.select(1)
-        check(client.committed == all[1], "点第二个候选", client.committed)
+        check(firstPage.count > 1 && client.committed == firstPage[1], "点第二个候选", client.committed)
         c.turnPage(forward: true)
         check(client.committed == all[1] && !c.isComposing, "没在打字时点翻页什么都不做（不交给应用）")
     }
@@ -825,7 +831,9 @@ do {
     all.translateLocalModel = "/Users/me/模型/HY-MT.gguf"
     all.translateLlamaServer = "/opt/homebrew/bin/llama-server"
     all.translateIdleMinutes = 30
-    check(WowtypeConfig.keys.allSatisfy { all.value(forKey: $0) != d.value(forKey: $0) }, "每一项都改了")
+    all.initialMode = .last
+    check(WowtypeConfig.keys.allSatisfy { all.value(forKey: $0) != d.value(forKey: $0) }, "每一项都改了",
+          "\(WowtypeConfig.keys.filter { all.value(forKey: $0) == d.value(forKey: $0) })")
     for (name, base) in [("模板", nil), ("空文件", ""), ("只有注释", "# 我的设置\n")] as [(String, String?)] {
         let out = all.serialized(into: base)
         check(WowtypeConfig.parse(out) == all, "每一项改过的设置写进\(name)再读回来一样", out)
