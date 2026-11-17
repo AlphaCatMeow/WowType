@@ -207,24 +207,25 @@ export class VoiceOverlay {
     }
 
     // 光标矩形换成舞台坐标，算法和 Input Method Panel 扩展一样。
+    // protocol_to_stage_rect 是 GNOME 47 才有的（Xwayland 缩放）；45、46 上没有它，坐标本来就是舞台坐标，
+    // 原样用（#170：GNOME 46 上报 "protocol_to_stage_rect is not a function"，浮条一直画不出来）
     _stageRect(x, y, w, h, relative, scale) {
         if (!x && !y && !w && !h)
             return null;
         const focus = global.display.focus_window;
+        const toStage = r => focus && typeof focus.protocol_to_stage_rect === 'function'
+            ? focus.protocol_to_stage_rect(r) : r;
         let rect;
         if (relative && focus) {
             const k = St.ThemeContext.get_for_stage(global.stage).scale_factor / (scale || 1);
-            rect = new Mtk.Rectangle({x: x * k, y: y * k, width: w * k, height: h * k});
-            rect = focus.protocol_to_stage_rect(rect);
+            rect = toStage(new Mtk.Rectangle({x: x * k, y: y * k, width: w * k, height: h * k}));
             const actor = focus.get_compositor_private();
             if (actor) {
                 rect.x += actor.x;
                 rect.y += actor.y;
             }
         } else {
-            rect = new Mtk.Rectangle({x, y, width: w, height: h});
-            if (focus)
-                rect = focus.protocol_to_stage_rect(rect);
+            rect = toStage(new Mtk.Rectangle({x, y, width: w, height: h}));
         }
         return {x: rect.x, y: rect.y, w: rect.width, h: rect.height};
     }
