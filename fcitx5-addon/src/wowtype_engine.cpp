@@ -1090,6 +1090,7 @@ void WowtypeEngine::applyConfig() {
     if (const char *env = std::getenv("WOWTYPE_AUTOSPACE"); env && *env) {
         autoSpaceFlags_ = static_cast<int>(std::strtol(env, nullptr, 0)) & 3;
     }
+    autoPairPunct_ = envOr("WOWTYPE_AUTO_PAIR_PUNCT", *config_.autoPairPunct);
     typo_ = envOr("WOWTYPE_TYPO", *config_.typo);
     rareExt_ = envOr("WOWTYPE_RARE_EXT", *config_.rareExt);
     shuangpin_ = envOr("WOWTYPE_SHUANGPIN", *config_.inputScheme == WowtypeInputScheme::Shuangpin);
@@ -1467,6 +1468,7 @@ void WowtypeEngine::syncSession(WowtypeState *state) {
     config.wubi_auto_commit = *config_.wubiAutoCommit ? 1 : 0;
     config.wubi_hint = *config_.wubiHint ? 1 : 0;
     config.association = association_ ? 1 : 0;
+    config.auto_pair_punct = autoPairPunct_ ? 1 : 0;
     wowtype_session_configure(state->session_, &config);
 }
 
@@ -1544,6 +1546,65 @@ uint32_t WowtypeEngine::keyAction(const fcitx::Key &key) const {
     return WOWTYPE_KEY_ACTION_NONE;
 }
 
+namespace {
+constexpr uint64_t kCursorDeltaDelayUsec = 15000;
+
+void forwardKeyTap(fcitx::InputContext *ic, fcitx::KeySym sym) {
+    if (!ic) {
+        return;
+    }
+    const int keyCode = sym == FcitxKey_Left     ? 113
+                        : sym == FcitxKey_Right  ? 114
+                        : sym == FcitxKey_Delete ? 119
+                                                 : 0;
+    const fcitx::Key key(sym, fcitx::KeyStates(), keyCode);
+    ic->forwardKey(key, false);
+    ic->forwardKey(key, true);
+}
+
+void sendCursorDelta(fcitx::InputContext *ic, int delta) {
+    if (!ic || delta == 0) {
+        return;
+    }
+    const auto sym = delta < 0 ? FcitxKey_Left : FcitxKey_Right;
+    const int steps = delta < 0 ? -delta : delta;
+    for (int i = 0; i < steps; ++i) {
+        forwardKeyTap(ic, sym);
+    }
+}
+} // namespace
+
+void WowtypeEngine::applyCursorDelta(fcitx::InputContext *ic, const WowtypeFrame *frame,
+                                     bool afterCommit) {
+    if (!ic || !frame ||
+        frame->size < offsetof(WowtypeFrame, cursor_delta) + sizeof(frame->cursor_delta) ||
+        frame->cursor_delta == 0) {
+        return;
+    }
+    if (!afterCommit) {
+        sendCursorDelta(ic, frame->cursor_delta);
+        return;
+    }
+    // Wayland/Electron 下 commitString 与 forwardKey 走不同通道，同帧发出时方向键常比上屏先到。
+    // 延后 15 ms 再发 Press+Release，确保光标稳稳落在成对标点中间。
+    cursorTarget_ = ic->watch();
+    pendingCursorDelta_ = frame->cursor_delta;
+    if (!cursorTimer_) {
+        cursorTimer_ = instance_->eventLoop().addTimeEvent(
+            CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) + kCursorDeltaDelayUsec, kTimerAccuracyUsec,
+            [this](fcitx::EventSourceTime *, uint64_t) {
+                if (auto *target = cursorTarget_.get(); target && pendingCursorDelta_ != 0) {
+                    sendCursorDelta(target, pendingCursorDelta_);
+                }
+                pendingCursorDelta_ = 0;
+                return true;
+            });
+    } else {
+        cursorTimer_->setNextInterval(kCursorDeltaDelayUsec);
+        cursorTimer_->setOneShot();
+    }
+}
+
 void WowtypeEngine::applySessionFrame(fcitx::InputContext *ic, WowtypeState *state,
                                       const WowtypeFrame *frame) {
     if (frame && frame->size >= offsetof(WowtypeFrame, forgot) + sizeof(frame->forgot) &&
@@ -1556,6 +1617,7 @@ void WowtypeEngine::applySessionFrame(fcitx::InputContext *ic, WowtypeState *sta
         // 学没学到词看 frame->learned；选了 emoji 由会话记进最近用过
         finishCommit(ic, state, frame);
         updateInputPanel(ic, state);
+        applyCursorDelta(ic, frame, true);
         return;
     }
     // 没有要上屏的字也可能学到了：「译」里选的词进了原文，不在 frame->commit 里。也记一次、攒够了存，
@@ -1567,6 +1629,7 @@ void WowtypeEngine::applySessionFrame(fcitx::InputContext *ic, WowtypeState *sta
         if (learned) {
             maybeSaveUserDict(false);
         }
+        applyCursorDelta(ic, frame, false);
         return;
     }
     const bool wasExpanded = state->expanded_;
@@ -2146,10 +2209,15 @@ void WowtypeEngine::keyEvent(const fcitx::InputMethodEntry & /*entry*/,
     // 没在打字时也交给会话：字母（大写原样保留，Hello、iPhone 要用到）开始编辑区；
     // 标点换成中文标点（半角样式、数字后面的、没有中文写法的 / + 交给应用）；
     // 汉字后面打数字要补空格时会话自己上屏（第5章）
-    if (const WowtypeFrame *frame = sessionKey(ic, state, key); frame && frame->handled) {
+    const WowtypeFrame *frame = sessionKey(ic, state, key);
+    if (frame && frame->handled) {
         applySessionFrame(ic, state, frame);
         event.filterAndAccept();
         return;
+    }
+    if (frame && frame->size >= offsetof(WowtypeFrame, delete_next) + sizeof(frame->delete_next) &&
+        frame->delete_next && ic) {
+        forwardKeyTap(ic, FcitxKey_Delete);
     }
 }
 

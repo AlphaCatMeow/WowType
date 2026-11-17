@@ -477,6 +477,8 @@ typedef struct {
     int association;     /* 1.11 起：上屏以后的联想（选词、整句上屏以后给出一页常跟在后面的词，
                           * frame->panel 是 WOWTYPE_PANEL_ASSOCIATION），默认 0：外壳要会画联想才开，
                           * 设置里 Association 的默认值是开。五笔、「译」、密码框（KEY_HINT_NO_TRANSLATE）不出 */
+    int auto_pair_punct; /* 1.12 起：中文全角标点自动配对（输入左标点自动补全右标点并左移光标，
+                          * 支持跳过右标点和紧邻退格成对删），默认 0 */
 } WowtypeSessionConfig;
 
 /* 一次调用之后外壳要做的事。归会话所有，和里面的字符串一起在同一个会话的下一次调用前有效。
@@ -512,6 +514,8 @@ typedef struct {
     const char *translate_title;  /* 候选框上方：方向标签 +「互译：」 */
     const char *translate_status; /* 候选框下方的一行：出错原因、「翻译中…」、怎么上屏，没有是空串 */
     int translate_done;     /* translate_text 是译完的最终结果 */
+    int cursor_delta;       /* 1.12 起：上屏或跳过标点后让外壳移动应用光标的格数（-1 左移一格，+1 右移一格，0 不动） */
+    int delete_next;        /* 1.12 起：1 表示退格成对删除时先让外壳向应用发一次 Delete 删掉光标右侧的右标点，再放行这次 BackSpace */
 } WowtypeFrame;
 
 /* 建会话。engine 可以传 NULL（词库没载入好时也能打字，载入好了用 set_engine 补上）；

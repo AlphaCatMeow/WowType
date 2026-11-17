@@ -357,6 +357,7 @@ DEFAULTS = {
     "AutoSpace": "False",
     "AutoSpaceLetters": "True",
     "AutoSpaceDigits": "True",
+    "AutoPairPunct": "False",
     "Voice": "True",
     "VoiceCopy": "False",
     "VoiceKey": "Alt_R",
@@ -5113,6 +5114,10 @@ class SettingsWindow(Adw.ApplicationWindow):
         auto_space.add_row(self.make_switch("AutoSpaceLetters", "汉字和英文字母之间", None))
         auto_space.add_row(self.make_switch("AutoSpaceDigits", "汉字和数字之间", None))
         extras.add(auto_space)
+        auto_pair = self.make_switch("AutoPairPunct", "中文标点自动配对", "输入 （ 【 《 「 “ ‘ 自动补全右半边")
+        self.add_info(auto_pair, "在中文全角模式下输入左标点时自动补全右标点并把光标移到中间；"
+                                 "打完内容后再按右标点会直接跳过，刚补全后立刻按退格可成对删除。")
+        extras.add(auto_pair)
         page.add(extras)
         self.show_scheme(self.values["InputScheme"])
         return page

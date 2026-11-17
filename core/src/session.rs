@@ -364,6 +364,10 @@ pub struct Frame {
     pub wake_after_ms: u32,
     /// 候选框上方的提示（工具栏、表情面板），没有是空串。
     pub aux: String,
+    /// 上屏或跳过右标点后让外壳移动应用光标的格数（-1 左移一格，+1 右移一格，0 不动）。
+    pub cursor_delta: i32,
+    /// 退格成对删除时先让外壳向应用发一次 Delete 删掉光标右侧的右标点，再放行这次 BackSpace。
+    pub delete_next: bool,
 }
 
 /// 候选框的样子。
@@ -533,6 +537,8 @@ pub struct Config {
     /// 上屏以后的联想：选词上屏、整句上屏以后给出一页常跟在后面的词（[`Engine::associate`]）。
     /// 设置里默认开；这里默认关（外壳不认识联想就画不出来，C 接口里旧外壳没给这一项时也是关）。
     pub association: bool,
+    /// 中文全角标点自动配对：输入左标点自动补全右标点并把光标移到中间，支持跳过右标点和紧邻退格成对删除。
+    pub auto_pair_punct: bool,
 }
 
 impl Default for Config {
@@ -560,6 +566,7 @@ impl Default for Config {
             wubi_auto_commit: true,
             wubi_hint: true,
             association: false,
+            auto_pair_punct: false,
         }
     }
 }
@@ -682,6 +689,14 @@ pub struct Session<'e> {
     association: Option<Association>,
     /// 这次调用选词上屏了（后面没再上屏标点之类）：调用结束时出联想。
     association_due: bool,
+    /// 自动配对标点的待闭合右标点栈（支持嵌套），光标离开或切模式时清空。
+    pair_stack: Vec<char>,
+    /// 上一次按键刚触发了自动配对，紧接着按退格可成对删除。
+    just_paired: bool,
+    /// 这次调用结束后让外壳移动应用光标的格数（frame 取走）。
+    cursor_delta: i32,
+    /// 这次调用让外壳向应用发 Delete 删掉右侧配对标点（frame 取走）。
+    delete_next: bool,
 }
 
 impl Default for Session<'_> {
@@ -721,6 +736,10 @@ impl Default for Session<'_> {
             commit_start: None,
             association: None,
             association_due: false,
+            pair_stack: Vec::new(),
+            just_paired: false,
+            cursor_delta: 0,
+            delete_next: false,
         }
     }
 }
@@ -776,6 +795,10 @@ impl<'e> Session<'e> {
             if !self.config.association {
                 self.close_association();
             }
+            if !self.config.auto_pair_punct {
+                self.pair_stack.clear();
+                self.just_paired = false;
+            }
         }
     }
 
@@ -818,6 +841,11 @@ impl<'e> Session<'e> {
             if let Some(span) = undo.filter(|_| self.backspace_undoes(key)) {
                 self.unlearn(&span);
             }
+            let just_paired = std::mem::take(&mut self.just_paired);
+            if just_paired && self.backspace_undoes(key) {
+                self.pair_stack.pop();
+                self.delete_next = true;
+            }
         }
         let surrounding = key.hints & key_hints::SURROUNDING != 0;
         if key.prev_char.is_some() || surrounding {
@@ -839,6 +867,9 @@ impl<'e> Session<'e> {
             }
             if !self.composing() {
                 self.set_context("");
+                if !self.delete_next {
+                    self.pair_stack.clear();
+                }
             }
         }
         self.settle_association();
@@ -1714,6 +1745,8 @@ impl<'e> Session<'e> {
         if mode == self.mode {
             return;
         }
+        self.pair_stack.clear();
+        self.just_paired = false;
         self.close_association();
         if self.mode == Mode::Translate {
             // 离开「译」：攒着的原文原样上屏，正在打的拼音留着接着打
@@ -1843,6 +1876,9 @@ impl<'e> Session<'e> {
                 self.commit_current();
             }
             let prev = self.last_char;
+            if self.try_auto_pair_punct(c, prev) {
+                return true;
+            }
             let text = self.punct_text(c, prev).unwrap_or_else(|| c.to_string());
             self.emit(&text);
             return true;
@@ -1861,6 +1897,9 @@ impl<'e> Session<'e> {
             self.last_char = Some(c);
             return false;
         }
+        if self.try_auto_pair_punct(c, self.last_char) {
+            return true;
+        }
         match self.punct_text(c, self.last_char) {
             Some(text) => {
                 self.emit(&text);
@@ -1871,6 +1910,39 @@ impl<'e> Session<'e> {
                 false
             }
         }
+    }
+
+    /// 自动配对标点与跳过右标点：开启且处于中文全角模式（非互译、非数字后）时处理。
+    fn try_auto_pair_punct(&mut self, c: char, prev: Option<char>) -> bool {
+        if !self.config.auto_pair_punct
+            || self.config.punct_style != PunctStyle::Fullwidth
+            || self.translating()
+            || prev.is_some_and(|p| p.is_ascii_digit())
+        {
+            return false;
+        }
+        if let Some(close_ch) = crate::symbols::closing_punct(c) {
+            if self.pair_stack.last() == Some(&close_ch) {
+                self.pair_stack.pop();
+                self.cursor_delta = 1;
+                self.last_char = Some(close_ch);
+                self.undo_commit = None;
+                self.association_due = false;
+                self.close_association();
+                return true;
+            }
+        }
+        if let Some((pair_str, open_ch, close_ch)) = crate::symbols::auto_pair(c) {
+            self.emit(pair_str);
+            self.last_char = Some(open_ch);
+            if self.pair_stack.len() < 32 {
+                self.pair_stack.push(close_ch);
+            }
+            self.cursor_delta = -1;
+            self.just_paired = true;
+            return true;
+        }
+        false
     }
 
     /// c 在全角样式下换成的中文标点；半角样式、数字后面、没有中文标点的是 None。
@@ -2472,6 +2544,8 @@ impl<'e> Session<'e> {
             self.set_context("");
             self.prev_char = None;
             self.last_char = None;
+            self.pair_stack.clear();
+            self.just_paired = false;
             // 工具栏、表情面板跟着编辑区一起收：失去焦点后面板已经看不见了，会话里还开着的话，
             // 回来打的字母进了表情搜索，空格和数字上屏的是表情，单按 Shift 也切不了中英文
             self.close_tool();
@@ -2504,6 +2578,8 @@ impl<'e> Session<'e> {
             aux: String::new(),
             preedit_cursor,
             preedit,
+            cursor_delta: std::mem::take(&mut self.cursor_delta),
+            delete_next: std::mem::take(&mut self.delete_next),
             ..Frame::default()
         };
         if self.tool.is_some() {

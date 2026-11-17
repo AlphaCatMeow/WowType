@@ -239,6 +239,8 @@ pub struct WowtypeSessionConfig {
     pub translate_key: c_int,
     /// 1.11 起：上屏以后的联想，默认 0（旧外壳不认识联想、画不出来；设置里的默认值是开，外壳照设置填）。
     pub association: c_int,
+    /// 1.12 起：中文全角标点自动配对，默认 0。
+    pub auto_pair_punct: c_int,
 }
 
 impl Default for WowtypeSessionConfig {
@@ -280,6 +282,7 @@ impl Default for WowtypeSessionConfig {
             wubi_hint: c_int::from(config.wubi_hint),
             translate_key: c_int::from(config.translate_key),
             association: c_int::from(config.association),
+            auto_pair_punct: c_int::from(config.auto_pair_punct),
         }
     }
 }
@@ -334,6 +337,7 @@ impl WowtypeSessionConfig {
             wubi_hint: self.wubi_hint != 0,
             translate_key: self.translate_key != 0,
             association: self.association != 0,
+            auto_pair_punct: self.auto_pair_punct != 0,
         }
     }
 }
@@ -443,6 +447,10 @@ pub struct WowtypeFrame {
     pub translate_status: *const c_char,
     /// 1.10 起：translate_text 是译完的最终结果。
     pub translate_done: c_int,
+    /// 1.12 起：上屏或跳过标点后让外壳移动应用光标的格数（-1 左移，+1 右移，0 不动）。
+    pub cursor_delta: c_int,
+    /// 1.12 起：1 表示退格成对删除时先发一次 Delete 删掉右侧配对标点。
+    pub delete_next: c_int,
 }
 
 impl Default for WowtypeFrame {
@@ -470,6 +478,8 @@ impl Default for WowtypeFrame {
             translate_title: EMPTY.as_ptr(),
             translate_status: EMPTY.as_ptr(),
             translate_done: 0,
+            cursor_delta: 0,
+            delete_next: 0,
         }
     }
 }
@@ -582,6 +592,8 @@ impl WowtypeSession {
             self.frame.translate_status = self.translate[3].as_ptr();
             self.frame.translate_done = c_int::from(view.done);
         }
+        self.frame.cursor_delta = frame.cursor_delta as c_int;
+        self.frame.delete_next = c_int::from(frame.delete_next);
         &self.frame
     }
 
