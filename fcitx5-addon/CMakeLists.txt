@@ -49,7 +49,15 @@ target_include_directories(wowtype PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../core/include"
 )
 # 设置界面装在哪：插件在后台用它打开默认主题、检查更新（wowtype-config --startup）
-set(WOWTYPE_VERSION "${PROJECT_VERSION}" CACHE STRING "Version shown in the settings app and the log")
+# 版本号：打包脚本用 -DWOWTYPE_VERSION 指定（带 ~git 之类的后缀）；没指定时跟着 project() 走。
+# 缓存变量第一次配置以后就不变，源码升级后不删 build/ 会一直是旧版本号（#249）：
+# 缓存里的还是上次 project() 给的默认值（或者更早的 build/ 里没记、但比现在旧）时，跟上新版本。
+if(NOT DEFINED WOWTYPE_VERSION
+   OR (DEFINED _WOWTYPE_VERSION_DEFAULT AND WOWTYPE_VERSION STREQUAL _WOWTYPE_VERSION_DEFAULT)
+   OR (NOT DEFINED _WOWTYPE_VERSION_DEFAULT AND WOWTYPE_VERSION VERSION_LESS PROJECT_VERSION))
+    set(WOWTYPE_VERSION "${PROJECT_VERSION}" CACHE STRING "Version shown in the settings app and the log" FORCE)
+endif()
+set(_WOWTYPE_VERSION_DEFAULT "${PROJECT_VERSION}" CACHE INTERNAL "WOWTYPE_VERSION 跟着 project() 时的值")
 # 系统词库目录（lexicon.tsv、words.lm、demo_lexicon.tsv 等装在这里），跟着安装前缀走
 set(WOWTYPE_SYSTEM_DATA_DIR "${CMAKE_INSTALL_FULL_DATADIR}/wowtype"
     CACHE PATH "Directory the addon reads the system lexicon and language model from")
