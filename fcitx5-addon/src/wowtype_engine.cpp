@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 #include <fcitx-config/iniparser.h>
@@ -56,6 +57,8 @@ constexpr std::size_t kGridRows = 6;
 constexpr unsigned int kMaxCandidates = 1000;
 /// 每上屏这么多次保存一次用户词库（另外失去焦点和退出时也保存）。
 constexpr int kSaveEvery = 20;
+// 退出时等后台载入、后台存盘最多这么久（秒），再久就不等了（#244）
+constexpr int kShutdownWaitSeconds = 3;
 /// 打字推荐的 emoji 插在第几个候选（从 0 数）：不挤掉前两个词。
 
 bool envFlag(const char *name, bool fallback) {
@@ -1293,8 +1296,20 @@ bool WowtypeEngine::canToggleMode() const {
 }
 
 WowtypeEngine::~WowtypeEngine() {
+    // 退出时不能无限等（#244：桌面会话结束时 fcitx5 卡在这里，等到被 SIGTERM）。后台还在载入词库的，
+    // 最多等几秒；还没好就交给一个分离的线程等它载完再释放，这里不管了（进程反正要退出）
     if (loading_.valid()) {
-        takeLoaded();
+        if (loading_.wait_for(std::chrono::seconds(kShutdownWaitSeconds)) == std::future_status::ready) {
+            takeLoaded();
+        } else {
+            WLOG_W() << "WowType: 退出时词库还在载入，不等了";
+            std::thread([loading = std::move(loading_)]() mutable {
+                const WowtypeLoaded loaded = loading.get();
+                if (loaded.core) {
+                    wowtype_engine_free(loaded.core);
+                }
+            }).detach();
+        }
     }
     // 会话借用引擎和翻译器：先让它们放开，再释放（ABI.md：要比会话活得久）
     instance_->inputContextManager().foreach([this](fcitx::InputContext *ic) {
@@ -1304,9 +1319,19 @@ WowtypeEngine::~WowtypeEngine() {
         return true;
     });
     if (core_) {
-        // 退出前等后台存盘写完（free 也会等，这里能把失败记进日志）
-        maybeSaveUserDict(true, true);
-        wowtype_engine_free(core_);
+        // 退出前把没存的交给后台存盘，最多等几秒（free 也会等写完，所以没写完时不 free：
+        // 盘卡住了也别把 fcitx5 的退出拖住，进程退出时内存反正都还回去）
+        maybeSaveUserDict(true, false);
+        const int saved = wowtype_engine_save_wait(core_, kShutdownWaitSeconds * 1000);
+        if (saved < 0) {
+            WLOG_W() << "WowType: 用户词库或输入习惯保存失败："
+                     << (wowtype_last_error() ? wowtype_last_error() : "unknown");
+        }
+        if (saved == 1) {
+            WLOG_W() << "WowType: 退出时存盘 " << kShutdownWaitSeconds << " 秒还没写完，不等了";
+        } else {
+            wowtype_engine_free(core_);
+        }
         core_ = nullptr;
     }
     voiceTimer_.reset();
