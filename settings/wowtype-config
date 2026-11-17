@@ -96,7 +96,7 @@ try:
     try:
         gi.require_foreign("cairo")
         HAVE_CAIRO = True
-    except ImportError:
+    except (ImportError, AttributeError):  # AttributeError：很老的 PyGObject，或者测试里的替身 gi
         HAVE_CAIRO = False
 except (ImportError, ValueError) as e:
     missing_gui_libraries(e)
