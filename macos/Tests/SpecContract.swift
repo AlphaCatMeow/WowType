@@ -176,6 +176,37 @@ func checkConfigContract() {
     let ourProviders = WowtypeConfig.translateProviders.map { [$0.name, $0.url, $0.model] }
     check(ourProviders == providers, "契约：翻译服务商", "规格 \(providers)，macOS \(ourProviders)")
 
+    // 翻译引擎和哔哩哔哩（和 Linux 设置的 TRANSLATE_ENGINES、BILIBILI_* 对照同一份规格）
+    let engines = (spec["translateEngines"]?["items"]?.array ?? []).map {
+        [$0["id"]?.string ?? "", $0["name"]?.string ?? "", $0["note"]?.string ?? ""]
+    }
+    let ourEngines = WowtypeConfig.TranslateEngine.allCases.map { [$0.rawValue, $0.name, $0.note] }
+    check(ourEngines == engines, "契约：翻译引擎的选项", "规格 \(engines)，macOS \(ourEngines)")
+    let bili = spec["translateBilibili"]
+    let ourBili = [WowtypeConfig.bilibiliURL, WowtypeConfig.bilibiliHost, WowtypeConfig.bilibiliDefaultModel,
+                   WowtypeConfig.bilibiliPrivacy]
+    let specBili = ["url", "host", "default", "privacy"].map { bili?[$0]?.string ?? "" }
+    check(ourBili == specBili, "契约：哔哩哔哩的地址、主机、默认模型、隐私说明", "规格 \(specBili)，macOS \(ourBili)")
+    let biliModels = (bili?["models"]?.array ?? []).map { [$0["id"]?.string ?? "", $0["name"]?.string ?? ""] }
+    let ourBiliModels = WowtypeConfig.bilibiliModels.map { [$0.id, $0.name] }
+    check(ourBiliModels == biliModels, "契约：哔哩哔哩的模型", "规格 \(biliModels)，macOS \(ourBiliModels)")
+    // 选中哪个引擎从 TranslateLocal 和 TranslateBaseUrl 推出来
+    let bilibiliURL = bili?["url"]?.string ?? "?"
+    let engineCases: [(String, WowtypeConfig.TranslateEngine)] = [
+        ("TranslateLocal=True\nTranslateBaseUrl=\(bilibiliURL)", .local),
+        ("TranslateLocal=False\nTranslateBaseUrl=\(bilibiliURL)", .bilibili),
+        ("TranslateBaseUrl=\(bilibiliURL)/chat/completions", .bilibili),
+        ("TranslateLocal=False\nTranslateBaseUrl=HTTPS://Index-Translate.Bilibili.com/v1", .bilibili),
+        ("TranslateLocal=False\nTranslateBaseUrl=https://index-translate.bilibili.com.example.org/v1", .custom),
+        ("TranslateLocal=False\nTranslateBaseUrl=https://api.deepseek.com/v1", .custom),
+        ("TranslateLocal=False", .custom),
+        ("", .local),
+    ]
+    for (file, want) in engineCases {
+        let got = WowtypeConfig.parse(file).translateEngine
+        check(got == want, "契约：文件是 \(file.debugDescription) 时翻译引擎是 \(want.rawValue)", got.rawValue)
+    }
+
     // 读文件的规矩（三端一样）：整份 wowtype.conf 读出来是什么；写回去再读还是一样
     for c in spec["readRules"]?["cases"]?["items"]?.array ?? [] {
         guard let file = c["file"]?.string, let expect = c["expect"]?.object else {

@@ -1762,6 +1762,16 @@ do {
     config.translateModel = "m"
     t.configure(config, keyFile: "", defaultLocalModel: "")
     check(t.isReady, "填了地址和模型：配好了")
+    // 哔哩哔哩：模型空着（用 2B）、没有 Key 也算配好了
+    config.translateBaseUrl = WowtypeConfig.bilibiliURL
+    config.translateModel = ""
+    t.configure(config, keyFile: "", defaultLocalModel: "")
+    check(t.isReady && config.translateEngine == .bilibili, "哔哩哔哩：不填模型、没有 Key 也配好了")
+    check(WowtypeConfig.urlHost("https://user:k@[::1]:8080/v1") == "::1"
+          && WowtypeConfig.urlHost("index-translate.bilibili.com/v1") == WowtypeConfig.bilibiliHost
+          && WowtypeConfig.urlHost("HTTP://Example.com:80?x=1") == "example.com", "网址里的主机名")
+    config.translateBaseUrl = "http://127.0.0.1:1/v1"
+    config.translateModel = "m"
     config.translateLocal = true
     let model = "/tmp/wowtype-macos-harness-\(getpid()).gguf"
     t.configure(config, keyFile: "", defaultLocalModel: model)

@@ -31,7 +31,8 @@ dbus-send --session --dest=org.fcitx.Fcitx5 /controller \
 
 ## 互译
 
-在设置界面「翻译」里下载本地模型，或者在「用什么翻译」里选「自定义翻译服务」填一个 OpenAI 格式（`chat/completions`）的接口，打开「互译」，
+在设置界面「翻译」页的「翻译引擎」里选一个：**本地翻译（离线）**（默认，要先下载模型）、
+**哔哩哔哩（免费，不用 API Key）**，或者**自定义翻译服务**（填一个 OpenAI 格式、`chat/completions` 的接口），再打开「互译」，
 单按 Shift 就在 **中 → 英 → 译 → 中** 之间切换（没填好服务时只在中英之间切）。
 也可以在「输入」页设一个**互译的快捷键**（`TranslateModeKey`，比如 `Ctrl+Shift+Y`）：按它进「译」，在「译」里再按回到原来的模式（中文或英文）；设了以后单按 Shift 只在中英之间切。
 左 Shift 被 fcitx5 拿去「临时切换输入法」时切不到「译」，用右 Shift，或在设置「输入」页打开「Shift 只给 WowType 用」。
@@ -52,16 +53,45 @@ dbus-send --session --dest=org.fcitx.Fcitx5 /controller \
 - 打的是外文（比如英文）就翻成中文。数字、`/` `+` 这些符号也进原文。
 - 同一句话翻过一次会记住（最近 64 句），再打不用等。出错时候选框底下写原因，按回车重试。
 - 有的程序不让输入法把编辑区画在它的输入框里，这时译文写在候选框最下面一行。
-- **打的字会发给你填的服务**（WowType 自己不经手）。密码框里不翻译。
+- **打的字会发给你选的服务**（WowType 自己不经手）。密码框里不翻译。
 - API Key 存在 `~/.config/wowtype/translate.key`（权限 0600，只有自己能读），不写进 `wowtype.conf`、不进日志。
   手动写也行：一行，就是 Key 本身。本机的服务（Ollama 等）可以不填。
 - 发请求用的是系统的 `curl`（没装的话装一下），走系统的代理设置；连本机的服务不走代理。
 - 打字时要等它翻译，挑又小又快的模型（各家的 mini、flash、turbo 版）；推理模型会慢很多。
   设置里的「测试连接」会显示一次要多久。
 
+### 翻译引擎
+
+「翻译引擎」不是单独的设置项，是从下面几项推出来的（Linux 设置界面和 macOS 一样，见 `spec/config.json` 的 `translateEngines`）：
+
+| 引擎 | 配置文件里 | 说明 |
+|---|---|---|
+| 本地翻译（离线） | `TranslateLocal=True`（默认） | 见[本地模型](#本地模型离线) |
+| 哔哩哔哩（免费，不用 API Key） | `TranslateLocal=False`，`TranslateBaseUrl` 的主机是 `index-translate.bilibili.com` | 见[哔哩哔哩](#哔哩哔哩index-translate) |
+| 自定义翻译服务 | `TranslateLocal=False`，别的地址 | 服务商、地址、Key、模型，见上面 |
+
+在设置里换引擎时写上这个引擎的 `TranslateLocal`、`TranslateBaseUrl`、`TranslateModel`。从「自定义」换到哔哩哔哩再换回来，
+原来填的地址和模型照原样写回（只记在这次打开的设置窗口里）；API Key 文件一直不动。
+升级不会换引擎：默认还是本地翻译、互译默认关，已经在用的服务照旧用，不会自己开始把字发给新的服务。
+
+### 哔哩哔哩（Index-Translate）
+
+哔哩哔哩开源的翻译模型 [Index-Translate](https://github.com/bilibili/Index-Translate)，官方提供免费的公开接口
+`https://index-translate.bilibili.com/v1`（OpenAI 格式），**不用注册、不用 API Key**。一句话不到 1 秒。
+
+- 设置里选「哔哩哔哩」，再挑模型：`Index-Translate-2B`（最快，默认）、`Index-Translate-9B`（译得好一点，稍慢）、
+  `Index-Translate-35B-A3B`（预览版）。`TranslateModel` 空着时用 2B。
+- **隐私**：要翻译的文字会发到哔哩哔哩的服务器（`index-translate.bilibili.com`）。只在切到「译」时发，密码框里不翻译；
+  存在 `translate.key` 里给别的服务商的 Key **不会**发给哔哩哔哩。
+- Index-Translate 是专门的翻译模型，不认通用的系统提示词，核心用它官方的「带约束翻译」提示词（原文是问题、指令也只翻译，
+  不回答；表情、网址、@ 提及、数字和代码照抄；跟着「正式语气」），temperature 0，关掉思考。
+  地址的主机是 `index-translate.bilibili.com`，或者模型名以 `Index-Translate` 开头（不分大小写，自己部署的
+  Index-Translate 换了地址也认得）时都这样发；「测试连接」也一样。
+- 这是哔哩哔哩免费提供的服务，WowType 管不了它能用多久、有没有限流；用不了时换回本地翻译或自定义服务。
+
 ### 本地模型（离线）
 
-不想把字发出去，可以在「翻译」页的「用什么翻译」里选「本地模型（离线）」（设置里默认就是它），用腾讯混元的翻译模型
+不想把字发出去，可以在「翻译」页的「翻译引擎」里选「本地翻译（离线）」（设置里默认就是它），用腾讯混元的翻译模型
 [HY-MT 1.5 1.8B](https://huggingface.co/tencent/HY-MT1.5-1.8B-GGUF)（Q4_K_M，1.13 GB）在本机翻：
 
 - 模型点「下载」获取，放在 `~/.local/share/wowtype/models/`（`TranslateLocalModel` 写了位置就下到那里），下载完校验 SHA256，断了再点会接着下（接着下时不用再确认许可）。两端一样。
@@ -195,8 +225,8 @@ Lexicon=
 | `TranslateModeKey` | 进出「译」的快捷键（如 `Control+Shift+Y`），留空不用：按它进「译」（打到一半的拼音带进去），在「译」里再按回到进来前的模式；设了以后单按 Shift 只在中 ↔ 英之间切（在「译」里单按回中文）。互译没打开、翻译没配好、密码框里这个键交给应用。和 `ToggleKey` 设成同一个键时算这个 |
 | `EmojiKey` | 表情面板快捷键，fcitx5 的键名，如 `Super+period`、`Control+semicolon`；留空不用快捷键。macOS 上默认 `Control+period`，`Super` 当 `Control`（见 [macOS](#macos)） |
 | `TranslateTarget` | 互译语言：`en` 英、`ja` 日、`ko` 韩、`fr` 法、`de` 德、`es` 西、`ru` 俄、`pt` 葡、`it` 意、`vi` 越、`th` 泰、`id` 印尼、`ar` 阿 |
-| `TranslateBaseUrl`、`TranslateModel` | 翻译服务（OpenAI 格式）的地址和模型，见[互译](#互译) |
-| `TranslateLocal` | `True` 用本地模型（默认），`False` 用 `TranslateBaseUrl` 的翻译服务。配置文件里没写这一项、又填了 `TranslateBaseUrl` 时当 `False`（0.3.10 及以前填过翻译服务的照旧用服务）；Linux 插件、设置界面和 macOS 都这样 |
+| `TranslateBaseUrl`、`TranslateModel` | 翻译服务（OpenAI 格式）的地址和模型，见[互译](#互译)。地址是 `https://index-translate.bilibili.com/v1` 时是[哔哩哔哩](#哔哩哔哩index-translate)，模型可以空着（用 `Index-Translate-2B`）、不用 Key |
+| `TranslateLocal` | `True` 用本地模型（默认），`False` 用 `TranslateBaseUrl` 的翻译服务（哔哩哔哩或自定义，见[翻译引擎](#翻译引擎)）。配置文件里没写这一项、又填了 `TranslateBaseUrl` 时当 `False`（0.3.10 及以前填过翻译服务的照旧用服务）；Linux 插件、设置界面和 macOS 都这样 |
 | `TranslateLocalModel` | 本地模型文件，留空用 `~/.local/share/wowtype/models/HY-MT1.5-1.8B-Q4_K_M.gguf`，见[本地模型](#本地模型离线) |
 | `TranslateLlamaServer` | `llama-server` 的路径，留空先在 `PATH` 里找，再用设置里下载的那份 |
 | `TranslateIdleMinutes` | 本地模型闲置几分钟后释放，0–240，0 表示不自动释放 |
@@ -292,9 +322,9 @@ macOS 还没有的功能不列；Linux 单独一页的「更新」在「常规�
   （加词时自动填拼音，能删、导入、导出），保存后下一次按键时生效。
 - `AutoSpace` 只在应用告诉输入法光标前是什么字时才加（很多应用不告诉，这时不猜）。
 - [互译](#互译)用法和 Linux 一样（单按 Shift 中 → 英 → 译 → 中，原文在候选框顶上，译文写在输入框里）。在设置窗口的「翻译」页打开互译、
-  填接口地址和模型（也可以直接改 `wowtype.conf` 里的 `Translate`、`TranslateBaseUrl`、`TranslateModel`）；API Key 也在那一页填，
+  在「翻译引擎」里选本地翻译、[哔哩哔哩](#哔哩哔哩index-translate)（免费，不用 Key）或自定义翻译服务；自定义的填接口地址和模型（也可以直接改 `wowtype.conf` 里的 `Translate`、`TranslateBaseUrl`、`TranslateModel`）；API Key 也在那一页填，
   存在同一个目录的 `translate.key`（0600，只有自己能读），不写进 `wowtype.conf`。系统开着安全输入（密码框）时照常打中文，不翻译。
-- 本地模型（`TranslateLocal=True`）：和 Linux 一样一键下载。设置窗口「翻译」页选「本地模型（离线）」，点「下载」，
+- 本地模型（`TranslateLocal=True`）：和 Linux 一样一键下载。设置窗口「翻译」页选「本地翻译（离线）」，点「下载」，
   确认许可后模型（1.13 GB）下到数据目录的 `models/`（`TranslateLocalModel` 写了位置就下到那里），下完校验 SHA256，断了再点会接着下；好了那一行写「已就绪」。
   找不到 `llama-server` 时一起下载 llama.cpp 官方的 macOS 程序（和 Linux 同一个构建，Apple 芯片约 17 MB、Intel 约 12 MB，MIT 许可，钉死 SHA256），
   只解出 `llama-server` 和它的动态库到数据目录的 `llama/`，跑一次 `--version` 确认能用，不用 `brew install llama.cpp`。

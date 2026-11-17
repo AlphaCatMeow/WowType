@@ -248,6 +248,55 @@ def run(app):
         check(("ce shi", "测试") in win.words, "回车没加上自定义词")
     step("输入框", entries)
 
+    def translate_engine():
+        # 翻译引擎三选一：本地 / 哔哩哔哩 / 自定义。选哪个写哪个的键，下面只出现它的设置
+        engine = win.engine_row
+        check(engine.get_selected() == 0, "默认不是本地翻译")
+        check(win.local_group.get_visible() and not win.bili_group.get_visible()
+              and not win.service_group.get_visible(), "本地翻译时出现了别的设置")
+        engine.set_selected(2)
+        win.url_row.set_text("https://api.example.com/v1")
+        win.tmodel_row.set_text("my-model")
+        check(win.values["TranslateLocal"] == "False", "选自定义没写 TranslateLocal=False")
+        check(win.values["TranslateBaseUrl"] == "https://api.example.com/v1", "自定义地址没存上")
+        check(win.service_group.get_visible() and not win.bili_group.get_visible(), "自定义时没出现填接口的地方")
+        check(pump_until(lambda: ns["read_translate_key"]() == "sk-test"), "Key 没存上")
+        engine.set_selected(1)
+        check(win.values["TranslateBaseUrl"] == ns["BILIBILI_URL"], "选哔哩哔哩没写它的地址")
+        check(win.values["TranslateModel"] == ns["BILIBILI_DEFAULT_MODEL"], "哔哩哔哩的模型不是 2B")
+        check(win.bili_group.get_visible() and not win.service_group.get_visible()
+              and not win.local_group.get_visible(), "选哔哩哔哩时显示的设置不对")
+        check(win.translate_ready(), "哔哩哔哩不用 Key 也该算配好了")
+        check("哔哩哔哩的服务器" in (win.bili_group.get_description() or ""), "没写隐私说明")
+        check(win.url_row.get_text() == "https://api.example.com/v1", "自定义框里的地址被改了")
+        win.bili_model_row.set_selected(1)
+        check(win.values["TranslateModel"] == "Index-Translate-9B", "哔哩哔哩的模型没存上")
+        config = ns["CONFIG_FILE"]
+        check(pump_until(lambda: os.path.exists(config) and "Index-Translate-9B" in open(config, encoding="utf-8").read()),
+              "哔哩哔哩没存盘")
+        check(ns["translate_engine"](ns["read_config"]()[0]) == 1, "读回来不是哔哩哔哩")
+        check(ns["read_translate_key"]() == "sk-test", "选哔哩哔哩把 Key 删了")
+        # 测试连接：不联网，换成假的 test_translate，看发给谁、带没带 Key
+        calls = []
+        scope = win.on_test_translate.__func__.__globals__
+        real = scope["test_translate"]
+        scope["test_translate"] = lambda base, key, model, target="en", text="你好", formal=False: (
+            calls.append((base, key, model)) or ("Hello", 0.3))
+        try:
+            win.bili_test_button.emit("clicked")
+            check(pump_until(lambda: "Hello" in (win.bili_test_row.get_subtitle() or "")),
+                  f"测试连接没出结果：{win.bili_test_row.get_subtitle()}")
+        finally:
+            scope["test_translate"] = real
+        check(calls == [(ns["BILIBILI_URL"], "", "Index-Translate-9B")], f"测试连接发的不对：{calls}")
+        # 换回自定义：框里的地址、模型照原样写回
+        engine.set_selected(2)
+        check(win.values["TranslateBaseUrl"] == "https://api.example.com/v1"
+              and win.values["TranslateModel"] == "my-model", "换回自定义没写回原来的地址和模型")
+        engine.set_selected(0)
+        check(win.values["TranslateLocal"] == "True", "换回本地没写 TranslateLocal=True")
+    step("翻译引擎", translate_engine)
+
     def dialog(name, action, answer=None):
         def go():
             for w in new_windows(win, action):
