@@ -364,7 +364,7 @@ pub struct WowtypeCandidateInfo {
     pub emoji: *const c_char,
     /// 1.10 起：候选后面的小字（五笔还要打的码、反查的五笔码），没有是空串。
     pub comment: *const c_char,
-    /// 1.11 起：候选在列表里的位置（1 起）；0 表示不知道。
+    /// 1.12 起：候选在列表里的位置（1 起）；0 表示不知道。
     pub index: usize,
 }
 
@@ -448,7 +448,7 @@ pub struct WowtypeFrame {
     pub translate_status: *const c_char,
     /// 1.10 起：translate_text 是译完的最终结果。
     pub translate_done: c_int,
-    /// 1.11 起：这次上屏的候选在列表里的位置（1 起）；不是选候选为 0。
+    /// 1.12 起：这次上屏的候选在列表里的位置（1 起）；不是选候选为 0。
     pub choice_index: usize,
 }
 
