@@ -145,6 +145,7 @@ ClipboardHistory=False
 AutoSpace=False
 AutoSpaceLetters=True
 AutoSpaceDigits=True
+AutoPairPunct=False
 Voice=True
 VoiceKey=Alt_R
 VoiceCopy=False
@@ -173,6 +174,7 @@ Lexicon=
 | `PageSize` | 每页候选个数，3–9 |
 | `Fuzzy`、`TypoCorrection`、`Traditional`、`DateTime`、`Calculator`、`Toolbar`、`ClipboardHistory`、`Voice`、`VoiceCopy`、`EmojiSuggest`、`Translate`、`TranslateFormal`、`CheckUpdate`、`BetaUpdates` | `True` / `False` |
 | `AutoSpace`、`AutoSpaceLetters`、`AutoSpaceDigits` | 中英文之间自动加空格：总开关（默认关）、汉字和字母之间、汉字和数字之间。要应用报告光标前的文字才生效（终端等不支持），密码、网址、邮箱输入框不加 |
+| `AutoPairPunct` | 中文标点自动配对，默认关，在设置的「输入」页打开。中文标点下打 `(` `[` `<` `{` `"` `'` 上屏成对的（）【】《》「」“”‘’，光标放到中间；在里面打完字再按右半边（`)` `]` `>` `}` `"` `'`）不再上屏一个，而是跳过补好的那个；刚补完立刻按退格两个一起删。打字、空格、上屏都不打断配对，方向键、`Home` `End`、换窗口、点鼠标挪了光标以后不再跳过。数字后面的 `(` 照常是半角，`3)` 这样的右括号也照常；互译、半角标点时不配对。光标靠插件向应用发方向键，应用报告光标前后文字时还会先核对右边确实是补好的标点。只在 Linux（macOS 还没有） |
 | `FuzzyZh`、`FuzzyCh`、`FuzzySh`、`FuzzyNL`、`FuzzyFH`、`FuzzyRL`、`FuzzyAn`、`FuzzyEn`、`FuzzyIn`、`FuzzyIan`、`FuzzyUan`、`FuzzyUn`、`FuzzyAnAi`、`FuzzyHuangWang`、`FuzzyUnIong`、`FuzzyEngOng` | 模糊音的各组（z=zh、c=ch、s=sh、n=l、f=h、r=l、an=ang、en=eng、in=ing、ian=iang、uan=uang、un=ong、an=ai、huang=wang、un=iong、eng=ong），`Fuzzy` 打开时才生效 |
 | `SelectKeys` | 分号、引号选词：`Off`、`Semicolon`（`;` 选第 2 个）、`SemicolonQuote`（再加 `'` 选第 3 个，引号不再当隔音符） |
 | `RareExtChars` | 也出 CJK 扩展 B 区及以后的单字（比如 `hou` 的 𠯜），默认关：常见中文字体（Noto CJK、思源、苹方）都没有这些字，列出来是方块。打开前先装能显示它们的字体，比如 Ubuntu / Debian 的 `fonts-hanazono`。通用规范汉字表里的扩展区字（𬭩、𫚔，约 200 个，常见字体都有）和含这些字的词（𩽾𩾌）不受这个开关影响 |
@@ -217,7 +219,7 @@ Lexicon=
 
 | 变量 | 作用 |
 |---|---|
-| `WOWTYPE_FUZZY=1`、`WOWTYPE_SHUANGPIN=1`、`WOWTYPE_TRADITIONAL=1`、`WOWTYPE_TYPO=0`、`WOWTYPE_VERTICAL=1`、`WOWTYPE_EMOJI=0`、`WOWTYPE_DATETIME=0`、`WOWTYPE_CALC=0`、`WOWTYPE_TOOLBAR=0`、`WOWTYPE_CLIPBOARD_HISTORY=0`、`WOWTYPE_VOICE_COPY=1` | 对应上面的开关 |
+| `WOWTYPE_FUZZY=1`、`WOWTYPE_SHUANGPIN=1`、`WOWTYPE_TRADITIONAL=1`、`WOWTYPE_TYPO=0`、`WOWTYPE_VERTICAL=1`、`WOWTYPE_EMOJI=0`、`WOWTYPE_DATETIME=0`、`WOWTYPE_CALC=0`、`WOWTYPE_TOOLBAR=0`、`WOWTYPE_CLIPBOARD_HISTORY=0`、`WOWTYPE_VOICE_COPY=1`、`WOWTYPE_AUTO_PAIR_PUNCT=1` | 对应上面的开关 |
 | `WOWTYPE_AUTOSPACE` | 自动加空格的位掩码：1 汉字和字母之间、2 汉字和数字之间，`3` 两种都加，`0` 关 |
 | `WOWTYPE_FUZZY_GROUPS` | 模糊音分组的位掩码（1 z/zh、2 c/ch、4 s/sh、8 n/l、16 f/h、32 r/l、64 an/ang、128 en/eng、256 in/ing、512 ian/iang、1024 uan/uang、2048 un/ong、4096 an/ai、8192 huang/wang、16384 un/iong、32768 eng/ong） |
 | `WOWTYPE_SELECT_KEYS` | `off`、`semicolon`、`quote` |
