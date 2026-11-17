@@ -466,9 +466,13 @@ final class SettingsModel: ObservableObject {
                                  supportDir: supportDir)
     }
 
-    /// 翻译配好了：本地模型下载好了，或者填了翻译服务的地址和模型
+    /// 翻译配好了：本地模型下载好了，或者选了哔哩哔哩（不用 Key，模型空着用 2B），或者填了翻译服务的地址和模型
     var translateConfigured: Bool {
-        config.translateLocal ? localPlan.ready : !config.translateBaseUrl.isEmpty && !config.translateModel.isEmpty
+        switch config.translateEngine {
+        case .local: return localPlan.ready
+        case .bilibili: return true
+        case .custom: return !config.translateBaseUrl.isEmpty && !config.translateModel.isEmpty
+        }
     }
 
     /// 「译」进得去：互译打开了，翻译也配好了
@@ -594,6 +598,51 @@ final class SettingsModel: ObservableObject {
         }
     }
 
+    // MARK: 翻译引擎（和 Linux 设置的 on_translate_engine_changed 一样）
+
+    /// 「自定义翻译服务」的地址和模型：换到哔哩哔哩时记下，换回自定义时写回（Linux 设置是留在输入框里）。
+    /// 只记在这次打开的设置窗口里；API Key 文件一直不动
+    private var customService: (url: String, model: String) = ("", "")
+    /// 哔哩哔哩选过的模型：换走再换回来还是它；nil 是这次还没用过，用 2B
+    private var bilibiliModel: String?
+
+    /// 「翻译引擎」下拉框。选中哪个从配置推出来（WowtypeConfig.translateEngine）；换引擎时写上这个引擎的
+    /// TranslateLocal、地址和模型
+    var translateEngine: WowtypeConfig.TranslateEngine {
+        get { config.translateEngine }
+        set { setTranslateEngine(newValue) }
+    }
+
+    private func setTranslateEngine(_ engine: WowtypeConfig.TranslateEngine) {
+        guard engine != config.translateEngine else { return }
+        stopTranslateTest()
+        translateTestResult = nil
+        var next = config
+        if WowtypeConfig.isBilibili(next.translateBaseUrl) {
+            if !next.translateModel.isEmpty {
+                bilibiliModel = next.translateModel
+            }
+        } else {
+            customService = (next.translateBaseUrl, next.translateModel)
+        }
+        switch engine {
+        case .local:
+            next.translateLocal = true
+        case .bilibili:
+            next.translateLocal = false
+            next.translateBaseUrl = WowtypeConfig.bilibiliURL
+            next.translateModel = bilibiliModel ?? WowtypeConfig.bilibiliDefaultModel
+        case .custom:
+            next.translateLocal = false
+            if WowtypeConfig.isBilibili(next.translateBaseUrl) {
+                next.translateBaseUrl = customService.url
+                next.translateModel = customService.model
+            }
+        }
+        // 一次改完，只存一次
+        config = next
+    }
+
     // MARK: 翻译服务：测试连接、挑模型（和 Linux 设置的 on_test_translate、load_models 一样）
 
     /// 「测试连接」那一行的副标题：结果或出错原因；nil 是还没测过
@@ -604,10 +653,11 @@ final class SettingsModel: ObservableObject {
     private var testTimer: Timer?
     private static let testTimeout: TimeInterval = 45
 
-    /// 用「你好」试一下填好的服务（用这台电脑存的 API Key）
+    /// 用「你好」试一下填好的服务（用这台电脑存的 API Key；哔哩哔哩不用填模型，核心也不给它带 Key）
     func testTranslate() {
         stopTranslateTest()
-        guard !config.translateBaseUrl.isEmpty, !config.translateModel.isEmpty else {
+        guard config.translateEngine == .bilibili
+            || (!config.translateBaseUrl.isEmpty && !config.translateModel.isEmpty) else {
             translateTestResult = "先填接口地址和模型"
             return
         }

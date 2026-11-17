@@ -283,7 +283,15 @@ final class AppState {
     private func translateSummary() -> String {
         guard config.translate else { return "关" }
         guard let translator, translator.isReady else { return "开（未配置，切不到「译」）" }
-        let service = config.translateLocal ? "本地 HY-MT" : "\(config.translateModel) @ \(config.translateBaseUrl)"
+        let service: String
+        switch config.translateEngine {
+        case .local:
+            service = "本地 HY-MT"
+        case .bilibili:
+            service = "哔哩哔哩 " + (config.translateModel.isEmpty ? WowtypeConfig.bilibiliDefaultModel : config.translateModel)
+        case .custom:
+            service = "\(config.translateModel) @ \(config.translateBaseUrl)"
+        }
         return "开（\(service) → \(config.translateTarget)）"
     }
 

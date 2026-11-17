@@ -800,16 +800,17 @@ private struct TranslatePage: View {
             RowDivider()
             SwitchRow(title: "正式语气", subtitle: "默认是聊天的口吻", isOn: $model.config.translateFormal)
             RowDivider()
-            PickerRow(title: "用什么翻译",
-                      subtitle: model.config.translateLocal
-                          ? "不联网、不用账号，打的字不出这台电脑；一句话等 1–3 秒"
-                          : "填你自己的翻译接口（DeepSeek、通义千问、Ollama……），要联网",
-                      selection: $model.config.translateLocal,
-                      options: [("本地模型（离线）", true), ("自定义翻译服务", false)])
+            // 翻译引擎：选哪个下面就出现哪个的设置（和 Linux 设置一样）。选中的是哪个从配置推出来
+            PickerRow(title: "翻译引擎", subtitle: model.config.translateEngine.note,
+                      selection: $model.translateEngine,
+                      options: WowtypeConfig.TranslateEngine.allCases.map { ($0.name, $0) })
         }
-        if model.config.translateLocal {
+        switch model.config.translateEngine {
+        case .local:
             localGroup
-        } else {
+        case .bilibili:
+            bilibiliGroup
+        case .custom:
             serviceGroup
         }
     }
@@ -866,15 +867,52 @@ private struct TranslatePage: View {
             }
             .rowPadding()
             RowDivider()
-            ActionRow(title: "测试连接", subtitle: model.translateTestResult ?? "用「你好」试一下") {
-                if model.translateTesting {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Button("测试") { model.testTranslate() }
-                }
+            testRow
+        }
+    }
+
+    private var testRow: some View {
+        ActionRow(title: "测试连接", subtitle: model.translateTestResult ?? "用「你好」试一下") {
+            if model.translateTesting {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Button("测试") { model.testTranslate() }
             }
         }
+    }
+
+    /// 选了哔哩哔哩：挑模型、测试连接，组标题下面一行隐私说明；不用填 Key
+    private var bilibiliGroup: some View {
+        PrefGroup("哔哩哔哩 Index-Translate", description: WowtypeConfig.bilibiliPrivacy + "。",
+                  info: "哔哩哔哩开源的翻译模型 Index-Translate，官方提供免费的公开接口，不用注册、不用 API Key。"
+                  + "2B 最快；9B 译得更好一点，稍慢；35B-A3B 是预览版。\n\n"
+                  + "隐私：只在切到「译」时把打的字发给哔哩哔哩，密码框里不翻译；WowType 自己不经手、不收集。"
+                  + "不会带上「自定义翻译服务」里存的 Key。",
+                  links: [("Index-Translate 项目主页", URL(string: "https://github.com/bilibili/Index-Translate")!)]) {
+            PickerRow(title: "模型", selection: bilibiliModel, options: bilibiliModelOptions)
+            RowDivider()
+            testRow
+        }
+    }
+
+    /// 哔哩哔哩的模型：空着算 2B
+    private var bilibiliModel: Binding<String> {
+        Binding(get: {
+            model.config.translateModel.isEmpty ? WowtypeConfig.bilibiliDefaultModel : model.config.translateModel
+        }, set: { id in
+            model.config.translateModel = id
+        })
+    }
+
+    /// 配置文件里手写了别的模型也列出来，不悄悄换掉（和 Linux 设置一样）
+    private var bilibiliModelOptions: [(String, String)] {
+        var options = WowtypeConfig.bilibiliModels.map { ($0.name, $0.id) }
+        let current = model.config.translateModel
+        if !current.isEmpty && !options.contains(where: { $0.1 == current }) {
+            options.append((current, current))
+        }
+        return options
     }
 
     /// 选了本地模型：一行状态（下载 / 进度 / 已就绪），别的都收进「更多选项」；说明和许可在组标题旁的 ⓘ
