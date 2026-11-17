@@ -45,7 +45,7 @@ final class ExternalControlClient: NSObject {
         center.postNotificationName(ExternalControl.request, object: request, userInfo: nil, deliverImmediately: true)
         let deadline = Date().addingTimeInterval(2)
         while answer == nil && Date() < deadline {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
         }
         return answer
     }
