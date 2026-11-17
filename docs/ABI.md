@@ -26,11 +26,11 @@
 | 1.9 | 0.3.11 | 加 `wowtype_engine_set_rare_ext_chars`：是否出 CJK 扩展 B 区及以后的单字（通用规范汉字表里的除外），默认不出（以前总是出） |
 | 1.10 | 0.4.0 | 输入会话接管标点、自动空格、上文、中 / 英 / 译和单按 Shift、互译、工具栏和表情面板：`WowtypeKey` 加 `hints`、`code`、`repeat`、`time_ms`（`KEY_HINT_*`、`KEY_ACTION_OBSERVE`、`KEY_ACTION_TOGGLE_MODE`、`KEY_ACTION_TOGGLE_TRANSLATE`；`KEY_HINT_SURROUNDING`：读得到周围文字时拿 `prev_char` 核对会话记的上文），`WowtypeSessionConfig` 加 `punct_style`、`auto_space`、`shift_toggle`、`shift_tap_ms`、`translate_mode`、`toolbar`、`clipboard_history`，`WowtypeFrame` 加 `learned`、`mode`、`mode_changed`、`translating`、`translate_*`（`aux`、`wake_after_ms` 开始用，`panel` 加 2 表情面板、3 工具栏）；加 `wowtype_session_set_mode`、`_mode`、`_set_translator`、`_set_translate_backend`、`_tick`、`_commit_text`、`_translate_clear`、`_translate_source`、`_toggle_emoji_panel`、`_open_tool`、`_open_panel`、`wowtype_recent_emoji_path`、`_list`、`wowtype_custom_code`、`wowtype_guess_pinyin`（自定义词的编码整理、猜拼音，macOS 设置不再自己抄音节表），`wowtype_engine_set_domain_lm`（混上用户自己训的领域词级模型），`WowtypeSessionConfig` 加 `shuangpin_keys`（双拼编辑区显示打的键）；五笔：加 `wowtype_engine_load_wubi`，`WowtypeSessionConfig` 加 `wubi`、`wubi_auto_commit`、`wubi_hint`，`translate_key`（另设了进出「译」的键，单按 Shift 只切中 / 英），`WowtypeCandidateInfo` 加 `comment`、加 `wowtype_session_candidate_comment`（候选后面的小字）；删掉会话的过渡函数 `_append`、`_set_context`、`_last_choice` |
 | 1.11 | 0.5.0 | `KEY_HINT_NO_LEARN`（1 << 4）：确定是密码框，选的词也不学（回车上屏的原始字母串哪里都不学）；加 `wowtype_nnlm_check`（只试着解析字级神经语言模型，不载入引擎，导入前用）；上屏以后的联想：`WowtypeSessionConfig` 末尾加 `association`（默认 0，外壳会画了才开），`WowtypeFrame.panel` 加 4（`WOWTYPE_PANEL_ASSOCIATION`），加 `wowtype_session_association`；`wowtype_engine_predict_next` 把学到的搭配排在模型的前面。退格把句首词退回编辑区、Esc 放弃、上屏后紧接着按退格时撤销学到的（会话里做，外壳不用改）；存盘挪出按键线程：加 `wowtype_engine_save_user_dict_async`、`_save_history_async`（锁里抄一份、引擎自己的线程写，连着的合并成一次）、`wowtype_engine_save_wait`（等写完，进程退出、外壳析构、换词库前调），同步的两个 save 照旧（先等后台排着的写完），`wowtype_engine_free` 也先写完 |
-| 1.12 | 下一版 | 中文标点自动配对：`WowtypeSessionConfig` 末尾加 `auto_pair_punct`（默认 0，外壳会挪光标、删字了才开），`WowtypeFrame` 末尾加 `cursor_delta`（commit 落到应用以后把光标挪几格，负数左移）、`delete_next`（这次没接的退格要连光标后的右标点一起删），`WowtypeKey` 末尾加 `next_char`（光标后一个字）和 `KEY_HINT_NEXT_CHAR`（1 << 5，`next_char` 为 0 是光标后确实没有字，有选区时别带） |
+| 1.12 | 下一版 | 中文标点自动配对：`WowtypeSessionConfig` 末尾加 `auto_pair_punct`（默认 0，外壳会挪光标、删字了才开），`WowtypeFrame` 末尾加 `cursor_delta`（commit 落到应用以后把光标挪几格，负数左移）、`delete_next`（这次没接的退格要连光标后的右标点一起删），`WowtypeKey` 末尾加 `next_char`（光标后一个字）和 `KEY_HINT_NEXT_CHAR`（1 << 5，`next_char` 为 0 是光标后确实没有字，有选区时别带）；打字统计（默认关）：加 `wowtype_stats_new`、`_free`、`_set_enabled`、`_enabled`、`_key`、`_commit`、`_flush`、`_wait`、`_clear`、`_now_ms`、`WOWTYPE_STATS_SENSITIVE`。记录器新建时关着（不读不建文件、不起线程），外壳按 `TypingStats` 打开；只记按天的聚合计数（字符数和类别、活跃毫秒、各键按下次数、模式和双拼方案的字数、候选位置），不记文字、拼音、按键顺序和时刻，带 `WOWTYPE_STATS_SENSITIVE`（密码框）的整个不算；按键和上屏只改内存，写文件在记录器自己的线程，`_free` 等写完。`WowtypeCandidateInfo` 末尾加 `index`（候选在列表里的位置，1 起），`WowtypeFrame` 末尾加 `choice_index`（这次上屏的候选位置，不是选候选为 0） |
 
 ## 所有权和生命周期
 
-- `wowtype_engine_new` 返回的句柄用 `wowtype_engine_free` 释放；`wowtype_voice_new`、`wowtype_translate_new` 同理各配各的 `_free`。
+- `wowtype_engine_new` 返回的句柄用 `wowtype_engine_free` 释放；`wowtype_voice_new`、`wowtype_translate_new`、`wowtype_stats_new` 同理各配各的 `_free`。
 - 返回 `WowtypeCandidates *` 的函数（`wowtype_engine_input`、`wowtype_symbol_search`、`wowtype_emoji_recommend` 等），结果用 `wowtype_candidates_free` 释放；从里面取出的字符串在释放前有效。
 - 返回 `const char *` 而且不属于某个句柄的（`wowtype_fullwidth_punct`、`wowtype_punct`、`wowtype_segment_input`、`wowtype_engine_shuangpin_display`、`wowtype_last_error`），指针在**同一线程**下一次调用同一个函数前有效，要留着就自己拷一份。
 - `wowtype_version()` 返回静态字符串，一直有效。
@@ -42,6 +42,7 @@
 - 「指针在下一次调用前有效」的那些缓冲区是线程局部的，跨线程拿到的指针不要混用。
 - 语音、翻译句柄各自管自己的后台线程；`_poll` 不阻塞，外壳在自己的定时器里调。
 - 引擎有一个存盘线程（1.11，第一次调 `_save_*_async` 时才起）：只写交给它的那份拷贝，不碰引擎；`wowtype_engine_free` 等它写完再释放。
+- 打字统计的记录器（1.12）在一个线程用（外壳的按键线程）；它有自己的写文件线程（打开统计时才起），按键线程不读写文件，`wowtype_stats_free` 等它写完。
 
 ## 错误
 

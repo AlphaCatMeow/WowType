@@ -8,6 +8,7 @@
 原生的 Adw 对话框画在设置窗口里面，这里只检查打得开。
 """
 
+import json
 import os
 import runpy
 import sys
@@ -115,7 +116,7 @@ def run(app):
         errors.append("设置窗口没打开")
         app.quit()
         return GLib.SOURCE_REMOVE
-    for page in ("general", "input", "emoji", "voice", "translate", "words", "update"):
+    for page in ("general", "input", "emoji", "voice", "translate", "words", "stats", "update"):
         step(f"打开「{page}」页", lambda p=page: win.show_page(p))
 
     def spin():
@@ -176,6 +177,34 @@ def run(app):
         check(win.scheme_checks["Wubi86"].is_sensitive(), "有码表时五笔该能选")
     step("输入方案", input_scheme)
 
+    def stats_page():
+        # 打字统计默认关：只有开关、清除和说明；打开后画概览和各标签；清除删掉文件、计数加一
+        stats_file, clear_file = ns["STATS_FILE"], ns["STATS_CLEAR_FILE"]
+        check(win.values["TypingStats"] == "False", "打字统计该默认关")
+        win.show_page("stats")
+        pump()
+        check(win.stats_box.get_first_child() is not None, "关着时没有说明")
+        os.makedirs(os.path.dirname(stats_file), exist_ok=True)
+        day = {"chars": 5, "kinds": {"han": 5}, "activeMs": 60000, "keys": {"KeyA": 3, "F13": 1},
+               "sources": {"quanpin": 5}, "schemes": {"xiaohe": 5},
+               "selections": [1, 2, 0, 0, 0, 0, 0, 0, 0], "beyond": 1}
+        with open(stats_file, "w", encoding="utf-8") as f:
+            json.dump({"version": 2, "cleared": 0, "days": {time.strftime("%Y-%m-%d"): day}}, f)
+        win.stats_row.set_active(True)
+        check(pump_until(lambda: win.values["TypingStats"] == "True"), "打开统计没存上")
+        check(pump_until(lambda: win.stats_box.get_first_child() is not win.stats_box.get_last_child()), "打开统计后没画概览")
+        for tab in ("keys", "trend", "kind", "mode", "scheme", "ranks"):
+            win.stats_stack.set_visible_child_name(tab)
+            pump(0.05)
+        check(win.stats_clear_row.get_sensitive(), "有记录时清除该能点")
+        win.on_stats_clear(None, "clear")
+        check(not os.path.exists(stats_file), "清除没删掉 stats.json")
+        with open(clear_file, encoding="utf-8") as f:
+            check(f.read().strip() == "1", "清除计数没加一")
+        win.stats_row.set_active(False)
+        check(pump_until(lambda: win.values["TypingStats"] == "False"), "关掉统计没存上")
+    step("打字统计", stats_page)
+
     def switches():
         win.theme_row.set_active(True)
         win.theme_row.set_active(False)
@@ -230,6 +259,7 @@ def run(app):
                     w.close()
         step(name, go)
     dialog("关于", win.on_about)
+    dialog("清除打字统计（取消）", lambda: win.stats_clear(None))
     dialog("删语音模型（取消）", lambda: win.on_voice_delete(None))
     dialog("下载离线翻译模型（取消）", lambda: win.on_local_download(None))
     dialog("恢复默认设置（确定）", win.on_reset, answer=1)

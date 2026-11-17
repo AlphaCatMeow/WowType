@@ -269,6 +269,9 @@ FCITX_CONFIGURATION(
         this, "TranslateModeKey", "进出互译的快捷键（设了以后单按 Shift 只切中 / 英）", fcitx::Key(),
         fcitx::KeyConstrain(fcitx::KeyConstrainFlags{fcitx::KeyConstrainFlag::AllowModifierLess})};
     fcitx::Option<bool> checkUpdate{this, "CheckUpdate", "自动检查更新（最多一小时一次）", true};
+    // 打字统计默认关；开了也只在本机记每天的计数（字数、按键次数），不记打的内容，见 docs/CONFIG.md
+    fcitx::Option<bool> typingStats{this, "TypingStats",
+                                    "打字统计（只在本机记每天的字数和按键次数，不记打的内容）", false};
     // 互译：API Key 不放这里（这个文件谁都能读），在 ~/.config/wowtype/translate.key（0600）
     fcitx::Option<bool> translate{this, "Translate", "互译（打中文出外文，单按 Shift 或互译键切到「译」）",
                                   false};
@@ -438,6 +441,16 @@ public:
     /// 互译：上屏译文；还没译好就记下来，好了再上屏。
 
 private:
+    /// 一次上屏记进打字统计（只分类计数，不保存文字）。`frame` 带候选位置时一并记。
+    void recordStats(fcitx::InputContext *ic, const std::string &text, const WowtypeFrame *frame);
+    /// 记一次按键（按键热力图）。密码框里的按键不计。
+    void recordKey(fcitx::InputContext *ic, const fcitx::Key &key, bool down);
+    /// 把攒着的统计写进文件（失焦、退出时）。
+    void flushStats();
+    /// 当前输入模式在统计里的名字。
+    std::string typingSource() const;
+    /// 双拼方案在统计里的名字（小写枚举名）；不是双拼时为空。
+    std::string typingScheme() const;
     /// 词库在后台线程载入；载入好之前 core_ 为空，按键照常进编辑区。
     bool coreReady();
     /// 后台载入完了（loading_ 已经就绪，或者愿意等）：收下核心和「哪个用户文件没读出来」。
@@ -641,6 +654,10 @@ private:
     fcitx::Key toggleKey_;
     fcitx::Key translateModeKey_;
     /// 最近用过的 emoji（最近的在前），存在 ~/.local/share/wowtype/emoji-recent.txt。
+
+    /// 打字统计（按天聚合，见 core/src/stats.rs）；数据目录找不到时为空。TypingStats 关着时记录器什么都不做。
+    WowtypeStats *stats_ = nullptr;
+    bool typingStats_ = false;
 
     WowtypeVoice *voice_ = nullptr;
     /// 语音结果同时复制到剪贴板（默认关）。

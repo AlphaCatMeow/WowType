@@ -2307,6 +2307,68 @@ void runCases(Instance &instance) {
     check(ic->committed == "（" && ic->forwarded.empty(), "默认不配对：" + pairReport());
     pairFresh();
 
+    // 打字统计（TypingStats）：默认关，打了字、失焦也不建 stats.json；打开以后只记计数（不记打的字），
+    // 密码框里的上屏不算；写文件在核心的后台线程，这里等一会儿再看
+    {
+        const std::string statsDir = std::string(std::getenv("XDG_DATA_HOME")) + "/wowtype";
+        const std::string statsFile = statsDir + "/stats.json";
+        const auto readStats = [&]() {
+            std::ifstream in(statsFile);
+            return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        };
+        const auto waitFor = [&](const std::function<bool()> &done) {
+            for (int i = 0; i < 60 && !done(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            return done();
+        };
+        std::filesystem::remove(statsFile);
+        type(ic.get(), "nihao<sp>");
+        check(ic->committed == "你好", "统计关着时照常打字：[" + ic->committed + "]");
+        ic->focusOut();
+        ic->focusIn();
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        check(!std::filesystem::exists(statsFile) && !std::filesystem::exists(statsDir + "/stats.clear"),
+              "统计默认关：不建 stats.json");
+        {
+            std::ofstream(configDir + "/wowtype.conf") << "TypingStats=True\n";
+        }
+        addon->reloadConfig();
+        fresh(ic.get());
+        type(ic.get(), "nihao<sp>");
+        check(ic->committed == "你好", "统计开着时照常打字：[" + ic->committed + "]");
+        fresh(ic.get());
+        for (const auto flag : {CapabilityFlag::Password, CapabilityFlag::Sensitive}) {
+            ic->setCapabilityFlags(CapabilityFlags{flag});
+            type(ic.get(), "mima<sp>");
+            // Password 框里字母原样交给应用，Sensitive 框里照常打中文；两种都不算进统计
+            check(!ic->committed.empty() || !ic->passed.empty(),
+                  "密码框里照常打字：上屏[" + ic->committed + "] 交给应用[" + ic->passed + "]");
+            fresh(ic.get());
+        }
+        ic->setCapabilityFlags(CapabilityFlags{});
+        ic->focusOut();
+        ic->focusIn();
+        const bool written = waitFor([&] { return readStats().find("\"chars\": 2") != std::string::npos; });
+        const std::string stats = readStats();
+        check(written, "统计打开后失焦写进 stats.json，密码框里打的不算：" + stats.substr(0, 200));
+        check(stats.find("你好") == std::string::npos && stats.find("ni") == std::string::npos &&
+                  stats.find("mima") == std::string::npos && stats.find("密码") == std::string::npos &&
+                  stats.find("lastCommitMs") == std::string::npos,
+              "stats.json 里没有打的字、拼音和时刻");
+        // 关掉以后打的不再记
+        std::filesystem::remove(configDir + "/wowtype.conf");
+        addon->reloadConfig();
+        fresh(ic.get());
+        type(ic.get(), "shijie<sp>");
+        ic->focusOut();
+        ic->focusIn();
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        check(readStats() == stats, "统计关掉以后不再写");
+        std::filesystem::remove(statsFile);
+        fresh(ic.get());
+    }
+
     // 换词库（设置里切到万象就是写 Lexicon=）：reloadConfig 后在后台换，换好前按键照常进编辑区
     {
         const std::string dictFile =

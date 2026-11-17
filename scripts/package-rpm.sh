@@ -193,6 +193,7 @@ install -Dm644 dist/data/WUBI-LICENSE $lic/LICENSE.rime-wubi
 %{_datadir}/gnome-shell/extensions/wowtype-theme@gloridust.github.io/
 %{_datadir}/applications/io.github.Gloridust.WowType.Config.desktop
 %{_datadir}/icons/hicolor/*/apps/wowtype.*
+%{_datadir}/icons/hicolor/*/status/wowtype-stats-symbolic.svg
 %{_datadir}/wowtype/
 
 %post

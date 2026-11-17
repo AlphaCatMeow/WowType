@@ -524,6 +524,7 @@ typedef struct {
                              * 外壳要保证先后：挪光标在这次的 commit 之后、下一个键之前 */
     int delete_next;        /* 1.12 起：1 时这次的退格没接（handled 为 0），成对删：外壳除了删光标前的字（退格），
                              * 还要删光标后的右标点（Delete），和挪光标的键走同一条路按顺序发 */
+    size_t choice_index;    /* 1.12 起：这次上屏的候选在列表里的位置（1 起）；不是选候选为 0 */
 } WowtypeFrame;
 
 /* 建会话。engine 可以传 NULL（词库没载入好时也能打字，载入好了用 set_engine 补上）；
@@ -637,6 +638,7 @@ typedef struct {
     const char *emoji;  /* emoji 本身；不是 emoji 为空串 */
     const char *comment; /* 1.10 起：画在候选后面的小字，不上屏（五笔还要打的码、z 临时拼音反查的五笔码），
                           * 没有为空串 */
+    size_t index;       /* 1.12 起：这个候选在列表里的位置（1 起）；0 表示不知道 */
 } WowtypeCandidateInfo;
 /* 候选个数。没有引擎、没在打字时为 0。 */
 size_t wowtype_session_candidate_total(WowtypeSession *session);
@@ -657,6 +659,58 @@ typedef struct {
 } WowtypeSessionView;
 /* 返回 0 成功，-1 参数为 NULL。 */
 int wowtype_session_view(WowtypeSession *session, WowtypeSessionView *out);
+
+/* ---------------- 打字统计（1.12 起） ----------------
+ *
+ * 默认关：外壳读到 wowtype.conf 的 TypingStats=True 才调 wowtype_stats_set_enabled(stats, 1)。
+ * 关着时什么都不做：不计数、不起线程、不读不建文件。
+ *
+ * 打开以后只记每天的聚合计数：上屏字符数（分汉字 / 字母 / 数字 / 标点 / 表情 / 其他）、活跃毫秒、
+ * 每个物理键当天按下的次数、按输入模式和双拼方案分的字符数、候选位置 1–9 和第 10 个以后的次数。
+ * 不记上屏的文字、词、拼音、按键顺序、每次按键或上屏的时刻；密码框（flags 带 WOWTYPE_STATS_SENSITIVE）整个不算。
+ *
+ * 按键和上屏只改内存，攒够（20 次上屏或 30 秒）交给记录器自己的写文件线程，按键的线程不碰文件。
+ * 文件只有输入法写（0600，只留最近 400 天）；设置界面只读，清空调 wowtype_stats_clear
+ * （或照 docs/CONFIG.md 的做法：旁边 stats.clear 里的整数加一、删掉 stats.json）。
+ * 口径：两次上屏间隔超过 10 秒算休息，不计入活跃时长；长按只算一次。
+ */
+typedef struct WowtypeStats WowtypeStats;
+
+#define WOWTYPE_STATS_SENSITIVE (1u << 0) /* 密码框 / 敏感输入框：这次按键或上屏不算 */
+
+/* 建记录器（关着）。path 是统计文件的绝对路径；不读、不建文件。失败返回 NULL，原因用 wowtype_last_error 取。 */
+WowtypeStats *wowtype_stats_new(const char *path);
+/* 开着时把最后攒着的交出去，等写完再释放。NULL 什么都不做。 */
+void wowtype_stats_free(WowtypeStats *stats);
+
+/* 打开（非 0）或关上（0）。关上时丢掉内存里还没交出去的计数。返回 0 成功，-1 参数为 NULL。 */
+int wowtype_stats_set_enabled(WowtypeStats *stats, int enabled);
+/* 1 开，0 关（stats 为 NULL 也是 0）。 */
+int wowtype_stats_enabled(const WowtypeStats *stats);
+
+/* 一次物理按键。platform：0 = X11/fcitx5（code 是 XKB 键码，松开也要传，用来认长按），
+ * 1 = macOS（NSEvent.keyCode，只传按下，自动重复外壳自己挡掉）。down 非 0 表示按下。
+ * 关着、密码框、热力图上没有的键不算。返回 0 成功，-1 参数为 NULL。 */
+int wowtype_stats_key(WowtypeStats *stats, int platform, unsigned int code, int down,
+                      unsigned int flags, int64_t now_ms);
+
+/* 一次上屏。text 只用来数各类字符有几个，不留下。
+ * source：quanpin / shuangpin / wubi / english / translate（别的不记）；scheme 是双拼方案名（只认字母数字，
+ * 没有传 NULL 或空串）；cand_index：候选在列表里的位置（1 起），不是选候选上屏时传 0。
+ * 返回 0 成功，-1 参数错误。 */
+int wowtype_stats_commit(WowtypeStats *stats, const char *text, const char *source,
+                         const char *scheme, int cand_index, unsigned int flags, int64_t now_ms);
+
+/* 把攒着的交给写文件线程（不等写完；失焦时调）。返回 0。 */
+int wowtype_stats_flush(WowtypeStats *stats, int64_t now_ms);
+/* 等交出去的都写完。timeout_ms < 0 一直等。返回 0 写完了，-1 写失败或超时（原因见 wowtype_last_error）。 */
+int wowtype_stats_wait(WowtypeStats *stats, int64_t timeout_ms);
+
+/* 设置界面用：清空统计（输入法开着关着都行）。返回 0 成功，-1 失败。 */
+int wowtype_stats_clear(const char *path);
+
+/* 当前 Unix 毫秒。 */
+int64_t wowtype_stats_now_ms(void);
 
 #ifdef __cplusplus
 }
