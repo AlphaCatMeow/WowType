@@ -1103,7 +1103,7 @@ impl Engine {
         let mut result = if self.config.shuangpin {
             self.shuangpin_candidates(raw, at_ms)?
         } else {
-            self.pinyin_candidates(raw, None, true, at_ms)?
+            self.pinyin_candidates(raw, None, true, None, at_ms)?
         };
         self.prepend_custom_codes(raw, &mut result);
         if let Ok(mut last) = self.last_words.write() {
@@ -1174,13 +1174,41 @@ impl Engine {
             .count()
             % 2
             == 1;
+        // 有重码（lo / luo）时，各读法的束搜索结果在这里按分数合并，再一起走全拼后面那套按位置排的
+        // 步骤（选过的提前、原始串和英文的位置、整句和句首词的穿插、翻页长尾）。不能等排完再按分数
+        // 重排或尾追加：重排会把这些位置全打乱，尾追加会让前一组的长尾把候选数填满（#226：loji 里
+        // lo 读法硬凑的「咯 | 就」排在 luo 读法打全的「逻辑」前面）。
+        let (primary, found) = if variants.len() == 1 {
+            (first, None)
+        } else {
+            let max = self.config.max_candidates.max(1);
+            let mut best: Option<(usize, f64)> = None;
+            let mut merged = Vec::new();
+            for (i, v) in variants.iter().enumerate() {
+                let found = self.query_plain(&v.pinyin.to_ascii_lowercase(), completion, at_ms)?;
+                let top = found.first().map_or(f64::NEG_INFINITY, |c| c.score);
+                if best.is_none_or(|(_, s)| top > s) {
+                    best = Some((i, top));
+                }
+                merged.extend(found);
+            }
+            let mut merged = dedupe_by_text(merged);
+            merged.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then_with(|| a.text.cmp(&b.text))
+            });
+            merged.truncate(max);
+            // 第一名所在的读法当主读法：句首词、翻页长尾和用掉的键数都按它算
+            (&variants[best.map_or(0, |b| b.0)], Some(merged))
+        };
         let mut result =
-            self.pinyin_candidates(&first.pinyin, Some(display), completion, at_ms)?;
+            self.pinyin_candidates(&primary.pinyin, Some(display), completion, found, at_ms)?;
         result.retain_mut(|c| {
             let used = if is_raw_candidate(c) {
                 display.len()
             } else {
-                first.raw_bytes(c.consumed, display.len())
+                primary.raw_bytes(c.consumed, display.len())
             };
             c.consumed = if used >= display.len() {
                 raw.len()
@@ -1189,50 +1217,26 @@ impl Engine {
             };
             used > 0
         });
-        // 有重码时，其他读法的候选和第一个读法的一起按分数排，不能直接尾追加：
-        // loji 里 lo 读法的「咯 | 就」是硬凑的，luo 读法打全的「逻辑」分数高得多；
-        // 先追加会让前一组的长尾把候选数填满，后一组连出现的机会都没有。
-        let max = self.config.max_candidates.max(1);
-        let mut extra = Vec::new();
-        for other in variants.iter().skip(1) {
-            for mut c in self.query_plain(&other.pinyin.to_ascii_lowercase(), completion, at_ms)? {
-                if self.config.traditional {
-                    if let Ok(conv) = self.converter.read() {
-                        if !conv.is_empty() {
-                            c.text = conv.convert(&c.text);
-                        }
-                    }
-                }
-                c.consumed = raw.len();
-                extra.push(c);
-            }
-        }
-        if !extra.is_empty() {
-            result.extend(extra);
-            result = dedupe_by_text(result);
-            result.sort_by(|a, b| {
-                b.score
-                    .total_cmp(&a.score)
-                    .then_with(|| a.text.cmp(&b.text))
-            });
-            self.promote_custom(&mut result);
-            result.truncate(max);
-        }
         Ok(result)
     }
 
     /// 全拼的完整流程。`raw_display` 给了的话（双拼），原始串候选用它而不是 raw。
     /// `completion` 控制末音节前缀补全：双拼配成对的音节已打全，只有悬空声母才开。
+    /// `found` 给了的话（双拼几种读法合并好的束搜索结果）不再查一遍，直接接着排。
     fn pinyin_candidates(
         &self,
         raw: &str,
         raw_display: Option<&str>,
         completion: bool,
+        found: Option<Vec<Candidate>>,
         at_ms: u64,
     ) -> Result<Vec<Candidate>> {
         let display = raw.trim();
         let normalized = display.to_ascii_lowercase();
-        let mut result = self.query_plain(&normalized, completion, at_ms)?;
+        let mut result = match found {
+            Some(found) => found,
+            None => self.query_plain(&normalized, completion, at_ms)?,
+        };
 
         protect_exact_input(&mut result);
         promote_picked(&mut result);
@@ -3974,6 +3978,63 @@ mod tests {
         // lian 和 lo/luo 同理，不能让单字长尾把「联络」挤出候选
         let lmlo = texts("lmlo");
         assert_eq!(lmlo.first().map(String::as_str), Some("联络"), "{lmlo:?}");
+    }
+
+    fn shuangpin_collision_engine() -> Engine {
+        use crate::shuangpin::Scheme;
+        let mut e = engine(concat!(
+            "luo ji\t逻辑\t100000\n",
+            "luo ji\t落籍\t10\n",
+            "luo\t落\t40000\n",
+            "luo\t罗\t30000\n",
+            "luo\t络\t20000\n",
+            "lo\t咯\t5000\n",
+            "ji\t机\t80000\n",
+            "ji\t几\t60000\n",
+        ));
+        e.set_shuangpin(true);
+        e.set_shuangpin_scheme(Scheme::Ziranma);
+        e.set_max_candidates(300);
+        e
+    }
+
+    #[test]
+    fn shuangpin_collision_keeps_learned_word_first() {
+        // 两种读法合并以后照样走「选过的提前」：不能再按分数重排，把选过的冷门词又压回去
+        let e = shuangpin_collision_engine();
+        let t0 = 1_000_000;
+        assert_eq!(e.input_at("loji", t0)[0].text, "逻辑");
+        e.record_selection_at("落籍", t0 + 1);
+        e.record_selection_at("落籍", t0 + 2);
+        let texts: Vec<String> = e.input_at("loji", t0 + 10).into_iter().map(|c| c.text).collect();
+        assert_eq!(texts[0], "落籍", "{texts:?}");
+        // 冷门读法（lo）的单字选过也一样，至少排到第二
+        let before: Vec<String> = e.input_at("lo", t0 + 3).into_iter().map(|c| c.text).collect();
+        assert!(before.iter().position(|t| t == "咯") > Some(1), "{before:?}");
+        e.record_selection_at("咯", t0 + 3);
+        e.record_selection_at("咯", t0 + 4);
+        let texts: Vec<String> = e.input_at("lo", t0 + 10).into_iter().map(|c| c.text).collect();
+        assert!(texts[..2].iter().any(|t| t == "咯"), "{texts:?}");
+    }
+
+    #[test]
+    fn shuangpin_collision_keeps_more_candidates_tail() {
+        // 合并发生在排位置之前：翻页长尾（第一个音节的单字）不被截掉，也不按分数插到整词中间
+        let e = shuangpin_collision_engine();
+        let cands = e.input("loji");
+        let texts: Vec<&str> = cands.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts[0], "逻辑", "{texts:?}");
+        let heads: Vec<usize> = (0..cands.len()).filter(|&i| cands[i].consumed < 4).collect();
+        for ch in ["落", "罗", "络"] {
+            let at = texts.iter().position(|t| *t == ch);
+            assert!(at.is_some_and(|i| cands[i].consumed == 2), "{ch}: {texts:?}");
+        }
+        // 句首的单字都排在用完整个输入的候选后面
+        let first_head = heads[0];
+        assert!(
+            cands[first_head..].iter().all(|c| c.consumed < 4),
+            "{texts:?}"
+        );
     }
 
     #[test]
