@@ -178,7 +178,7 @@
      "platforms": ["fcitx5", "settings", "macos"], "note": "汉字和数字之间"},
     {"key": "AutoPairPunct", "type": "bool", "default": false,
      "platforms": ["fcitx5", "settings"],
-     "note": "中文标点自动配对：中文标点下打 ( [ < { \" ' 上屏成对的（）【】《》「」“”‘’，光标放到中间；打完内容再按右半边跳过补好的那个，刚补完就退格两个一起删。默认关（会改打出来的标点）。macOS 还没有：要能移动应用里的光标"},
+     "note": "中文标点自动配对：中文标点下打 ( [ < { \" ' 上屏成对的（）【】《》「」“”‘’，光标放到中间；在里面打完再按右半边跳过补好的那个（数字后面也跳），里面空着时退格两个一起删。默认关（会改打出来的标点）。macOS 还没有：要能移动应用里的光标"},
     {"key": "Voice", "type": "bool", "default": true,
      "platforms": ["fcitx5", "settings", "macos"], "note": "语音输入"},
     {"key": "VoiceKey", "type": "key", "default": "Alt_R",
