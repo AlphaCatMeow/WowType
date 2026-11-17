@@ -2032,10 +2032,16 @@ impl Engine {
         if syllables < NNLM_MIN_SYLLABLES && self.context().trim().is_empty() {
             return out;
         }
+        // 长输入里一半以上的音节是只打了声母、纠错出来或词库不认识的（sdsjdsdsd、asdfghjkl 这类乱按）：
+        // 束搜索的整句是硬凑的，字级模型挑哪串更顺也没有意义，每键却要多算几十个字（#227）。
+        // 短输入（带上文时也会重排）照算，代价小
+        if syllables >= NNLM_MIN_SYLLABLES && weak_syllables(&paths[order[0]]) * 2 > syllables {
+            return out;
+        }
+        let picked = nnlm_picks(paths, &order, limit);
         let context = model.context_tokens(&self.context());
-        let scored: Vec<(usize, f64)> = order
+        let scored: Vec<(usize, f64)> = picked
             .iter()
-            .take(limit)
             .map(|&i| (i, model.score(&context, &paths[i].text)))
             .collect();
         let best = scored.iter().map(|s| s.1).fold(f64::NEG_INFINITY, f64::max);
@@ -2044,7 +2050,7 @@ impl Engine {
             out[i] = (s - best).max(-NNLM_FLOOR) as f32;
         }
         let rest = ((worst - best) - 2.0).max(-NNLM_FLOOR) as f32;
-        for &i in order.iter().skip(limit) {
+        for &i in order.iter().skip(picked.len()) {
             out[i] = rest;
         }
         out
@@ -2312,6 +2318,50 @@ const EXACT_LONG_MIN_FREQ: f64 = 10.0;
 const NNLM_MIN_SYLLABLES: usize = 5;
 /// 神经语言模型特征最低到多少（自然对数），免得一条特别离谱的把分数拉得太开。
 const NNLM_FLOOR: f64 = 20.0;
+/// 一次重排最多让神经语言模型算多少个字（几条路径按公共前缀合并后数），给每键的开销定个上限（约 0.1 ms 一个字）。
+/// 实测日常整句逐键打（tools/eval/daily.tsv 的 138 句、3114 键）一次最多 59 个字、平均 20 个，
+/// 上限 24 时排序评测也一样；只有特别长、几条路径又各说各的输入会被截。
+const NNLM_MAX_CHARS: usize = 64;
+
+/// [`Engine::nnlm_scores`] 要让模型打分的路径：按束搜索分数从高到低最多 `limit` 条，
+/// 要算的字数（几条路径按公共前缀合并后数，同一前缀模型只算一次）到 [`NNLM_MAX_CHARS`] 为止，
+/// 至少两条才有得比。返回的是 `order` 的前几个。
+fn nnlm_picks(paths: &[BeamPath], order: &[usize], limit: usize) -> Vec<usize> {
+    let mut picked: Vec<usize> = Vec::with_capacity(limit);
+    let mut texts: Vec<Vec<char>> = Vec::with_capacity(limit);
+    let mut chars = 0usize;
+    for &i in order.iter().take(limit) {
+        let text: Vec<char> = paths[i].text.chars().collect();
+        let shared = texts
+            .iter()
+            .map(|t| t.iter().zip(&text).take_while(|(a, b)| a == b).count())
+            .max()
+            .unwrap_or(0);
+        let cost = text.len() - shared;
+        if picked.len() >= 2 && chars + cost > NNLM_MAX_CHARS {
+            break;
+        }
+        chars += cost;
+        picked.push(i);
+        texts.push(text);
+    }
+    picked
+}
+
+/// 一条路径里「不实在」的音节数：只打了声母的音节，加上纠错出来的、词库不认识的词的全部音节。
+/// [`Engine::nnlm_scores`] 用它跳过乱按出来的长输入。
+fn weak_syllables(path: &BeamPath) -> usize {
+    path.words
+        .iter()
+        .map(|w| {
+            if w.typos > 0 || !w.known {
+                w.pinyin.split_whitespace().count().max(1)
+            } else {
+                w.abbrev
+            }
+        })
+        .sum()
+}
 
 /// 拼音打全了、而且正好是一个实在的词时，这个词必须排第一。
 ///
@@ -5042,6 +5092,87 @@ mod tests {
         let cands = e.input("xian");
         assert!(!cands.is_empty());
         assert_eq!(cands[0].text, "xian");
+    }
+
+    fn beam_path(words: &[(&str, &str, usize, usize, bool)]) -> BeamPath {
+        // (字, 拼音, 只打了声母的音节数, 纠错数, 词库认识)
+        let words: Vec<BeamWord> = words
+            .iter()
+            .map(|&(text, pinyin, abbrev, typos, known)| BeamWord {
+                text: text.into(),
+                pinyin: pinyin.into(),
+                freq: 1.0,
+                known,
+                syllable_count: pinyin.split_whitespace().count(),
+                jianpin: abbrev > 0,
+                abbrev,
+                ends_abbrev: false,
+                typos,
+                swaps: 0,
+                completion: 0,
+                start: 0,
+                end: 0,
+            })
+            .collect();
+        BeamPath {
+            text: words.iter().map(|w| w.text.as_str()).collect(),
+            pinyin: words.iter().map(|w| w.pinyin.as_str()).collect::<Vec<_>>().join(" "),
+            words,
+            score: 0.0,
+            lm_score: 0.0,
+            lexical_cost: 0.0,
+            coverage: 1.0,
+            jianpin: false,
+            typos: 0,
+            completion: 0,
+        }
+    }
+
+    #[test]
+    fn nnlm_skips_garbage_paths() {
+        // sdsjdsds：每个字母都只是声母，凑出来的整句不值得让模型重排（#227）
+        let garbage = beam_path(&[
+            ("说的", "s d", 2, 0, true),
+            ("是", "s", 1, 0, true),
+            ("假的", "j d", 2, 0, true),
+            ("山东省", "s d s", 3, 0, true),
+        ]);
+        assert_eq!(weak_syllables(&garbage), 8);
+        // 打全的长句，最后一个音节只打了声母、中间纠了一处错：照样重排
+        let sentence = beam_path(&[
+            ("我想", "wo xiang", 0, 0, true),
+            ("去", "qu", 0, 0, true),
+            ("字节", "zi jie", 0, 1, true),
+            ("上班", "shang b", 1, 0, true),
+        ]);
+        assert_eq!(weak_syllables(&sentence), 3);
+        assert!(weak_syllables(&sentence) * 2 <= 7);
+        // 词库不认识的段整段算
+        let raw = beam_path(&[("qwer", "q w e r", 0, 0, false), ("你", "ni", 0, 0, true)]);
+        assert_eq!(weak_syllables(&raw), 4);
+    }
+
+    #[test]
+    fn nnlm_picks_cap_scored_chars() {
+        let long = "一二三四五六七八九十".repeat(4); // 40 个字
+        let paths: Vec<BeamPath> = (0..8)
+            .map(|i| {
+                // 前四条只在最后一个字上不同（共用前缀，几乎不多算），后四条整句都不一样
+                let text = if i < 4 {
+                    format!("{long}{i}")
+                } else {
+                    format!("{i}{long}")
+                };
+                beam_path(&[(text.as_str(), "x", 0, 0, true)])
+            })
+            .collect();
+        let order: Vec<usize> = (0..8).collect();
+        // 41 + 1 + 1 + 1 = 44 个字，再来一条就 85 个，超过上限
+        assert_eq!(nnlm_picks(&paths, &order, 8), vec![0, 1, 2, 3]);
+        // 至少两条
+        let order = vec![4, 5, 6];
+        assert_eq!(nnlm_picks(&paths, &order, 8), vec![4, 5]);
+        assert_eq!(nnlm_picks(&paths, &order, 1), vec![4]);
     }
 
     #[test]
