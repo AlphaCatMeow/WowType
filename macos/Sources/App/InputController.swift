@@ -33,6 +33,11 @@ class WowTypeInputController: IMKInputController {
     /// 切中 / 英 / 译以后在光标下面亮一下的提示，到时间收起（和 Linux 上 fcitx5 的提示一样）
     private var modeHintTimer: Timer?
     static let modeHintDuration: TimeInterval = 1
+    /// 这一下按键里上屏以后光标在应用文字里的位置（UTF-16，上屏前的编辑区 / 选区起点 + 上屏的字数）。
+    /// 自动配对紧接着按它挪光标：有的应用（Chromium、WebKit）上屏是异步的，刚上屏时问 selectedRange 还是旧的
+    private var caretAfterInsert: Int?
+    /// 照哪一轮「切到 WowType」定过模式（AppState.switchGeneration，InitialMode）；0 是还没定过
+    private var initialModeGeneration = 0
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
@@ -81,6 +86,23 @@ class WowTypeInputController: IMKInputController {
         }
     }
 
+    /// 候选框上的鼠标操作：和按键一样先跟上设置，挪光标的位置从头算
+    fileprivate func mouseAction(_ action: (Composer) -> Void) {
+        caretAfterInsert = nil
+        syncComposer()
+        action(composer)
+    }
+
+    /// 外部命令切模式（AppState.externalMode）：request 空串只问。和 Linux 一样不弹提示；
+    /// 打到一半切英文时打的字母原样上屏（会话做）。
+    func externalMode(_ request: String) -> String {
+        syncComposer()
+        if !request.isEmpty {
+            composer.setMode(named: request)
+        }
+        return composer.modeName
+    }
+
     override func recognizedEvents(_ sender: Any!) -> Int {
         // keyUp 只给语音键用（F8 这类按住说话的键）
         Int(NSEvent.EventTypeMask([.keyDown, .keyUp, .flagsChanged]).rawValue)
@@ -88,6 +110,7 @@ class WowTypeInputController: IMKInputController {
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         guard let event else { return false }
+        caretAfterInsert = nil
         syncComposer()
         let mode = composer.mode
         let handled = handleKey(event)
@@ -210,6 +233,14 @@ class WowTypeInputController: IMKInputController {
         lastMarked = ("", 0)
         lastInserted = 0
         syncComposer(force: true)
+        // 从别的输入法切回来（不是换应用、换窗口）、这个进程里第一次用到这个输入框：按「切到 WowType 时」定中 / 英
+        // （InitialMode，和 Linux 一样；macOS 每个应用一份模式，新的一轮里每个输入框定一次）
+        let generation = AppState.shared.noteActivated()
+        if initialModeGeneration != generation {
+            initialModeGeneration = generation
+            composer.applyInitialMode()
+        }
+        AppState.shared.activeController = self
         // 剪贴板历史（设置里打开时）：切换输入框时看一眼（和 Linux 一样，另外打开工具栏的剪贴板页时也看）
         AppState.shared.sampleClipboard()
         // 每天最多查一次有没有新版本（后台，有新版时菜单里多一项）
@@ -224,6 +255,8 @@ class WowTypeInputController: IMKInputController {
         AppState.shared.save()
         AppState.shared.flushStats()
         modifierHeld.removeAll()
+        // 是不是切走了输入法：过一会儿看系统现在用的输入源（InitialMode）
+        AppState.shared.noteDeactivated()
         super.deactivateServer(sender)
     }
 
@@ -294,6 +327,9 @@ class WowTypeInputController: IMKInputController {
 extension WowTypeInputController: TextClient {
     func insertText(_ text: String) {
         guard let client = textInput else { return }
+        // 自动配对接着要按位置挪光标：先记下上屏的字落在哪（编辑区或选区的起点），不在上屏以后再问应用
+        caretAfterInsert = AppState.shared.config.autoPairPunct
+            ? insertionStart(client).map { $0 + text.utf16.count } : nil
         client.insertText(text, replacementRange: noRange())
         lastMarked = ("", 0)
         if let last = text.unicodeScalars.last {
@@ -324,6 +360,13 @@ extension WowTypeInputController: TextClient {
         }
         var line = NSRect.zero
         client.attributes(forCharacterIndex: 0, lineHeightRectangle: &line)
+        // 鼠标点候选、翻页箭头、滚轮：交给这个输入框的组字（候选框所有输入框共用，谁画的归谁）
+        panel.onSelect = { [weak self] index in
+            self?.mouseAction { $0.select(index) }
+        }
+        panel.onPage = { [weak self] forward in
+            self?.mouseAction { $0.turnPage(forward: forward) }
+        }
         panel.show(page, below: line)
     }
 
@@ -371,6 +414,86 @@ extension WowTypeInputController: TextClient {
 
     var previousCharacter: UInt32 {
         clientPreviousCharacter ?? lastInserted
+    }
+
+    // MARK: 自动配对（AutoPairPunct）
+    //
+    // IMK 没有挪光标的接口，发方向键要「辅助功能」权限。能用的是按位置换字：insertText 带 replacementRange
+    // （长按出重音字母、自动更正都是这么换的），换完光标落在换上的字后面。挪光标就是把目标位置前面那个字
+    // 原样换一遍（见 Shared/Composer.swift 的 CaretEdit）。只在应用说得清光标在哪、读得到光标旁边的字时开配对，
+    // 终端这类不报位置的应用里照常一个一个上屏。
+
+    /// 上屏的字从哪里开始：有编辑区时是编辑区的起点，否则是选区（光标）的起点；应用不说是 nil。
+    private func insertionStart(_ client: IMKTextInput & NSObjectProtocol) -> Int? {
+        let marked = client.markedRange()
+        if marked.location != NSNotFound && marked.length > 0 {
+            return marked.location
+        }
+        let selected = client.selectedRange()
+        return selected.location == NSNotFound ? nil : selected.location
+    }
+
+    /// 现在的光标位置：没有编辑区、没有选区时才算；应用不说是 nil。
+    private var currentCaret: Int? {
+        guard let client = textInput else { return nil }
+        let marked = client.markedRange()
+        guard marked.location == NSNotFound || marked.length == 0 else { return nil }
+        let selected = client.selectedRange()
+        guard selected.location != NSNotFound, selected.length == 0 else { return nil }
+        return selected.location
+    }
+
+    /// 应用在 range 上给不给得出字（给了空串、nil 都算给不出）。
+    private func readable(_ client: IMKTextInput & NSObjectProtocol, _ range: NSRange) -> Bool {
+        (client.attributedSubstring(from: range)?.length ?? 0) > 0
+    }
+
+    /// 终端：文字是程序画的，换不了光标前面已经「打出去」的字，按位置换字只会多打一遍。不管报不报位置都不配对
+    static let terminalApps: Set<String> = [
+        "com.apple.Terminal", "com.googlecode.iterm2", "net.kovidgoyal.kitty", "com.github.wez.wezterm",
+        "org.alacritty", "io.alacritty", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "co.zeit.hyper",
+        "org.tabby", "com.raggesilver.BlackBox",
+    ]
+
+    var canEditAroundCaret: Bool {
+        guard let client = textInput, !WowTypeInputController.terminalApps.contains(client.bundleIdentifier() ?? ""),
+              let start = insertionStart(client) else { return false }
+        // 光标旁边的字读得到，才信应用会照位置换字（文档开头读后面那个字；空的输入框里先不配对）
+        if start > 0 {
+            return readable(client, NSRange(location: start - 1, length: 1))
+        }
+        return readable(client, NSRange(location: 0, length: 1))
+    }
+
+    var nextCharacter: UInt32? {
+        guard let client = textInput else { return nil }
+        let marked = client.markedRange()
+        let location: Int
+        if marked.location != NSNotFound && marked.length > 0 {
+            location = marked.location + marked.length
+        } else {
+            let selected = client.selectedRange()
+            // 有选区时不报（打的字会换掉选中的）
+            guard selected.location != NSNotFound, selected.length == 0 else { return nil }
+            location = selected.location
+        }
+        guard let text = client.attributedSubstring(from: NSRange(location: location, length: 1))?.string,
+              let scalar = text.unicodeScalars.first
+        else {
+            return nil
+        }
+        return scalar.value
+    }
+
+    func edit(_ edit: CaretEdit) -> Bool {
+        guard let client = textInput, let caret = caretAfterInsert ?? currentCaret else { return false }
+        let location = caret + edit.offset
+        guard location >= 0, edit.length >= 0 else { return false }
+        client.insertText(edit.text, replacementRange: NSRange(location: location, length: edit.length))
+        caretAfterInsert = location + edit.text.utf16.count
+        lastMarked = ("", 0)
+        lastInserted = edit.text.unicodeScalars.last?.value ?? 0
+        return true
     }
 }
 

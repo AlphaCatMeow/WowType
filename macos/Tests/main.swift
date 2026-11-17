@@ -157,6 +157,17 @@ do {
         _ = c.handle(.key(Keysym.pageDown))
         _ = c.handle(.char("1"))
         check(client.committed == all[c.pageSize], "第二页按 1 选第二页的第一个", client.committed)
+        // 鼠标：点翻页箭头、滚轮（和 Page Up / Page Down 一样），点候选
+        client.committed = ""
+        type(c, "shi")
+        c.turnPage(forward: true)
+        check(client.page?.hasPrev == true && client.page?.texts.first == all[c.pageSize], "点下一页箭头")
+        c.turnPage(forward: false)
+        check(client.page?.texts.first == all[0], "点上一页箭头")
+        c.select(1)
+        check(client.committed == all[1], "点第二个候选", client.committed)
+        c.turnPage(forward: true)
+        check(client.committed == all[1] && !c.isComposing, "没在打字时点翻页什么都不做（不交给应用）")
     }
 }
 
@@ -2015,6 +2026,20 @@ do {
 // MARK: 万象词库包（规矩和 Linux 设置的 install_lexicon_pack 一样）
 
 do {
+    // 检查更新顺带在后台更新万象（和 Linux 设置的 lexicon_update_plan 一样）
+    let new = "2026.11.10.0"
+    check(LexiconPack.autoUpdate(installed: "2026.10.31.0", inUse: true, available: new) == new, "正在用的万象有新版：后台更新")
+    check(LexiconPack.autoUpdate(installed: "?", inUse: true, available: new) == new, "装好的没写版本也算旧")
+    check(LexiconPack.autoUpdate(installed: "2026.10.31.0", inUse: false, available: new) == nil
+          && LexiconPack.autoUpdate(installed: nil, inUse: true, available: new) == nil
+          && LexiconPack.autoUpdate(installed: new, inUse: true, available: new) == nil
+          && LexiconPack.autoUpdate(installed: "2026.10.31.0", inUse: true, available: nil) == nil,
+          "没在用、没装、已经是最新、发布页上没有：不更新")
+    check(LexiconPack.autoUpdate(installed: "2026.10.31.0", inUse: true, available: new,
+                                 failedVersion: new, failedAt: 1000, now: 1000 + 3600) == nil
+          && LexiconPack.autoUpdate(installed: "2026.10.31.0", inUse: true, available: new,
+                                    failedVersion: new, failedAt: 1000, now: 1000 + 24 * 3600) == new,
+          "这一版没更新好：一天以内不再试")
     check(LexiconPack.assetVersion("wowtype-data-wanxiang-2026.11.12.0.tar.gz") == "2026.11.12.0", "认出万象包和版本")
     check(LexiconPack.assetVersion("wowtype-data-wanxiang-latest.tar.gz") == nil
           && LexiconPack.assetVersion("wowtype-data-wanxiang-1.0.zip") == nil
@@ -2082,6 +2107,13 @@ do {
     check(AppUpdate.version(tag: "") == nil && AppUpdate.version(tag: "v") == nil && AppUpdate.version(tag: "v1/../x") == nil
           && AppUpdate.version(tag: "v1 2") == nil && AppUpdate.version(tag: "-1") == nil, "不像版本号的 tag 不认")
     check(AppUpdate.packageName(version: "0.4.1") == "WowType-0.4.1-macos.pkg", "macOS 安装包的名字")
+    // 更新内容：只留「## 这一版」那一节（和 Linux 设置的 release_highlights 一样）
+    let notes = "# WowType 0.5.2\n\n## 这一版\n\n### 新功能\n- 自动配对\n  - 套着打\n```\nbrew x\n```\n## 安装\n下载 pkg\n"
+    check(AppUpdate.highlights(notes) == "### 新功能\n- 自动配对\n  - 套着打\n```\nbrew x\n```",
+          "更新内容只留「这一版」", AppUpdate.highlights(notes))
+    check(AppUpdate.highlights("修了一个问题\n") == "修了一个问题", "没有「这一版」时原样")
+    check(AppUpdate.notesText(notes) == "**新功能**\n• 自动配对\n  • 套着打\n    brew x",
+          "更新内容：标题加粗、列表换成 •、去掉代码块记号", AppUpdate.notesText(notes))
     // Beta 计划：版本号最大的（预发布也算），一样大要正式版；数据的发布（nnlm-…）、草稿不算
     typealias L = AppUpdate.Listed
     check(AppUpdate.pickNewest([L(tag: "v0.4.0"), L(tag: "v0.5.0", prerelease: true),
@@ -2113,6 +2145,293 @@ do {
     } else {
         print("skip 对照 install.sh 的包名（没找到 install.sh）")
     }
+}
+
+// MARK: 翻译服务的地址、测试连接的结果（和 Linux 设置的 models_endpoint、test_finished 一样）
+
+do {
+    check(TranslateService.modelsEndpoint("https://x/v1/chat/completions") == "https://x/v1/models"
+          && TranslateService.modelsEndpoint(" https://x/v1// ") == "https://x/v1/models",
+          "列模型的接口地址", TranslateService.modelsEndpoint("https://x/v1/chat/completions"))
+    check(TranslateService.testSummary("Hello\n（解释）", seconds: 1.04) == "✓ 你好 → Hello（1.0 秒）",
+          "测试连接：译文只要第一行", TranslateService.testSummary("Hello\n（解释）", seconds: 1.04))
+    check(TranslateService.testSummary("Hi", seconds: 3.25).hasSuffix("，有点慢，可以换个小一点的模型"), "测试连接：慢了提示换小模型")
+}
+
+// MARK: 切到 WowType 时（InitialMode）
+
+do {
+    check(WowtypeConfig().initialMode == .chinese, "切到 WowType 时默认中文")
+    check(WowtypeConfig.parse("InitialMode=English\n").initialMode == .english
+          && WowtypeConfig.parse("InitialMode=Last\n").initialMode == .last, "InitialMode 读得出来")
+    check(WowtypeConfig.parse("InitialMode=english\n").initialMode == .chinese, "InitialMode 大小写不对用默认")
+    var english = WowtypeConfig()
+    english.initialMode = .english
+    check(WowtypeConfig.parse(english.serialized(into: nil)).initialMode == .english, "InitialMode 写进文件再读一样")
+}
+
+withConfig({ $0.initialMode = .english }) { c, _ in
+    c.applyInitialMode()
+    check(c.mode == .english, "InitialMode=English：切过来是英文")
+    tapShift(c)
+    check(c.mode == .chinese, "单按 Shift 照常切回中文")
+    c.applyInitialMode()
+    check(c.mode == .english, "再从别的输入法切过来又是英文")
+}
+
+withConfig({ $0.initialMode = .chinese }) { c, client in
+    tapShift(c)
+    check(c.mode == .english, "先切到英文")
+    c.applyInitialMode()
+    check(c.mode == .chinese && client.committed.isEmpty, "InitialMode=Chinese：切过来是中文")
+}
+
+withConfig({ $0.initialMode = .last }) { c, _ in
+    tapShift(c)
+    c.applyInitialMode()
+    check(c.mode == .english, "InitialMode=Last：和切走时一样")
+}
+
+withConfig({ $0.initialMode = .english; $0.shiftToggle = .off }) { c, _ in
+    c.applyInitialMode()
+    check(c.mode == .chinese, "关了 Shift 切换、也没另设切换键：切不回来，总是中文")
+}
+
+withConfig({ $0.initialMode = .english; $0.shiftToggle = .off; $0.toggleKey = Shortcut(name: "Control+Shift+space") }) { c, _ in
+    c.applyInitialMode()
+    check(c.mode == .english, "关了 Shift 切换、另设了切换键：照样进英文")
+}
+
+// MARK: 外部命令切模式（WowType --mode，和 Linux 的 org.wowtype.Input SetMode 一样）
+
+withConfig({ _ in }) { c, client in
+    check(c.modeName == "zh", "外部命令：现在是 zh")
+    check(c.setMode(named: "en") && c.modeName == "en", "外部命令：切到 en")
+    check(c.setMode(named: "toggle") && c.modeName == "zh", "外部命令：toggle 回中文")
+    check(c.setMode(named: "toggle") && c.modeName == "en", "外部命令：toggle 到英文")
+    check(!c.setMode(named: "translate") && c.modeName == "en", "外部命令：互译没配好时切不到 translate")
+    check(!c.setMode(named: "fr") && c.modeName == "en", "外部命令：认不出的模式不动")
+    c.setMode(named: "zh")
+    type(c, "nihao")
+    c.setMode(named: "en")
+    check(client.committed == "nihao" && c.modeName == "en", "外部命令：打到一半切英文，打的字母原样上屏", client.committed)
+}
+
+// MARK: 中文标点自动配对（AutoPairPunct，和 fcitx5-addon/test/key_harness.cpp 的一样）
+
+/// 有光标的假输入框：text 是应用里的字（UTF-16），caret 是光标；按位置改字照 IMK 的 insertText(_:replacementRange:)
+/// （换完光标落在换上的字后面）。editable 是 false 时像终端：说不清光标在哪。
+final class CaretClient: TextClient {
+    var text: [UInt16] = []
+    var caret = 0
+    var marked = ""
+    var page: CandidatePage?
+    var editable = true
+    var edits: [CaretEdit] = []
+
+    /// 应用里的字，光标处画一个 |
+    var shown: String {
+        String(decoding: text[..<caret], as: UTF16.self) + "|" + String(decoding: text[caret...], as: UTF16.self)
+    }
+
+    func set(_ s: String, caret: Int) {
+        text = Array(s.utf16)
+        self.caret = caret
+    }
+
+    func replace(_ location: Int, _ length: Int, with s: String) {
+        text.replaceSubrange(location..<(location + length), with: Array(s.utf16))
+        caret = location + s.utf16.count
+    }
+
+    func insertText(_ s: String) {
+        replace(caret, 0, with: s)
+        marked = ""
+    }
+
+    func setMarkedText(_ s: String, cursor: Int) {
+        marked = s
+    }
+
+    func showCandidates(_ page: CandidatePage?) {
+        self.page = page
+    }
+
+    var previousCharacter: UInt32 { caret > 0 ? UInt32(text[caret - 1]) : 0 }
+    var previousCharacterIsReliable: Bool { editable }
+    var canEditAroundCaret: Bool { editable }
+    var nextCharacter: UInt32? { editable && caret < text.count ? UInt32(text[caret]) : nil }
+
+    func edit(_ e: CaretEdit) -> Bool {
+        let location = caret + e.offset
+        guard editable, location >= 0, e.length >= 0, location + e.length <= text.count else { return false }
+        edits.append(e)
+        replace(location, e.length, with: e.text)
+        return true
+    }
+
+    /// 输入法交给应用的键：字和空格插在光标处，退格删光标前一个，左右键挪光标
+    func appKey(_ key: KeyInput) {
+        switch key.keysym {
+        case Keysym.backspace:
+            if caret > 0 {
+                text.remove(at: caret - 1)
+                caret -= 1
+            }
+        case Keysym.left:
+            caret = max(caret - 1, 0)
+        case Keysym.right:
+            caret = min(caret + 1, text.count)
+        default:
+            if let a = key.ascii {
+                replace(caret, 0, with: String(UnicodeScalar(a)))
+            }
+        }
+    }
+}
+
+/// 打一串键（⌫ 退格、← 左键），输入法不要的交给假应用。
+func pairType(_ c: Composer, _ client: CaretClient, _ keys: String) {
+    for ch in keys {
+        let key: KeyInput
+        switch ch {
+        case "⌫": key = .key(Keysym.backspace)
+        case "←": key = .key(Keysym.left)
+        default: key = .char(ch)
+        }
+        if !c.handle(key) {
+            client.appKey(key)
+        }
+    }
+}
+
+func withPairing(_ change: (inout WowtypeConfig) -> Void = { _ in }, _ body: (Composer, CaretClient) -> Void) {
+    var config = WowtypeConfig()
+    config.autoPairPunct = true
+    config.emojiSuggest = false
+    change(&config)
+    engine.apply(config)
+    let client = CaretClient()
+    let c = Composer(engine: engine, client: client)
+    c.apply(config)
+    body(c, client)
+    engine.apply(WowtypeConfig())
+}
+
+do {
+    check(!WowtypeConfig().autoPairPunct, "自动配对默认关")
+    check(CaretEdit.move(by: -1, inserted: "你好（）", next: nil) == CaretEdit(offset: -2, length: 1, text: "（"),
+          "光标左移一格：把「（」原样换一遍")
+    check(CaretEdit.move(by: 1, inserted: "", next: 0xFF09) == CaretEdit(offset: 0, length: 1, text: "）"),
+          "跳过右括号：把它换成它自己")
+    check(CaretEdit.move(by: 1, inserted: "", next: nil) == CaretEdit(offset: 1, length: 0, text: "")
+          && CaretEdit.move(by: -1, inserted: "", next: nil) == CaretEdit(offset: -1, length: 0, text: ""),
+          "不知道那个字：只把光标放过去")
+}
+
+withPairing { c, client in
+    pairType(c, client, "(")
+    check(client.shown == "（|）", "( 上屏（），光标在中间", client.shown)
+    pairType(c, client, "3)")
+    check(client.shown == "（3）|", "( 3 ) 是（3）：) 跳过补好的右括号", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "( )")
+    check(client.shown == "（ ）|", "( 空格 ) 是（ ）", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "(nihao)")
+    check(client.shown == "（你好）|", "( nihao ) 上屏你好再跳过右括号", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "nihao(")
+    check(client.shown == "你好（|）", "打拼音途中按 (：先上屏候选，再上屏（），光标在中间", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "((")
+    check(client.shown == "（（|））", "连着两个 (", client.shown)
+    pairType(c, client, "))")
+    check(client.shown == "（（））|", "套着的两层都跳过", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "(")
+    check(c.handle(.key(Keysym.backspace)) && client.shown == "|", "空的一对退格：吃掉退格，两个一起删", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "(1⌫")
+    check(client.shown == "（|）", "里面有字时退格照常交给应用", client.shown)
+    pairType(c, client, "⌫")
+    check(client.shown == "|", "删空了再退格：两个一起删", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "(←)")
+    check(client.shown == "）|（）", "按了方向键以后 ) 照常上屏", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "(1")
+    // 点到了别处：光标后面不是补好的右括号
+    client.set("别的字", caret: 1)
+    pairType(c, client, ")")
+    check(client.shown == "别）|的字", "光标后面不是补好的右括号：不跳，照常上屏", client.shown)
+}
+
+withPairing { c, client in
+    // 终端这类说不清光标在哪的应用：不配对，不会留下光标在后面的右括号
+    client.editable = false
+    pairType(c, client, "(")
+    check(client.shown == "（|" && client.edits.isEmpty, "应用说不清光标在哪：不配对", client.shown)
+    client.editable = true
+    pairType(c, client, "(")
+    check(client.shown == "（（|）", "换到说得清光标的地方：接着配对", client.shown)
+}
+
+withPairing({ $0.halfwidthPunct = true }) { c, client in
+    pairType(c, client, "(")
+    check(client.shown == "(|", "半角标点不配对", client.shown)
+}
+
+withPairing({ $0.autoPairPunct = false }) { c, client in
+    pairType(c, client, "(")
+    check(client.shown == "（|" && client.edits.isEmpty, "默认不配对", client.shown)
+}
+
+// MARK: 候选框摆在哪（PanelPlacement，#227）
+
+do {
+    // 1440×900 的屏幕，菜单栏 25 点；光标这一行在 (100, 500)，高 18
+    let visible = PanelRect(x: 0, y: 0, width: 1440, height: 875)
+    let line = PanelRect(x: 100, y: 500, width: 0, height: 18)
+    var p = PanelPlacement.origin(width: 300, height: 40, line: line, visible: visible, leading: 15, gap: 4)
+    check(p.x == 85 && p.y == 456, "候选框在光标这一行下面，序号对着编辑区", "\(p)")
+    // 右边放不下往左挪，贴着屏幕右边
+    let right = PanelRect(x: 1400, y: 500, width: 0, height: 18)
+    p = PanelPlacement.origin(width: 300, height: 40, line: right, visible: visible, leading: 15, gap: 4)
+    check(p.x == 1140, "右边放不下往左挪", "\(p)")
+    // 长句的候选把框撑得比屏幕还宽：左边贴着屏幕左边，第一个候选看得见（以前被推到屏幕左边外面）
+    p = PanelPlacement.origin(width: 2000, height: 40, line: right, visible: visible, leading: 15, gap: 4)
+    check(p.x == 0, "候选框比屏幕宽时左边不出屏幕（#227）", "\(p)")
+    // 副屏在主屏左边（x 是负数）：一样夹在它自己的可见区域里
+    let left = PanelRect(x: -1920, y: 0, width: 1920, height: 1055)
+    p = PanelPlacement.origin(width: 2500, height: 40, line: PanelRect(x: -100, y: 300, width: 0, height: 18),
+                              visible: left, leading: 15, gap: 4)
+    check(p.x == -1920, "副屏上太宽时也是左边贴着它的左边", "\(p)")
+    // 每次都从光标算：框变窄了、光标没动，就回到光标下面（不接着上一次往左挪）
+    p = PanelPlacement.origin(width: 300, height: 40, line: line, visible: visible, leading: 15, gap: 4)
+    check(p.x == 85, "框变窄以后回到光标下面", "\(p)")
+    // 下面放不下放到这一行上面；太高时顶上留在屏幕里
+    p = PanelPlacement.origin(width: 300, height: 40, line: PanelRect(x: 100, y: 10, width: 0, height: 18),
+                              visible: visible, leading: 15, gap: 4)
+    check(p.y == 32, "下面放不下放到这一行上面", "\(p)")
+    p = PanelPlacement.origin(width: 300, height: 1000, line: line, visible: visible, leading: 15, gap: 4)
+    check(p.y + 1000 == 875, "太高时第一行留在屏幕里", "\(p)")
 }
 
 // MARK: 诊断信息里的设置打码（DiagnosticsText）

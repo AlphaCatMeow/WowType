@@ -594,6 +594,161 @@ final class SettingsModel: ObservableObject {
         }
     }
 
+    // MARK: 翻译服务：测试连接、挑模型（和 Linux 设置的 on_test_translate、load_models 一样）
+
+    /// 「测试连接」那一行的副标题：结果或出错原因；nil 是还没测过
+    @Published private(set) var translateTestResult: String?
+    @Published private(set) var translateTesting = false
+    /// 测试用的翻译器（核心的，和输入法用的同一套请求），测完就放掉
+    private var testTranslator: Translator?
+    private var testTimer: Timer?
+    private static let testTimeout: TimeInterval = 45
+
+    /// 用「你好」试一下填好的服务（用这台电脑存的 API Key）
+    func testTranslate() {
+        stopTranslateTest()
+        guard !config.translateBaseUrl.isEmpty, !config.translateModel.isEmpty else {
+            translateTestResult = "先填接口地址和模型"
+            return
+        }
+        var service = config
+        service.translateLocal = false
+        let translator = Translator()
+        translator.configure(service, keyFile: translateKeyPath, defaultLocalModel: "")
+        guard translator.isReady else {
+            translateTestResult = "先填接口地址和模型"
+            return
+        }
+        testTranslator = translator
+        translateTesting = true
+        translateTestResult = "正在连接…"
+        let started = Date()
+        translator.start("你好")
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            self?.pollTranslateTest(started: started)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        testTimer = timer
+    }
+
+    private func pollTranslateTest(started: Date) {
+        guard let translator = testTranslator else {
+            stopTranslateTest()
+            return
+        }
+        let seconds = Date().timeIntervalSince(started)
+        let snapshot = translator.poll()
+        switch snapshot.phase {
+        case .done:
+            stopTranslateTest()
+            translateTestResult = snapshot.text.isEmpty ? "✗ 服务返回了空的译文"
+                : TranslateService.testSummary(snapshot.text, seconds: seconds)
+        case .error:
+            stopTranslateTest()
+            translateTestResult = "✗ " + (snapshot.error.isEmpty ? "出错了" : snapshot.error)
+        case .idle, .running:
+            if seconds > SettingsModel.testTimeout {
+                translator.cancel()
+                stopTranslateTest()
+                translateTestResult = "✗ 请求超时"
+            }
+        }
+    }
+
+    private func stopTranslateTest() {
+        testTimer?.invalidate()
+        testTimer = nil
+        testTranslator = nil
+        translateTesting = false
+    }
+
+    /// 服务列出来的模型；nil 是没取到（看 translateModelsStatus）
+    @Published private(set) var translateModels: [String]?
+    /// 取模型列表时的提示：正在取、取不到的原因；nil 是没什么要说的
+    @Published private(set) var translateModelsStatus: String?
+    /// 现在的列表是照哪个地址和 Key 取的
+    private var translateModelsFor: String?
+
+    /// 打开「从服务里挑模型」时调：地址和 Key 没变就用上次的
+    func loadTranslateModels() {
+        let base = TranslateService.apiBase(config.translateBaseUrl)
+        guard !base.isEmpty else {
+            translateModels = nil
+            translateModelsFor = nil
+            translateModelsStatus = "先填接口地址"
+            return
+        }
+        let key = TranslateKeyFile.read(translateKeyPath)
+        let token = base + "\n" + key
+        if translateModels != nil, translateModelsFor == token {
+            return
+        }
+        guard let url = URL(string: TranslateService.modelsEndpoint(base)), url.scheme != nil else {
+            translateModels = nil
+            translateModelsFor = nil
+            translateModelsStatus = "接口地址不对"
+            return
+        }
+        translateModelsFor = token
+        translateModels = []
+        translateModelsStatus = "正在获取模型列表…"
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("WowType/\(appVersion)", forHTTPHeaderField: "User-Agent")
+        if !key.isEmpty {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            let result = SettingsModel.parseModels(data: data, response: response, error: error, key: key)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.translateModelsFor == token else { return }
+                switch result {
+                case .success(let models):
+                    self.translateModels = models
+                    self.translateModelsStatus = models.isEmpty ? "服务没有列出模型，直接在框里打模型名" : nil
+                case .failure(let problem):
+                    self.translateModels = nil
+                    self.translateModelsFor = nil
+                    self.translateModelsStatus = "获取失败：\(problem.message)。也可以直接在框里打模型名。"
+                }
+            }
+        }.resume()
+    }
+
+    private struct ModelsProblem: Error {
+        let message: String
+    }
+
+    /// 模型列表的返回：{"data": [{"id": …}]}（OpenAI），或 {"models": [{"name": …}]}（Ollama 这类）
+    private static func parseModels(data: Data?, response: URLResponse?, error: Error?,
+                                    key: String) -> Result<[String], ModelsProblem> {
+        func clean(_ text: String) -> String {
+            let masked = key.count >= 4 ? text.replacingOccurrences(of: key, with: "***") : text
+            return masked.count <= 160 ? masked : String(masked.prefix(160)) + "…"
+        }
+        if let error {
+            let timedOut = (error as NSError).code == NSURLErrorTimedOut
+            return .failure(ModelsProblem(message: timedOut ? "请求超时" : clean("连不上：\(error.localizedDescription)")))
+        }
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            let hints = [401: "Key 不对", 403: "没有权限", 404: "地址或模型不对", 429: "请求太多或额度用完了"]
+            let hint = hints[http.statusCode].map { "（\($0)）" } ?? ""
+            return .failure(ModelsProblem(message: clean("服务返回 \(http.statusCode)\(hint)")))
+        }
+        guard let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return .failure(ModelsProblem(message: "看不懂服务的返回（是 OpenAI 格式的接口吗？）"))
+        }
+        let items = (json["data"] as? [Any]) ?? (json["models"] as? [Any]) ?? []
+        var ids = Set<String>()
+        for item in items {
+            guard let entry = item as? [String: Any] else { continue }
+            if let id = (entry["id"] as? String) ?? (entry["name"] as? String), !id.isEmpty {
+                ids.insert(id)
+            }
+        }
+        return .success(ids.sorted { $0.lowercased() < $1.lowercased() })
+    }
+
     // MARK: 自定义词
 
     var codeIsInvalid: Bool {

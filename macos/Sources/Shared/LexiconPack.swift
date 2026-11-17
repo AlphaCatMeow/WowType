@@ -133,6 +133,23 @@ public enum LexiconPack {
         return .success(count)
     }
 
+    /// 后台更新失败的那一版，隔这么久（秒）再试，免得每次检查都下一遍
+    public static let retryInterval: Int64 = 24 * 3600
+
+    /// 检查更新时要不要顺带在后台更新万象词库（和 Linux 设置的 lexicon_update_plan 一样）：要就返回发布页上那个包的版本。
+    /// 只更新装了、正在用的（装了没在用的，打开设置窗口时再手动更新）；发布页上的包比装好的新才更新
+    /// （装好的没写版本「?」也算旧）；这一版上次没更新好（failedVersion、failedAt）时一天以内不再试。
+    public static func autoUpdate(installed: String?, inUse: Bool, available: String?,
+                                  failedVersion: String? = nil, failedAt: Int64 = 0, now: Int64 = 0) -> String? {
+        guard let installed, inUse, let available, compareVersions(available, installed) > 0 else {
+            return nil
+        }
+        if failedVersion == available && now - failedAt < retryInterval {
+            return nil
+        }
+        return available
+    }
+
     /// 装好的词库包的版本（VERSION 文件，空的是「?」）；没装（没有 lexicon.tsv）是 nil。
     public static func installedVersion(folder: String) -> String? {
         guard access(folder + "/lexicon.tsv", F_OK) == 0 else { return nil }

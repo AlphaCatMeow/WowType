@@ -1,6 +1,7 @@
 // 进程里只有一份的东西：词库（后台载入）、设置、数据目录、定时保存学习数据、互译的翻译器。
 
 import AppKit
+import Carbon
 import CWowtype
 
 final class AppState {
@@ -46,6 +47,42 @@ final class AppState {
     private var updateChecking = false
     /// 下一次看要不要检查更新的时刻（systemUptime）：最多一小时看一次，没网时也不会每切一次输入框就去连
     private var nextUpdateLook: TimeInterval = 0
+
+    /// 第几轮「切到 WowType」（InitialMode）：进程起来算第 1 轮，每次从别的输入法切回来加一。
+    /// 每个输入框（输入控制器）在新的一轮里第一次用到 WowType 时按 InitialMode 定一次中 / 英
+    private(set) var switchGeneration = 1
+    /// 切走过 WowType（停用以后系统当前的输入源不是它）：下一次有输入框用到 WowType 时开新的一轮
+    private var switchedAway = false
+    /// 停用以后过这么久再看系统当前的输入源（切输入法时系统先停用、再换输入源）
+    private let switchCheckDelay: TimeInterval = 0.3
+
+    /// 输入控制器停用了（切输入法、换应用、点到别处都会）：过一会儿看系统现在用的还是不是 WowType，
+    /// 不是就记下切走了。安全输入开着（密码框里系统临时换成英文键盘）时不算，和 Linux 一样。
+    func noteDeactivated() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + switchCheckDelay) { [weak self] in
+            guard let self, !IsSecureEventInputEnabled(), Installer.isCurrentSource == false else { return }
+            self.switchedAway = true
+        }
+    }
+
+    /// 最近启用的输入控制器（最近用过的输入框）：外部命令切模式切的是它
+    weak var activeController: WowTypeInputController?
+
+    /// 外部命令（WowType --mode）：request 是 zh、en、translate、toggle，空串只问。返回切完以后最近用过的输入框的模式；
+    /// 还没有输入框用过 WowType 时是空串。
+    func externalMode(_ request: String) -> String {
+        guard let controller = activeController else { return "" }
+        return controller.externalMode(request)
+    }
+
+    /// 输入控制器启用了：切走过就开新的一轮，返回现在是第几轮。
+    func noteActivated() -> Int {
+        if switchedAway {
+            switchedAway = false
+            switchGeneration += 1
+        }
+        return switchGeneration
+    }
 
     /// 打字统计的句柄（core 的 Recorder）：建好时是关着的（不读不建文件），loadConfig 按 TypingStats 打开。
     /// 开着时只在本机按天记计数，不记打的内容。
@@ -524,6 +561,46 @@ final class AppState {
                 self.noteLatest(release.tag)
                 if let version = self.availableUpdate {
                     NSLog("WowType: 有新版本 %@（现在 %@）", version, appVersion)
+                }
+                self.autoUpdateLexicon(release)
+            }
+        }
+    }
+
+    /// 后台更新万象词库没成功的那一版和时刻（Unix 秒）：一天以内不再试（只记在这个进程里）
+    private var lexiconFailed: (version: String, at: Int64)?
+    private var lexiconUpdating = false
+
+    /// 检查更新顺带：正在用的万象词库在发布页上有新版，就在后台下载、按 SHA256SUMS 校验、整个换进去
+    /// （和 Linux 的 auto_update_lexicon 一样，不打扰用户）。词库文件变了，下一次按键时在后台换上新的。
+    private func autoUpdateLexicon(_ release: LexiconPackInstaller.Release) {
+        let dir = supportDir
+        let wanxiang = LexiconPackInstaller.lexicon(in: dir)
+        let inUse = !config.lexicon.isEmpty && (config.lexicon as NSString).expandingTildeInPath == wanxiang
+        let now = Int64(Date().timeIntervalSince1970)
+        guard !lexiconUpdating,
+              let version = LexiconPack.autoUpdate(
+                installed: LexiconPack.installedVersion(folder: LexiconPackInstaller.folder(in: dir).path),
+                inUse: inUse, available: release.wanxiang?.version,
+                failedVersion: lexiconFailed?.version, failedAt: lexiconFailed?.at ?? 0, now: now)
+        else { return }
+        lexiconUpdating = true
+        NSLog("WowType: 万象词库有新版 %@，在后台更新", version)
+        DispatchQueue.global(qos: .utility).async {
+            let result = Result { () -> String in
+                let tarball = try LexiconPackInstaller.download(release) { _, _ in }
+                defer { try? FileManager.default.removeItem(at: tarball) }
+                return try LexiconPackInstaller.install(tarball, supportDir: dir)
+            }
+            DispatchQueue.main.async {
+                self.lexiconUpdating = false
+                switch result {
+                case .success(let installed):
+                    self.lexiconFailed = nil
+                    NSLog("WowType: 万象词库更新到 %@", installed)
+                case .failure(let error):
+                    self.lexiconFailed = (version, now)
+                    NSLog("WowType: 万象词库 %@ 没更新好：%@", version, String(describing: error))
                 }
             }
         }

@@ -121,6 +121,7 @@ func checkConfigContract() {
         ("InputScheme", WowtypeConfig.InputScheme.allCases.map(\.rawValue)),
         ("ShuangpinScheme", WowtypeConfig.shuangpinSchemes),
         ("ShiftToggle", WowtypeConfig.ShiftToggle.allCases.map(\.rawValue)),
+        ("InitialMode", WowtypeConfig.InitialMode.allCases.map(\.rawValue)),
         ("SelectKeys", WowtypeConfig.SelectKeys.allCases.map(\.rawValue)),
         ("TranslateTarget", WowtypeConfig.translateTargets),
     ]

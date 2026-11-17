@@ -347,6 +347,23 @@ private struct UpdateGroup: View {
                           + "关掉以后已经装上的预发布版不会退回，等下一个正式版出来再提示更新。",
                       isOn: $model.config.betaUpdates)
         }
+        // 有新版时下面列出「这一版」改了什么（和 Linux 设置「更新」页的「更新内容」一样）
+        if updater.hasUpdate, let notes = updater.release.map({ AppUpdate.notesText($0.notes) }), !notes.isEmpty {
+            PrefGroup("更新内容") {
+                Text(Self.rendered(notes))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+            }
+        }
+    }
+
+    /// 行内的粗体、行内代码、链接照 Markdown 画；认不出来时原样
+    private static func rendered(_ text: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
     }
 }
 
@@ -467,6 +484,12 @@ private struct InputPage: View {
                       selection: shortcutBinding(\.translateModeKey),
                       options: shortcutOptions([("不用", "")] + shortcuts(Array(Shortcut.translateModeKeyPresets.dropFirst())),
                                                current: model.config.translateModeKey?.name ?? ""))
+            RowDivider()
+            PickerRow(title: "切到 WowType 时", subtitle: "从别的输入法切过来、开机后第一次用时；换窗口不变",
+                      info: "「和上次切走时一样」：每个应用记着自己切走时是中文还是英文。"
+                          + "关掉了单按 Shift、也没另设切换键时总是中文（切过去就切不回来了）。",
+                      selection: $model.config.initialMode,
+                      options: [("中文", .chinese), ("英文", .english), ("和上次切走时一样", .last)])
         }
 
         PrefGroup("拼音") {
@@ -487,6 +510,14 @@ private struct InputPage: View {
             RowDivider()
             PickerRow(title: "标点样式", info: "数字后面的符号总是半角的，比如 3.14。",
                       selection: $model.config.halfwidthPunct, options: [("全角 ，。", false), ("半角 , .", true)])
+            RowDivider()
+            SwitchRow(title: "中文标点自动配对", subtitle: "打（【《「“‘ 时自动补上右半边",
+                      info: "中文标点下打左括号、左引号，上屏成对的，光标放到中间；"
+                          + "在里面打完再按右半边，跳过补好的那个，不会多出一个。"
+                          + "里面空着时按退格，两个一起删。按了方向键、回车，或者点到别处以后照常打字。"
+                          + "数字后面的括号照常是英文的。\n\n"
+                          + "要应用告诉输入法光标在哪、旁边是什么字；有些程序（比如终端）里不配对，照常一个一个上屏。",
+                      isOn: $model.config.autoPairPunct)
         }
 
         PrefGroup("快捷输入") {
@@ -756,6 +787,7 @@ private let translateLanguages = WowtypeConfig.translateLanguages
 private struct TranslatePage: View {
     @ObservedObject var model: SettingsModel
     @State private var key = ""
+    @State private var showModels = false
     @Environment(\.palette) private var palette
 
     var body: some View {
@@ -819,8 +851,29 @@ private struct TranslatePage: View {
             }
             .rowPadding()
             RowDivider()
-            TextRow(title: "模型", placeholder: suggestedModel.isEmpty ? "服务商给的模型名" : suggestedModel,
-                    text: trimmed(\.translateModel))
+            HStack(spacing: 12) {
+                RowLabel(title: "模型")
+                TextField(suggestedModel.isEmpty ? "服务商给的模型名" : suggestedModel, text: trimmed(\.translateModel))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 252)
+                IconButton(symbol: "list.bullet", help: "从服务里挑模型") { showModels = true }
+                    .popover(isPresented: $showModels, arrowEdge: .bottom) {
+                        ModelPicker(model: model, pick: { picked in
+                            model.config.translateModel = picked
+                            showModels = false
+                        })
+                    }
+            }
+            .rowPadding()
+            RowDivider()
+            ActionRow(title: "测试连接", subtitle: model.translateTestResult ?? "用「你好」试一下") {
+                if model.translateTesting {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Button("测试") { model.testTranslate() }
+                }
+            }
         }
     }
 
@@ -879,6 +932,53 @@ private struct TranslatePage: View {
         guard !value.isEmpty else { return }
         model.setTranslateKey(value)
         key = ""
+    }
+}
+
+/// 「从服务里挑模型」的小窗：搜索框、提示、服务列出来的模型，点一个填进模型框（和 Linux 设置的模型弹出框一样）。
+private struct ModelPicker: View {
+    @ObservedObject var model: SettingsModel
+    let pick: (String) -> Void
+    @State private var query = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("搜模型", text: $query)
+                .textFieldStyle(.roundedBorder)
+            if let status = model.translateModelsStatus {
+                Text(status)
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(shown, id: \.self) { id in
+                        Button(action: { pick(id) }) {
+                            Text(id)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 4)
+                                .padding(.horizontal, 6)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .frame(height: 280)
+        }
+        .padding(8)
+        .frame(width: 320)
+        .onAppear { model.loadTranslateModels() }
+    }
+
+    /// 按搜索框筛（不分大小写）
+    private var shown: [String] {
+        let all = model.translateModels ?? []
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        return q.isEmpty ? all : all.filter { $0.lowercased().contains(q) }
     }
 }
 

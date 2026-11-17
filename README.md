@@ -349,9 +349,27 @@ vim.api.nvim_create_autocmd("InsertEnter", { callback = function() wowtype("SetM
 
 切的是最近用过的输入框（vim 所在的终端），不弹「中 / 英」提示。
 
+**macOS** 上没有会话总线，用程序自己的命令（同样切最近用过的输入框，不弹提示；不带参数是查现在的模式，打印切完的模式）：
+
+```bash
+"$HOME/Library/Input Methods/WowType.app/Contents/MacOS/WowType" --mode en   # zh、en、translate、toggle
+```
+
+neovim 里：
+
+```lua
+local bin = vim.fn.expand("~/Library/Input Methods/WowType.app/Contents/MacOS/WowType")
+local mode = "zh"
+vim.api.nvim_create_autocmd("InsertLeave", { callback = function()
+  mode = vim.fn.system({ bin, "--mode" }):match("^(%l+)%s*$") or mode
+  vim.fn.system({ bin, "--mode", "en" })
+end })
+vim.api.nvim_create_autocmd("InsertEnter", { callback = function() vim.fn.system({ bin, "--mode", mode }) end })
+```
+
 中文标点自动转全角（`,` → ，`?` → ？，`^` → ……，`_` → ——，`$` → ￥，`` ` `` → ·，`{` `}` → 「」），引号左右交替（`"` → “ ”，`'` → ‘ ’），数字后面的符号保持英文（`3.14`、`20:22`、`3,000`、`50%`）；设置「输入 → 标点样式」可以改成半角（英文标点）。`/`、`+`、`=`、`@`、`#`、`%`、`&`、`*` 这类符号原样上屏；打拼音途中按它们，先上屏当前候选。
 
-设置「输入」页可以打开**中文标点自动配对**（默认关，只在 Linux）：打 `(` `[` `<` `{` `"` `'` 上屏成对的（）【】《》「」“”‘’，光标放到中间；在里面打完再按右半边跳过补好的那个，里面空着时按退格两个一起删。
+设置「输入」页可以打开**中文标点自动配对**（默认关）：打 `(` `[` `<` `{` `"` `'` 上屏成对的（）【】《》「」“”‘’，光标放到中间；在里面打完再按右半边跳过补好的那个，里面空着时按退格两个一起删。macOS 上要应用告诉输入法光标在哪（终端这类应用里不配对，照常一个一个上屏）。
 
 ### Emoji 和符号
 
@@ -446,7 +464,7 @@ vim.api.nvim_create_autocmd("InsertEnter", { callback = function() wowtype("SetM
 | 页面 | 能改什么 |
 |---|---|
 | 常规 | 候选排列（横排 / 竖排）、每页个数（3–9）、WowType 绿色主题（见[主题](#主题)）、候选字号。还会检查 WowType 有没有加进 fcitx5 的输入法列表，没有的话一键添加；底下的「帮助」能[导出日志](#出问题时导出日志) |
-| 输入 | 词库（默认雾凇，可下载切换到[万象](docs/CONFIG.md#可选词库万象拼音)）、输入方案（拼音、双拼、五笔）、双拼方案（自然码、小鹤、微软、搜狗、智能 ABC、紫光、拼音加加）、五笔的四码唯一自动上屏和编码提示、单按哪个 Shift 切中英文（和 fcitx5 抢 Shift 时提示并能一键让出）、另设一个切换中英文的快捷键、互译的快捷键、模糊音（16 组分别开关：z=zh、c=ch、s=sh、n=l、f=h、r=l、an=ang、an=ai、ian=iang、uan=uang、huang=wang、en=eng、eng=ong、in=ing、un=ong、un=iong）、按错键自动纠正、繁体字、日期时间、计算器、v + 空格工具栏、剪贴板历史、中英文之间自动加空格、分号引号选第 2/3 个候选 |
+| 输入 | 词库（默认雾凇，可下载切换到[万象](docs/CONFIG.md#可选词库万象拼音)）、输入方案（拼音、双拼、五笔）、双拼方案（自然码、小鹤、微软、搜狗、智能 ABC、紫光、拼音加加）、五笔的四码唯一自动上屏和编码提示、单按哪个 Shift 切中英文（和 fcitx5 抢 Shift 时提示并能一键让出）、另设一个切换中英文的快捷键、互译的快捷键、切到 WowType 时是中文还是英文、模糊音（16 组分别开关：z=zh、c=ch、s=sh、n=l、f=h、r=l、an=ang、an=ai、ian=iang、uan=uang、huang=wang、en=eng、eng=ong、in=ing、un=ong、un=iong）、按错键自动纠正、繁体字、中文标点自动配对、日期时间、计算器、v + 空格工具栏、剪贴板历史、联想、中英文之间自动加空格、分号引号选第 2/3 个候选 |
 | 表情 | 打字时推荐 emoji、表情面板快捷键 |
 | 语音 | 下载 / 删除识别模型（有进度、能取消）；下载好模型后才能打开语音输入；语音键（右 Alt / 右 Ctrl / 菜单键 / F8–F10）、识别结果同时复制到剪贴板 |
 | 翻译 | [互译](#互译)开关、翻成哪种语言、正式语气；用什么翻译：本地模型（默认，下载、闲置释放）或自定义翻译服务（服务商、地址、Key、模型、测试连接） |
