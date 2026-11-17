@@ -576,6 +576,20 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 正式版还是预发布
+        # tag 打在 main 上的提交 → 正式版（成为 Latest，所有人的检查更新和一键安装都会拿到）；
+        # 打在别处（比如 pre-release 分支）→ GitHub 的 pre-release：检查更新和 install.sh 只认 releases/latest，
+        # 不会推给普通用户，要装得写 WOWTYPE_VERSION。测完转正：合进 main 后
+        # gh release edit <tag> --prerelease=false --latest（release 分支、Nix 词库 PR 这时手动补，见 docs/INSTALL.md）。
+        run: |
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "PRERELEASE=" >> "$GITHUB_ENV"
+          else
+            echo "PRERELEASE=1" >> "$GITHUB_ENV"
+            echo "::notice title=预发布::$GITHUB_REF_NAME 不在 main 上，发成 pre-release"
+          fi
       - uses: actions/download-artifact@v4
         with:
           pattern: pkg-*
@@ -626,14 +640,22 @@ jobs:
           想用的话在「WowType 设置 → 输入 → 词库」里选「万象拼音」并下载，或运行 \`wowtype-config --install-lexicon wanxiang\`；随时可以切回默认的雾凇。
 
           EOF
+          extra=()
+          if [ -n "$PRERELEASE" ]; then
+            extra=(--prerelease --latest=false)
+            { printf '> **预发布，测试用。** 检查更新和一键安装不会装它；要装就在一键命令前加 `WOWTYPE_VERSION=%s`：\n>\n' "$GITHUB_REF_NAME"
+              printf '> ```bash\n> curl -fsSL https://raw.githubusercontent.com/%s/%s/install.sh | WOWTYPE_VERSION=%s bash\n> ```\n\n' \
+                "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_REF_NAME"
+              cat notes.md; } > notes.pre && mv notes.pre notes.md
+          fi
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "WowType $GITHUB_REF_NAME" \
-            --notes-file notes.md --generate-notes
+            --notes-file notes.md --generate-notes "${extra[@]}"
       - name: 通知 Telegram 群
         # GITHUB_TOKEN 发的 release 不会触发 telegram-notify.yml，所以在这里直接发。
         # 没配置 TELEGRAM_CHAT_ID 就跳过；发送失败也不算发版失败。
-        if: vars.TELEGRAM_CHAT_ID != ''
+        if: vars.TELEGRAM_CHAT_ID != '' && env.PRERELEASE == ''
         continue-on-error: true
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -668,6 +690,7 @@ jobs:
           echo "release 分支 → $GITHUB_REF_NAME（$sha）"
       - name: Nix 词库跟上这一版
         # 这一版换了词库，就把 nix/package.nix 改好开 PR 到 main（开不了 PR 时退回开 issue），见脚本开头
+        if: env.PRERELEASE == ''
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}

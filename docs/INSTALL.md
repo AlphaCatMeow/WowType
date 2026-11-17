@@ -336,6 +336,23 @@ NixOS 模块的同名选项（`i18n.inputMethod.fcitx5.settings.globalOptions`�
 只在没有 `~/.config/fcitx5/config` 时才生效；已经有这个文件时，用设置界面的开关就行（它能写这个文件）。
 fcitx5 其他全局快捷键（`EnumerateForwardKeys` 等）里也不要放单按的 Shift。
 
+### 维护：先发预发布
+
+`v*` 的 tag 打在 main 上的提交才发成正式版（成为 Latest）；打在别处（比如 pre-release 分支的提交）时，
+发布 job 发成 GitHub 的 pre-release，不发 Telegram、不动 `release` 分支、不开 Nix 词库 PR。
+设置界面和 macOS 的检查更新、`install.sh` 都只认 `releases/latest`，普通用户拿不到预发布；
+自己测时指定版本装（Release 说明的开头有这条命令）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/pre-release/install.sh | WOWTYPE_VERSION=v<版本> bash
+```
+
+测完转正：把 pre-release 合进 main，运行 `gh release edit v<版本> --prerelease=false --latest`，
+再照下面一节手动更新 `release` 分支；这一版换了词库时，下载这一版 Release 里的 `wowtype-data-rime-ice-*.tar.gz`，
+在本机运行 `GITHUB_REPOSITORY=Gloridust/WowType GITHUB_REF_NAME=v<版本> GH_TOKEN=$(gh auth token) .github/scripts/nix-data-pr.sh <那个文件>`
+开 Nix 词库的 PR。
+要改代码就打下一个版本号，别挪已经发出去的 tag。
+
 ### 维护：发版时的 Nix 相关步骤
 
 - `release` 分支由发布 job 自动更新。`GITHUB_TOKEN` 不能把分支移到改过 `.github/workflows` 的提交上，
