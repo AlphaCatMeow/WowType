@@ -355,7 +355,17 @@ vim.api.nvim_create_autocmd("InsertEnter", { callback = function() wowtype("SetM
 "$HOME/Library/Input Methods/WowType.app/Contents/MacOS/WowType" --mode en   # zh、en、translate、toggle
 ```
 
-neovim 里把上面 `wowtype()` 换成调它就行（`Mode` 换成不带参数的 `--mode`，`SetMode s en` 换成 `--mode en`）。
+neovim 里：
+
+```lua
+local bin = vim.fn.expand("~/Library/Input Methods/WowType.app/Contents/MacOS/WowType")
+local mode = "zh"
+vim.api.nvim_create_autocmd("InsertLeave", { callback = function()
+  mode = vim.fn.system({ bin, "--mode" }):match("%a+") or mode
+  vim.fn.system({ bin, "--mode", "en" })
+end })
+vim.api.nvim_create_autocmd("InsertEnter", { callback = function() vim.fn.system({ bin, "--mode", mode }) end })
+```
 
 中文标点自动转全角（`,` → ，`?` → ？，`^` → ……，`_` → ——，`$` → ￥，`` ` `` → ·，`{` `}` → 「」），引号左右交替（`"` → “ ”，`'` → ‘ ’），数字后面的符号保持英文（`3.14`、`20:22`、`3,000`、`50%`）；设置「输入 → 标点样式」可以改成半角（英文标点）。`/`、`+`、`=`、`@`、`#`、`%`、`&`、`*` 这类符号原样上屏；打拼音途中按它们，先上屏当前候选。
 
