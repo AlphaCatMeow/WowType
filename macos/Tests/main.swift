@@ -1996,6 +1996,13 @@ do {
     // 右 Option 按着时 modifierFlags 带 NX_DEVICERALTKEYMASK（0x40），左 Option 是 0x20
     check(option?.isDown(rawFlags: 0x80000 | 0x40) == true && option?.isDown(rawFlags: 0x80000 | 0x20) == false,
           "分得清左右 Option")
+    // 事件不带设备位、只有 Option 通用位（#231）：按通用位算；松开时通用位也没了
+    check(option?.isDown(rawFlags: 0x80000) == true && option?.isDown(rawFlags: 0) == false
+              && option?.isDown(rawFlags: 0x100) == false,
+          "没有设备位时看 Option 通用位")
+    check(VoiceKey(name: "Control_R")?.isDown(rawFlags: 0x40000) == true
+              && VoiceKey(name: "Control_R")?.isDown(rawFlags: 0x40000 | 0x01) == false,
+          "右 Control：没设备位看通用位，有左边的设备位时不算右边")
     check(VoiceKey(name: "F8")?.keyCode == 0x64 && VoiceKey(name: "F8")?.isModifier == false, "F8 不是修饰键")
     check(VoiceKey(name: "Menu") == nil && VoiceKey(name: "") == nil && VoiceKey(name: "none") == nil,
           "Mac 上没有的键、留空：不用语音键")
