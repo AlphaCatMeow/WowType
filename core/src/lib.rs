@@ -2462,85 +2462,71 @@ fn pin_single_initial(input: &str, candidates: &mut Vec<Candidate>) {
 }
 
 /// 用户上次给这串输入选过的候选往前放（微信输入法的 FirstUserCandidateRanker /
-/// SingleUserWordCanbeSecond）：词和整句放第一，单字的第一个候选保持不动——
-/// 偶尔选一次生僻字，不该让它以后一直顶掉这个音节最常用的字。
+/// SingleUserWordCanbeSecond）。
 ///
-/// 单字是「常用字前置」场景（#161）：所有选过的字按选用次数从第二位起排，
-/// 不只把选得最多的那一个提上来；找过一次的字下次就在第一页，不用再翻。
-/// 选得越多越靠前，30 天不用会随热度衰减慢慢退回去。
+/// - 词和整句：选得最多的那个放第一（第一个候选被选得更多时不动）。
+/// - 单字：第一个候选不动——偶尔选一次生僻字，不该让它以后一直顶掉这个音节最常用的字；
+///   选过的字按热度从第二位起排（#161：找过一次的字下次就在第一页，不只提选得最多的那一个），
+///   最多 [`PICKED_CHARS_MAX`] 个，免得几次手滑把常用字挤到第二页。
+///   两样都有时（xian 选过「西安」也选过「先」）词照样放第一，字跟在后面。
 ///
 /// 只看「这个候选本身被选过」（不算末词命中），而且要精确匹配（不是纠错、补全出来的）。
-/// 词和整句仍然只把选得最多的那个放到第一。
+/// 热度（`history_use_count`，衰减过的）不到 [`learn::MIN_PICK_HEAT`] 的不算：
+/// 误选一次的词一个月以后就不再一直顶在前面。
 fn promote_picked(candidates: &mut Vec<Candidate>) {
-    let Some(best) = candidates
+    let single = |c: &Candidate| c.text.chars().count() <= 1;
+    let heat = |c: &Candidate| c.features.history_use_count;
+    let mut changed = false;
+    // 词和整句：选得最多的放第一（一样多时取靠前的）
+    let best_word = candidates
         .iter()
         .enumerate()
-        .filter(|(_, c)| is_picked(c))
-        .max_by(|a, b| {
-            a.1.features
-                .history_use_count
-                .total_cmp(&b.1.features.history_use_count)
-                .then_with(|| b.0.cmp(&a.0))
-        })
-        .map(|(i, _)| i)
-    else {
-        return;
-    };
-    if candidates[best].text.chars().count() <= 1 {
-        promote_picked_chars(candidates);
-        return;
+        .filter(|(_, c)| !single(c) && is_picked(c))
+        .max_by(|a, b| heat(a.1).total_cmp(&heat(b.1)).then_with(|| b.0.cmp(&a.0)))
+        .map(|(i, _)| i);
+    if let Some(best) = best_word.filter(|&i| i > 0) {
+        // 第一个候选被选得更多（比如常选的单字），就不动它
+        if heat(&candidates[0]) < heat(&candidates[best]) {
+            let c = candidates.remove(best);
+            candidates.insert(0, c);
+            changed = true;
+        }
     }
-    if best == 0 {
-        return;
+    // 单字：第一个候选之后，按热度排选过的字，最多 PICKED_CHARS_MAX 个
+    let mut picked: Vec<usize> = (1..candidates.len())
+        .filter(|&i| single(&candidates[i]) && is_picked(&candidates[i]))
+        .collect();
+    // 稳定排序：热度一样时保持原来（按词频）的先后
+    picked.sort_by(|&a, &b| heat(&candidates[b]).total_cmp(&heat(&candidates[a])));
+    picked.truncate(PICKED_CHARS_MAX);
+    if !picked.is_empty() {
+        let moved: Vec<Candidate> = picked.iter().map(|&i| candidates[i].clone()).collect();
+        let mut rest = Vec::with_capacity(candidates.len());
+        for (i, c) in std::mem::take(candidates).into_iter().enumerate() {
+            if !picked.contains(&i) {
+                rest.push(c);
+            }
+        }
+        let at = rest.len().min(1);
+        rest.splice(at..at, moved);
+        *candidates = rest;
+        changed = true;
     }
-    // 排在目标位置之前的候选被选得更多，就不动它
-    if candidates[..best]
-        .iter()
-        .take(1)
-        .any(|c| c.features.history_use_count >= candidates[best].features.history_use_count)
-    {
-        return;
+    if changed {
+        make_scores_monotonic(candidates);
     }
-    let c = candidates.remove(best);
-    candidates.insert(0, c);
-    make_scores_monotonic(candidates);
 }
 
-/// 这个候选本身被精确选过（不是靠末词命中、纠错或补全出来的）。
+/// [`promote_picked`]：选过的单字最多提前几个。
+const PICKED_CHARS_MAX: usize = 3;
+
+/// 这个候选本身被精确选过（不是靠末词命中、纠错或补全出来的），而且热度够
+/// [`learn::MIN_PICK_HEAT`]（误选一次、过了一个月就不算）。
 fn is_picked(c: &Candidate) -> bool {
-    c.features.history_use_count > 0.0
+    f64::from(c.features.history_use_count) >= learn::MIN_PICK_HEAT
         && c.features.typo_count == 0.0
         && c.features.prefix_completion == 0.0
         && c.features.full_jianpin == 0.0
-}
-
-/// [`promote_picked`] 的单字分支：第一个候选不动，其余选过的单字按选用次数
-/// 稳定排到它后面（次数一样时保持原来的词频顺序）。
-fn promote_picked_chars(candidates: &mut Vec<Candidate>) {
-    if candidates.len() < 2 {
-        return;
-    }
-    let mut moved = Vec::new();
-    let mut rest = Vec::with_capacity(candidates.len());
-    for (i, c) in std::mem::take(candidates).into_iter().enumerate() {
-        if i > 0 && c.text.chars().count() <= 1 && is_picked(&c) {
-            moved.push(c);
-        } else {
-            rest.push(c);
-        }
-    }
-    if moved.is_empty() {
-        *candidates = rest;
-        return;
-    }
-    moved.sort_by(|a, b| {
-        b.features
-            .history_use_count
-            .total_cmp(&a.features.history_use_count)
-    });
-    rest.splice(1..1, moved);
-    make_scores_monotonic(&mut rest);
-    *candidates = rest;
 }
 
 /// 分数改成单调递减，后面再按分数重排（繁体转换）顺序也不变。
@@ -3058,6 +3044,52 @@ mod tests {
             &["吗", "骂", "妈", "马"],
             "选过的字按次数排在第一个候选后面: {texts:?}"
         );
+    }
+
+    #[test]
+    fn picked_chars_are_capped_and_decay() {
+        let e = engine(concat!(
+            "ma\t吗\t100000\n",
+            "ma\t麻\t50000\n",
+            "ma\t嘛\t40000\n",
+            "ma\t骂\t1\n",
+            "ma\t马\t1\n",
+            "ma\t妈\t1\n",
+            "ma\t蚂\t1\n",
+            "ma\t玛\t1\n",
+        ));
+        let day = 24 * 3600 * 1000;
+        // 五个生僻字各选几次：只提热度最高的三个，常用的「麻」「嘛」不被挤到后面
+        for (i, (ch, n)) in [("骂", 5), ("马", 4), ("妈", 3), ("蚂", 2), ("玛", 2)]
+            .into_iter()
+            .enumerate()
+        {
+            for k in 0..n {
+                e.record_selection_at(ch, (i * 10 + k) as u64);
+            }
+        }
+        let texts: Vec<String> = e.input_at("ma", 100).into_iter().map(|c| c.text).collect();
+        assert_eq!(&texts[..6], &["吗", "骂", "马", "妈", "麻", "嘛"], "{texts:?}");
+        // 误选一次的字：一个半月以后热度不到半次，不再提前
+        let e = engine("ma\t吗\t100000\nma\t麻\t50000\nma\t嘛\t40000\nma\t骂\t1\n");
+        e.record_selection_at("骂", 0);
+        let texts: Vec<String> = e.input_at("ma", day).into_iter().map(|c| c.text).collect();
+        assert_eq!(texts[1], "骂", "刚选过的提前: {texts:?}");
+        let texts: Vec<String> = e.input_at("ma", 45 * day).into_iter().map(|c| c.text).collect();
+        assert_eq!(&texts[..3], &["吗", "麻", "嘛"], "一个半月以后回到原位: {texts:?}");
+    }
+
+    #[test]
+    fn picked_word_still_first_when_a_char_is_picked_more() {
+        // 「先」最常用，选过的「鲜」（选得比「西安」多）排第二，选过的词「西安」照样排第一
+        let e = engine("xian\t先\t100000\nxian\t线\t50000\nxi an\t西安\t500\nxian\t鲜\t1\n");
+        for t in 0..3 {
+            e.record_selection_at("鲜", t);
+        }
+        e.record_selection_at("西安", 10);
+        e.record_selection_at("西安", 11);
+        let texts: Vec<String> = e.input_at("xian", 100).into_iter().map(|c| c.text).collect();
+        assert_eq!(&texts[..3], &["西安", "鲜", "先"], "{texts:?}");
     }
 
     #[test]
