@@ -86,6 +86,16 @@ class WowTypeInputController: IMKInputController {
         }
     }
 
+    /// 外部命令切模式（AppState.externalMode）：request 空串只问。和 Linux 一样不弹提示；
+    /// 打到一半切英文时打的字母原样上屏（会话做）。
+    func externalMode(_ request: String) -> String {
+        syncComposer()
+        if !request.isEmpty {
+            composer.setMode(named: request)
+        }
+        return composer.modeName
+    }
+
     override func recognizedEvents(_ sender: Any!) -> Int {
         // keyUp 只给语音键用（F8 这类按住说话的键）
         Int(NSEvent.EventTypeMask([.keyDown, .keyUp, .flagsChanged]).rawValue)
@@ -223,6 +233,7 @@ class WowTypeInputController: IMKInputController {
             initialModeGeneration = generation
             composer.applyInitialMode()
         }
+        AppState.shared.activeController = self
         // 剪贴板历史（设置里打开时）：切换输入框时看一眼（和 Linux 一样，另外打开工具栏的剪贴板页时也看）
         AppState.shared.sampleClipboard()
         // 每天最多查一次有没有新版本（后台，有新版时菜单里多一项）

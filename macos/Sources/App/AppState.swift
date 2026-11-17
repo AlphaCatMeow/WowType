@@ -65,6 +65,16 @@ final class AppState {
         }
     }
 
+    /// 最近启用的输入控制器（最近用过的输入框）：外部命令切模式切的是它
+    weak var activeController: WowTypeInputController?
+
+    /// 外部命令（WowType --mode）：request 是 zh、en、translate、toggle，空串只问。返回切完以后最近用过的输入框的模式；
+    /// 还没有输入框用过 WowType 时是空串。
+    func externalMode(_ request: String) -> String {
+        guard let controller = activeController else { return "" }
+        return controller.externalMode(request)
+    }
+
     /// 输入控制器启用了：切走过就开新的一轮，返回现在是第几轮。
     func noteActivated() -> Int {
         if switchedAway {

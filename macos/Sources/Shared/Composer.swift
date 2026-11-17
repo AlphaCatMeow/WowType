@@ -540,6 +540,34 @@ public final class Composer {
         apply(wowtype_session_set_mode(session, raw))
     }
 
+    /// 外部命令里模式的叫法（和 Linux 的 org.wowtype.Input 一样）：zh、en、translate。
+    public var modeName: String {
+        switch mode {
+        case .chinese: return "zh"
+        case .english: return "en"
+        case .translate: return "translate"
+        }
+    }
+
+    /// 外部命令切模式（和 Linux 的 org.wowtype.Input SetMode 一样，vim 退出插入模式时切英文这类用法）：
+    /// zh、en、translate（互译配好了才行）、toggle（中英之间切，在「译」里回中文）。认不出、切不到返回 false。
+    /// 不弹「中 / 英」提示；打到一半切英文时和单按 Shift 一样，打的字母原样上屏。
+    @discardableResult
+    public func setMode(named name: String) -> Bool {
+        let target: Mode
+        switch name {
+        case "zh": target = .chinese
+        case "en": target = .english
+        case "translate":
+            guard translateAvailable else { return false }
+            target = .translate
+        case "toggle": target = mode == .chinese ? .english : .chinese
+        default: return false
+        }
+        switchMode(to: target)
+        return true
+    }
+
     /// 能自己切中 / 英：单按 Shift 没关，或者另设了切换键（只设了进出「译」的键不算）。
     public var canToggleMode: Bool {
         config.shiftToggle != .off || config.toggleKey != nil

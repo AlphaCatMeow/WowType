@@ -2191,6 +2191,21 @@ withConfig({ $0.initialMode = .english; $0.shiftToggle = .off; $0.toggleKey = Sh
     check(c.mode == .english, "关了 Shift 切换、另设了切换键：照样进英文")
 }
 
+// MARK: 外部命令切模式（WowType --mode，和 Linux 的 org.wowtype.Input SetMode 一样）
+
+withConfig({ _ in }) { c, client in
+    check(c.modeName == "zh", "外部命令：现在是 zh")
+    check(c.setMode(named: "en") && c.modeName == "en", "外部命令：切到 en")
+    check(c.setMode(named: "toggle") && c.modeName == "zh", "外部命令：toggle 回中文")
+    check(c.setMode(named: "toggle") && c.modeName == "en", "外部命令：toggle 到英文")
+    check(!c.setMode(named: "translate") && c.modeName == "en", "外部命令：互译没配好时切不到 translate")
+    check(!c.setMode(named: "fr") && c.modeName == "en", "外部命令：认不出的模式不动")
+    c.setMode(named: "zh")
+    type(c, "nihao")
+    c.setMode(named: "en")
+    check(client.committed == "nihao" && c.modeName == "en", "外部命令：打到一半切英文，打的字母原样上屏", client.committed)
+}
+
 // MARK: 中文标点自动配对（AutoPairPunct，和 fcitx5-addon/test/key_harness.cpp 的一样）
 
 /// 有光标的假输入框：text 是应用里的字（UTF-16），caret 是光标；按位置改字照 IMK 的 insertText(_:replacementRange:)

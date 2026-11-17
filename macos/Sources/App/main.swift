@@ -7,6 +7,7 @@
 //   … --install-lexicon [wanxiang | 文件.tar.gz]      装万象词库并切过去；--use-lexicon rime-ice|wanxiang 切换
 //   … --download-model [--accept-license]          下载本地翻译模型（缺 llama-server 时一起下）
 //   … --uninstall                                   卸载（关掉、去掉登记、删掉程序；用户数据留着）
+//   … --mode [zh|en|translate|toggle]                 查 / 切最近用过的输入框的中英文（vim 用，同 Linux 的 org.wowtype.Input）
 //   … --version
 
 import AppKit
@@ -248,6 +249,26 @@ func voiceTest(_ wav: String) -> Bool {
     return false
 }
 
+/// --mode：不带参数打印现在的模式；带 zh / en / translate / toggle 切过去，打印切完的模式（和 Linux 的
+/// busctl … SetMode 一样）。切的是最近用过的输入框，不弹提示。没切成（互译没配好）、输入法没在跑时返回 false。
+func modeCommand(_ args: [String]) -> Bool {
+    let request = args.count > 1 ? args[1] : ""
+    guard args.count <= 2, request.isEmpty || ExternalControl.modes.contains(request) else {
+        print("用法：WowType --mode [zh | en | translate | toggle]")
+        return false
+    }
+    guard let mode = ExternalControlClient().send(request) else {
+        print("WowType 输入法没在运行（切到 WowType 打一个字以后再试）")
+        return false
+    }
+    guard !mode.isEmpty else {
+        print("还没有输入框用过 WowType")
+        return false
+    }
+    print(mode)
+    return request.isEmpty || request == "toggle" || request == mode
+}
+
 let arguments = CommandLine.arguments
 if arguments.count > 1 {
     let ok: Bool
@@ -269,11 +290,13 @@ if arguments.count > 1 {
     case "--version":
         print(appVersion)
         ok = true
+    case "--mode": ok = modeCommand(Array(arguments.dropFirst()))
     default:
         print("用法：WowType [--register | --enable | --select | --disable | --selftest | --settings [页面] | --version |\n"
               + "              --install-lexicon [wanxiang | 文件.tar.gz] | --use-lexicon rime-ice|wanxiang |\n"
               + "              --download-model [--accept-license] | --install-voice-model [语音包.apk] |\n"
-              + "              --remove-voice-model | --voice-test 说的话.wav | --uninstall]")
+              + "              --remove-voice-model | --voice-test 说的话.wav | --uninstall |\n"
+              + "              --mode [zh | en | translate | toggle]]")
         ok = false
     }
     exit(ok ? 0 : 1)
@@ -311,6 +334,8 @@ else {
     exit(1)
 }
 let server = IMKServer(name: connection, bundleIdentifier: bundleID)
+// 外部命令（WowType --mode）切中英文
+ExternalControlListener.shared.start()
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
