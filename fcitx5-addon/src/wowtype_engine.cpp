@@ -630,7 +630,7 @@ public:
     /// prev_char：应用里光标前一个字（读不到给 0）；hints：WOWTYPE_KEY_HINT_*。
     const WowtypeFrame *sessionKey(uint32_t keysym, uint32_t modifiers, uint32_t action,
                                    uint32_t prevChar = 0, uint32_t hints = 0,
-                                   uint64_t timeMs = 0) {
+                                   uint64_t timeMs = 0, uint32_t nextChar = 0) {
         WowtypeKey raw{};
         raw.time_ms = timeMs;
         raw.size = sizeof(raw);
@@ -639,6 +639,7 @@ public:
         raw.action = action;
         raw.prev_char = prevChar;
         raw.hints = hints;
+        raw.next_char = nextChar;
         return wowtype_session_key(session_, &raw);
     }
     void clear() {
@@ -1488,14 +1489,19 @@ const WowtypeFrame *WowtypeEngine::sessionKey(fcitx::InputContext *ic, WowtypeSt
         // fcitx5 的 Password / Sensitive 是这个输入框自己的能力位，确定是密码框：选的词也不学
         hints |= WOWTYPE_KEY_HINT_NO_TRANSLATE | WOWTYPE_KEY_HINT_NO_LEARN;
     }
-    // 读得到周围文字时会话拿光标前的字核对自己记的上文（在应用里删过、改过就作废）
-    const auto prev = prevChar(ic);
+    // 读得到周围文字时会话拿光标前的字核对自己记的上文（在应用里删过、改过就作废），
+    // 自动配对拿光标后的字核对补好的右标点还在不在。这次按键开头刚挪过光标时，报来的还是挪之前的，不带
+    const auto prev = surroundingStale_ ? std::nullopt : prevChar(ic);
     if (prev) {
         hints |= WOWTYPE_KEY_HINT_SURROUNDING;
     }
+    const auto next = surroundingStale_ ? std::nullopt : nextChar(ic);
+    if (next) {
+        hints |= WOWTYPE_KEY_HINT_NEXT_CHAR;
+    }
     const WowtypeFrame *frame =
         state->sessionKey(static_cast<uint32_t>(key.sym()), static_cast<uint32_t>(key.states()),
-                          action, prev.value_or(0), hints, nowMs());
+                          action, prev.value_or(0), hints, nowMs(), next.value_or(0));
     if (frame && frame->wake_after_ms > 0) {
         scheduleTick(ic, frame->wake_after_ms);
     }
@@ -1524,6 +1530,25 @@ std::optional<uint32_t> WowtypeEngine::prevChar(fcitx::InputContext *ic) const {
     return fcitx::utf8::isValidChar(prev) ? std::optional<uint32_t>(prev) : std::nullopt;
 }
 
+std::optional<uint32_t> WowtypeEngine::nextChar(fcitx::InputContext *ic) const {
+    if (!ic || !ic->capabilityFlags().test(fcitx::CapabilityFlag::SurroundingText)) {
+        return std::nullopt;
+    }
+    const auto &surrounding = ic->surroundingText();
+    if (!surrounding.isValid() || surrounding.cursor() != surrounding.anchor()) {
+        return std::nullopt;
+    }
+    const unsigned pos = surrounding.cursor();
+    const std::string &text = surrounding.text();
+    // 光标在报来的文字末尾不算「后面没有字」：有的应用只报光标前的字
+    if (pos >= fcitx::utf8::length(text)) {
+        return std::nullopt;
+    }
+    const auto offset = fcitx::utf8::ncharByteLength(text.begin(), pos);
+    const uint32_t next = fcitx::utf8::getChar(text.begin() + offset, text.end());
+    return fcitx::utf8::isValidChar(next) ? std::optional<uint32_t>(next) : std::nullopt;
+}
+
 uint32_t WowtypeEngine::keyAction(const fcitx::Key &key) const {
     const auto sym = key.sym();
     if (sym == FcitxKey_Up || sym == FcitxKey_Down || sym == FcitxKey_Left ||
@@ -1547,32 +1572,49 @@ uint32_t WowtypeEngine::keyAction(const fcitx::Key &key) const {
 }
 
 namespace {
-constexpr uint64_t kCursorDeltaDelayUsec = 15000;
-
-void forwardKeyTap(fcitx::InputContext *ic, fcitx::KeySym sym) {
-    if (!ic) {
-        return;
-    }
-    const int keyCode = sym == FcitxKey_Left     ? 113
-                        : sym == FcitxKey_Right  ? 114
-                        : sym == FcitxKey_Delete ? 119
-                                                 : 0;
-    const fcitx::Key key(sym, fcitx::KeyStates(), keyCode);
-    ic->forwardKey(key, false);
-    ic->forwardKey(key, true);
-}
-
-void sendCursorDelta(fcitx::InputContext *ic, int delta) {
-    if (!ic || delta == 0) {
-        return;
-    }
-    const auto sym = delta < 0 ? FcitxKey_Left : FcitxKey_Right;
-    const int steps = delta < 0 ? -delta : delta;
-    for (int i = 0; i < steps; ++i) {
-        forwardKeyTap(ic, sym);
-    }
-}
+/// 上屏以后等多久再发挪光标的键。Wayland 上上屏走 text-input、发键走虚拟键盘，同时发的话方向键常比
+/// 上屏先到；下一个键来的时候不等这么久，先把攒着的发掉（别让应用先收到下一个字）。
+constexpr uint64_t kCursorDelayUsec = 15000;
+/// 自己给应用发键以后多久内来的重置算是应用对这几下键的反应。
+constexpr uint64_t kOwnKeysResetUsec = 300000;
 } // namespace
+
+void WowtypeEngine::sendAppKeys(fcitx::InputContext *ic, fcitx::KeySym sym, int count) {
+    if (!ic || count <= 0) {
+        return;
+    }
+    // 只给 keysym、键码留 0（不同键盘、前端的键码不一样）：D-Bus 前端只传 keysym，要键码的前端按 keysym 找
+    const fcitx::Key key(sym);
+    for (int i = 0; i < count; ++i) {
+        ic->forwardKey(key, false);
+        ic->forwardKey(key, true);
+    }
+    appKeysTarget_ = ic->watch();
+    appKeysAtUsec_ = fcitx::now(CLOCK_MONOTONIC);
+}
+
+bool WowtypeEngine::flushCursorDelta() {
+    if (cursorTimer_) {
+        cursorTimer_->setEnabled(false);
+    }
+    const int delta = std::exchange(pendingCursorDelta_, 0);
+    auto *target = cursorTarget_.get();
+    if (!target || delta == 0) {
+        return false;
+    }
+    sendAppKeys(target, delta < 0 ? FcitxKey_Left : FcitxKey_Right, delta < 0 ? -delta : delta);
+    return true;
+}
+
+void WowtypeEngine::dropCursorDelta(fcitx::InputContext *ic) {
+    if (cursorTarget_.get() != ic) {
+        return;
+    }
+    if (cursorTimer_) {
+        cursorTimer_->setEnabled(false);
+    }
+    pendingCursorDelta_ = 0;
+}
 
 void WowtypeEngine::applyCursorDelta(fcitx::InputContext *ic, const WowtypeFrame *frame,
                                      bool afterCommit) {
@@ -1581,28 +1623,51 @@ void WowtypeEngine::applyCursorDelta(fcitx::InputContext *ic, const WowtypeFrame
         frame->cursor_delta == 0) {
         return;
     }
+    if (cursorTarget_.get() != ic) {
+        flushCursorDelta(); // 别的输入框攒着的先发掉
+    }
+    cursorTarget_ = ic->watch();
+    pendingCursorDelta_ += frame->cursor_delta;
+    const bool waiting = cursorTimer_ && cursorTimer_->isEnabled();
     if (!afterCommit) {
-        sendCursorDelta(ic, frame->cursor_delta);
+        // 没上屏（跳过右标点）：前面攒着的还在等上屏落到应用就一起发，不抢在前面；没有就马上发
+        if (!waiting) {
+            flushCursorDelta();
+        }
         return;
     }
-    // Wayland/Electron 下 commitString 与 forwardKey 走不同通道，同帧发出时方向键常比上屏先到。
-    // 延后 15 ms 再发 Press+Release，确保光标稳稳落在成对标点中间。
-    cursorTarget_ = ic->watch();
-    pendingCursorDelta_ = frame->cursor_delta;
     if (!cursorTimer_) {
         cursorTimer_ = instance_->eventLoop().addTimeEvent(
-            CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) + kCursorDeltaDelayUsec, kTimerAccuracyUsec,
+            CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) + kCursorDelayUsec, kTimerAccuracyUsec,
             [this](fcitx::EventSourceTime *, uint64_t) {
-                if (auto *target = cursorTarget_.get(); target && pendingCursorDelta_ != 0) {
-                    sendCursorDelta(target, pendingCursorDelta_);
-                }
-                pendingCursorDelta_ = 0;
+                flushCursorDelta();
                 return true;
             });
     } else {
-        cursorTimer_->setNextInterval(kCursorDeltaDelayUsec);
-        cursorTimer_->setOneShot();
+        cursorTimer_->setNextInterval(kCursorDelayUsec);
     }
+    cursorTimer_->setOneShot();
+}
+
+bool WowtypeEngine::pairDelete(fcitx::InputContext *ic, const WowtypeFrame *frame,
+                               fcitx::KeyEvent &event) {
+    if (!ic || !frame || frame->handled ||
+        frame->size < offsetof(WowtypeFrame, delete_next) + sizeof(frame->delete_next) ||
+        !frame->delete_next) {
+        return false;
+    }
+    // 退格自己发，不放行：放行的退格和发的 Delete 在有的前端走两条路，先后说不准。
+    // 都从 sendAppKeys 发，前面攒着的挪光标（按键开头已经发了）也在它前面
+    event.filterAndAccept();
+    flushCursorDelta();
+    sendAppKeys(ic, FcitxKey_Delete, 1);
+    sendAppKeys(ic, FcitxKey_BackSpace, 1);
+    return true;
+}
+
+bool WowtypeEngine::resetFromOwnKeys(fcitx::InputContext *ic) const {
+    return ic && appKeysTarget_.get() == ic && appKeysAtUsec_ != 0 &&
+           fcitx::now(CLOCK_MONOTONIC) - appKeysAtUsec_ < kOwnKeysResetUsec;
 }
 
 void WowtypeEngine::applySessionFrame(fcitx::InputContext *ic, WowtypeState *state,
@@ -2083,6 +2148,9 @@ void WowtypeEngine::keyEvent(const fcitx::InputMethodEntry & /*entry*/,
     auto *state = ic->propertyFor(&factory_);
     const fcitx::Key key = event.key();
     const auto sym = key.sym();
+    // 上屏后还没发的挪光标（自动配对）先发：应用要先把光标放好，再收到这个键或这个键上屏的字。
+    // 这时应用报的周围文字还是挪之前的
+    surroundingStale_ = flushCursorDelta();
     // 联想开着时按了别的键：会话关掉了联想、键交给了应用（没有 frame 要画）时，候选框上的联想也收起来。
     // 放在最后（各条路都处理完、frame 用完以后）
     struct AfterKey {
@@ -2159,6 +2227,8 @@ void WowtypeEngine::keyEvent(const fcitx::InputMethodEntry & /*entry*/,
         if (const WowtypeFrame *frame = sessionKey(ic, state, key); frame && frame->handled) {
             applySessionFrame(ic, state, frame);
             event.filterAndAccept();
+        } else {
+            pairDelete(ic, frame, event); // 括号里切到英文打了字又删到空：两个一起删
         }
         return;
     }
@@ -2209,15 +2279,11 @@ void WowtypeEngine::keyEvent(const fcitx::InputMethodEntry & /*entry*/,
     // 没在打字时也交给会话：字母（大写原样保留，Hello、iPhone 要用到）开始编辑区；
     // 标点换成中文标点（半角样式、数字后面的、没有中文写法的 / + 交给应用）；
     // 汉字后面打数字要补空格时会话自己上屏（第5章）
-    const WowtypeFrame *frame = sessionKey(ic, state, key);
-    if (frame && frame->handled) {
+    if (const WowtypeFrame *frame = sessionKey(ic, state, key); frame && frame->handled) {
         applySessionFrame(ic, state, frame);
         event.filterAndAccept();
-        return;
-    }
-    if (frame && frame->size >= offsetof(WowtypeFrame, delete_next) + sizeof(frame->delete_next) &&
-        frame->delete_next && ic) {
-        forwardKeyTap(ic, FcitxKey_Delete);
+    } else {
+        pairDelete(ic, frame, event); // 自动配对：空的一对按退格，两个一起删
     }
 }
 
@@ -2295,6 +2361,16 @@ void WowtypeEngine::reset(const fcitx::InputMethodEntry & /*entry*/,
     auto *ic = event.inputContext();
     if (!ic) {
         return;
+    }
+    if (event.type() == fcitx::EventType::InputContextReset && resetFromOwnKeys(ic)) {
+        // 自动配对刚给应用发了方向键、Delete、退格，GTK 挪光标、删字时会重置输入法：
+        // 光标是自己挪的，配对、上文、刚开始打的拼音都还算数
+        return;
+    }
+    // 光标去了别处：还没发的挪光标不发了，之后的重置也不再当成是自己发的键引起的
+    dropCursorDelta(ic);
+    if (appKeysTarget_.get() == ic) {
+        appKeysAtUsec_ = 0;
     }
     // 原文和拼音一样只在输入法里：应用重置输入框（点了别处、失去焦点）就丢掉，
     // 会话记的上文也作废（回来时光标可能在别处）。编辑区标了 DontCommit，工具包不会自己上屏。
