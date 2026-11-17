@@ -163,6 +163,7 @@ TranslateLlamaServer=
 TranslateIdleMinutes=5
 CheckUpdate=True
 BetaUpdates=False
+TypingStats=False
 Lexicon=
 ```
 
@@ -171,13 +172,14 @@ Lexicon=
 | `CandidateLayout` | `Horizontal` 横排、`Vertical` 竖排 |
 | `ArrowKeys` | 打字途中方向键做什么（#129），设置界面里叫「方向键」：`Candidates`「都用来选词」（默认），跟着候选排列，横排 `←` `→` 选词、`↑` 上一页、`↓` 展开更多候选，竖排 `↑` `↓` 选词、`←` `→` 翻页；`Caret`「左右键移动光标」，横排竖排都是 `↑` `↓` 选词（到了一页的两头接着翻页），`←` `→` 在拼音里移动光标：打的字母插在光标处，退格删光标前一个，`Home`、`End`、`Delete` 也管光标，到了两头再按什么也不做；方向键不翻页，翻页用 `PgUp` `PgDn` 和翻页键，横排也不展开面板。双拼时光标在中间，编辑区显示打的键；「译」里拼音在原文框里，没有光标 |
 | `PageSize` | 每页候选个数，3–9 |
-| `Fuzzy`、`TypoCorrection`、`Traditional`、`DateTime`、`Calculator`、`Toolbar`、`ClipboardHistory`、`Voice`、`VoiceCopy`、`EmojiSuggest`、`Translate`、`TranslateFormal`、`CheckUpdate`、`BetaUpdates` | `True` / `False` |
+| `Fuzzy`、`TypoCorrection`、`Traditional`、`DateTime`、`Calculator`、`Toolbar`、`ClipboardHistory`、`Voice`、`VoiceCopy`、`EmojiSuggest`、`Translate`、`TranslateFormal`、`CheckUpdate`、`BetaUpdates`、`TypingStats` | `True` / `False` |
 | `AutoSpace`、`AutoSpaceLetters`、`AutoSpaceDigits` | 中英文之间自动加空格：总开关（默认关）、汉字和字母之间、汉字和数字之间。要应用报告光标前的文字才生效（终端等不支持），密码、网址、邮箱输入框不加 |
 | `FuzzyZh`、`FuzzyCh`、`FuzzySh`、`FuzzyNL`、`FuzzyFH`、`FuzzyRL`、`FuzzyAn`、`FuzzyEn`、`FuzzyIn`、`FuzzyIan`、`FuzzyUan`、`FuzzyUn`、`FuzzyAnAi`、`FuzzyHuangWang`、`FuzzyUnIong`、`FuzzyEngOng` | 模糊音的各组（z=zh、c=ch、s=sh、n=l、f=h、r=l、an=ang、en=eng、in=ing、ian=iang、uan=uang、un=ong、an=ai、huang=wang、un=iong、eng=ong），`Fuzzy` 打开时才生效 |
 | `SelectKeys` | 分号、引号选词：`Off`、`Semicolon`（`;` 选第 2 个）、`SemicolonQuote`（再加 `'` 选第 3 个，引号不再当隔音符） |
 | `RareExtChars` | 也出 CJK 扩展 B 区及以后的单字（比如 `hou` 的 𠯜），默认关：常见中文字体（Noto CJK、思源、苹方）都没有这些字，列出来是方块。打开前先装能显示它们的字体，比如 Ubuntu / Debian 的 `fonts-hanazono`。通用规范汉字表里的扩展区字（𬭩、𫚔，约 200 个，常见字体都有）和含这些字的词（𩽾𩾌）不受这个开关影响 |
 | `PickChar` | 以词定字：打拼音时 `[` 上屏光标处候选的第一个字、`]` 上屏最后一个字，默认开；翻页键设成 `[ ]` 时让给翻页 |
 | `Association` | 联想：选词、整句上屏以后给出一页常跟在后面的词（词级模型里的，加上自己用过的搭配）。按 `Tab` 进联想行，再用空格、回车、数字上屏，`Esc` 退出，也能用鼠标点；没按 `Tab` 时接着打字、数字、标点、空格、回车都照常（数字不选联想，中文后面常接着打数字）。五笔、互译、密码框里不出。默认关（0.5.0 预发布时默认开），在设置的「输入」页打开 |
+| `TypingStats` | [打字统计](#打字统计)，默认关。关着时什么都不记、不建文件；打开以后只在本机记每天的聚合计数，不记打的内容。在设置的「统计」页打开、清除 |
 | `InputScheme` | 输入方案，设置界面里是「输入方案」的单选：`Quanpin` 拼音（默认）、`Shuangpin` 双拼、`Wubi86` 五笔 86。五笔要数据目录里有五笔码表 `wubi86.tsv`（安装包里带着，查找顺序和词库一样，环境变量是 `WOWTYPE_WUBI`）；没有时设置里「五笔输入」灰掉，配置文件里写了 `Wubi86` 的照全拼打，候选框上方提示没有码表。五笔怎么打见 [README 的五笔](../README.md#五笔) |
 | `Shuangpin` | 0.3.12 及以前的双拼开关，已经不是设置项。文件里没有 `InputScheme` 时，`Shuangpin=True` 读成 `InputScheme=Shuangpin`；有 `InputScheme` 时不看它。三端存盘时都不写它，下次存盘这一行就没了 |
 | `WubiAutoCommit` | 五笔打满四码、只有一个字词时直接上屏，默认 `True`。只在五笔时显示 |
@@ -253,7 +255,7 @@ macOS 还没有的功能不列；Linux 单独一页的「更新」在「常规�
 
 现在认的项：`CandidateLayout`、`ArrowKeys`、`PageSize`、`PageKeys*`、`SelectKeys`、`PickChar`、`Association`、`Fuzzy` 和 `Fuzzy*` 各组、`TypoCorrection`、`RareExtChars`、
 `InputScheme`、`ShuangpinScheme`、`ShuangpinShowKeys`、`WubiAutoCommit`、`WubiHint`、`ShiftToggle`、`Traditional`、`PunctuationStyle`、`DateTime`、`Calculator`、`EmojiSuggest`、
-`AutoSpace*`、`Lexicon`、`Toolbar`、`ClipboardHistory`、`EmojiKey`、`ToggleKey`、`TranslateModeKey`、`Voice`、`VoiceKey`、`VoiceCopy`、`Translate` 和 `Translate*` 各项，另外有一项只有 macOS 有的 `CandidateFontSize`（候选字号，10–40 磅，默认 17；Linux 上字号跟着 fcitx5 主题）。
+`AutoSpace*`、`Lexicon`、`Toolbar`、`ClipboardHistory`、`EmojiKey`、`ToggleKey`、`TranslateModeKey`、`Voice`、`VoiceKey`、`VoiceCopy`、`Translate` 和 `Translate*` 各项、`TypingStats`，另外有一项只有 macOS 有的 `CandidateFontSize`（候选字号，10–40 磅，默认 17；Linux 上字号跟着 fcitx5 主题）。
 `CheckUpdate`（默认 `True`）：输入法每天最多查一次 GitHub 上的最新正式版（后台，不挡打字），有新版时菜单栏的输入法菜单里多一项
 「有新版本 …，下载并安装…」，点它打开设置窗口「常规」页；设置窗口打开时也查。不弹系统通知（输入法没有开发者签名，通知要先授权，打字时弹框也打扰人）。
 「下载并安装」下载 `WowType-<版本>-macos.pkg` 和同一页的 `SHA256SUMS`，校验后交给系统的 `installer` 只装给当前用户（不要密码，和一键安装脚本一样），
@@ -335,7 +337,7 @@ macOS 还没有的功能不列；Linux 单独一页的「更新」在「常规�
 | `user.tsv` | 自动学到的新词：分几次选出来拼成的词（四个字以内，比如「霜」「频」「阁」）30 天里第二次这样拼（或者直接选它）就收进来；一次打出来的词选够 3 次（按 30 天减半的热度算）才收 |
 | `history.tsv` | 输入习惯：选过哪些词、哪些词常连着用、等第二次的候选新词 |
 | `emoji-recent.txt` | 最近用过的 emoji（表情面板里排最前） |
-| `stats.json` | [打字统计](#打字统计)：每天各类字符数、活跃毫秒、每个键按下的次数、候选位置（不保存输入内容） |
+| `stats.json` | [打字统计](#打字统计)（默认关，打开了才有）：每天的字数、各类字符数、活跃毫秒、每个键按下的次数、候选位置，不保存输入内容；旁边的 `stats.clear` 是清空计数 |
 | `lexicon.tsv.wcache` | 词库快照，让第二次启动更快（约 0.3 秒）；删了会自动重建 |
 | `wtlocal/` | 语音模型（约 130MB），在设置的「语音」页下载或删除；没有它语音输入打不开，按语音键只提示去下载 |
 | `dicts/wanxiang/` | 可选：万象词库包（`lexicon.tsv`、许可证、来源说明），在设置里下载，见下 |
@@ -390,25 +392,6 @@ cargo run --release -p wowtype-core --bin wowtype-lmbuild -- \
 
 想清空学到的东西：退出 fcitx5，删掉 `~/.local/share/wowtype/user.tsv` 和 `history.tsv`，再启动（自定义词不受影响）。
 
-## 打字统计
-
-设置里的「统计」页读同一个文件：`~/.local/share/wowtype/stats.json`（macOS 是
-`~/Library/Application Support/WowType/stats.json`）。输入法按天累加，设置页只读；
-开关和清空也写这个文件，下一次输入时生效。
-
-- **字数**：只统计 WowType 上屏的字符。汉字、字母、数字、标点、表情分别计数，空格和换行不算，
-  组合表情算一个字符；删除不扣减。
-- **速度**：`汉字 + 字母` 除以活跃分钟。两次上屏间隔超过 10 秒算休息，不计入活跃时长。
-- **连续天数**：今天还没输入时从昨天算起；中断两天以上是 0。最长连续单独算。
-- **单日最快**：这一天至少要有 1 分钟活跃时间才参与，避免几秒钟的输入霸榜。
-- **按键热力图**：只记每个键每天按下的次数。按住不放只算一次；密码框（敏感输入）里的按键不计；
-  按物理键位算（`KeyboardEvent.code` 风格），换键盘布局不影响位置。
-- **候选位置**：选中的候选在列表里的位置（1–9，超过 9 的记在「第 10 个以后」）。
-- **隐私**：只在本机保存日期、字符类别、键位次数和候选位置，不保存输入内容、按键顺序或上下文。
-
-想清空：设置里的「统计」页点「清空统计」，会换一个清空代号，输入法攒着还没写的旧计数也会丢掉。
-想彻底删掉文件也可以，下次上屏会重新建。
-
 ### 可选词库：万象拼音
 
 默认词库是[雾凇拼音](https://github.com/iDvel/rime-ice)（随安装包一起装好）。
@@ -429,3 +412,52 @@ cargo run --release -p wowtype-core --bin wowtype-lmbuild -- \
 - 词库包由 `scripts/make-wanxiang.sh` 生成：拼音去声调，词频整体缩放到和雾凇同一量级，再合进项目热词；包里带万象的 `LICENSE` 和写明来源与改动的 `SOURCE.txt`。
 
 想用自己的词库：任何 Rime 格式的词库（`.dict.yaml`）都能用 `python3 tools/rime2tsv.py xxx.dict.yaml > lexicon.tsv` 转过来。
+
+## 打字统计
+
+设置里的「统计」页：今天 / 累计的字数、活跃时长、速度、连续天数，按键热力图，字符类型、输入模式、双拼方案、候选命中位置。
+
+**默认关**（`TypingStats=False`）。关着时输入法什么都不记：内存里不计数、不记时间、不建也不写文件。
+在「统计」页打开开关（或在配置文件里写 `TypingStats=True`）以后才开始记，关掉时还没写进文件的计数直接丢掉。
+
+**记什么**——打开以后，只在本机按天记这些计数（`stats.json` 里只有这些）：
+
+```json
+{
+  "version": 2,
+  "cleared": 0,
+  "days": {
+    "2026-11-18": {
+      "chars": 1982,
+      "kinds": {"han": 1800, "latin": 82, "number": 40, "punct": 52, "emoji": 8, "other": 0},
+      "activeMs": 2140000,
+      "keys": {"KeyA": 310, "Space": 420},
+      "sources": {"quanpin": 1900, "english": 82},
+      "schemes": {},
+      "selections": [500, 200, 30, 0, 0, 0, 0, 0, 0],
+      "beyond": 0
+    }
+  }
+}
+```
+
+- `chars`、`kinds`：当天 WowType 上屏的字符数，分汉字、字母、数字、标点、表情、其他；空格和换行不算，组合表情算一个，删除不扣减。
+- `activeMs`：活跃时长。两次上屏间隔不超过 10 秒的算进去，超过的算休息（上一次上屏的时刻只在内存里，不写进文件）。
+- `keys`：每个物理键（`KeyboardEvent.code` 风格的键位名，换键盘布局不影响位置）当天按下的次数，按住不放只算一次。
+- `sources`、`schemes`：按输入模式（`quanpin`、`shuangpin`、`wubi`、`english`、`translate`）、双拼方案分的字数。
+- `selections`、`beyond`：选第 1–9 个候选上屏的次数、第 10 个以后的次数。
+- `cleared`：写这份文件时的清空计数（见下）。
+
+**不记什么**：打的字、词、拼音、按键的先后顺序、每次按键或上屏的时刻、在哪个应用里打的。
+密码框和别的敏感输入框（fcitx5 的 `Password` / `Sensitive`，macOS 的安全输入）里的按键和上屏整个不算。
+数据不离开这台电脑。
+
+**文件**：`~/.local/share/wowtype/stats.json`（`$XDG_DATA_HOME/wowtype/`；macOS 是 `~/Library/Application Support/WowType/stats.json`），
+权限 0600。只有输入法写：按键和上屏只改内存，攒够 20 次上屏或 30 秒、切出输入框、退出时交给后台线程，
+后台线程读文件、加上这批、去掉 400 天以前的、原子写回，打字的线程不碰文件。设置界面只读。
+文件坏了或超过 16 MB 时挪到 `stats.json.bad`，从空的重新记。
+
+**清除**：「统计」页的「清除统计」（关着时也能点）。它把旁边 `stats.clear` 里的整数加一，再删掉 `stats.json`（和 `stats.json.bad`）。
+输入法写文件前看这个数：和开始攒这一批时不一样，就整批丢掉（里面有清除之前打的），不会把清掉的写回来；
+文件里的 `cleared` 和 `stats.clear` 对不上的，设置界面当作没有记录，输入法下次写时删掉。
+不用设置界面也可以：退出输入法（或先关掉统计）再删掉 `stats.json`。
