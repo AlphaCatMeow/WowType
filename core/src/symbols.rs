@@ -108,6 +108,32 @@ pub fn fullwidth_punct(ascii: char) -> Option<&'static str> {
     Some(text)
 }
 
+/// 左标点自动配对表：返回 `(成对全角文本, 左标点, 右标点)`。
+pub fn auto_pair(ascii: char) -> Option<(&'static str, char, char)> {
+    Some(match ascii {
+        '(' => ("（）", '（', '）'),
+        '[' => ("【】", '【', '】'),
+        '<' => ("《》", '《', '》'),
+        '{' => ("「」", '「', '」'),
+        '"' => ("“”", '“', '”'),
+        '\'' => ("‘’", '‘', '’'),
+        _ => return None,
+    })
+}
+
+/// 右标点对应的中文闭合字符（用于跳过已补全的右标点）。
+pub fn closing_punct(ascii: char) -> Option<char> {
+    Some(match ascii {
+        ')' => '）',
+        ']' => '】',
+        '>' => '》',
+        '}' => '」',
+        '"' => '”',
+        '\'' => '’',
+        _ => return None,
+    })
+}
+
 /// 标点样式：全角（中文标点）或半角（ASCII 原样上屏）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PunctStyle {

@@ -3424,3 +3424,90 @@ fn association_engine_with_wubi() -> &'static Engine {
     engine.set_wubi(wubi_table());
     engine
 }
+
+#[test]
+fn auto_pair_punct_pairs_skips_and_deletes() {
+    let mut session = with(engine());
+    session.configure(Config {
+        auto_pair_punct: true,
+        ..Config::default()
+    });
+
+    // 1. 输入左标点自动补全并左移一格，支持嵌套与跳过右标点
+    let f = type_keys(&mut session, "(");
+    assert!(f.handled);
+    assert_eq!(f.commit.as_deref(), Some("（）"));
+    assert_eq!(f.cursor_delta, -1);
+
+    let f = type_keys(&mut session, "\"");
+    assert_eq!(f.commit.as_deref(), Some("“”"));
+    assert_eq!(f.cursor_delta, -1);
+
+    // 跳过内层右引号
+    let f = type_keys(&mut session, "\"");
+    assert!(f.handled);
+    assert_eq!(f.commit, None);
+    assert_eq!(f.cursor_delta, 1);
+
+    // 跳过外层右括号
+    let f = type_keys(&mut session, ")");
+    assert!(f.handled);
+    assert_eq!(f.commit, None);
+    assert_eq!(f.cursor_delta, 1);
+
+    // 栈已空，再次按 ) 正常上屏右括号
+    let f = type_keys(&mut session, ")");
+    assert_eq!(f.commit.as_deref(), Some("）"));
+    assert_eq!(f.cursor_delta, 0);
+
+    // 2. 括号内打字后直接按右括号：上屏候选同时跳过右括号；以词定字不冲突
+    let f = type_keys(&mut session, "(");
+    assert_eq!(f.commit.as_deref(), Some("（）"));
+    assert_eq!(f.cursor_delta, -1);
+    type_keys(&mut session, "nihao");
+    let f = type_keys(&mut session, ")");
+    assert!(f.handled);
+    assert_eq!(f.commit.as_deref(), Some("你好"));
+    assert_eq!(f.cursor_delta, 1);
+
+    let f = type_keys(&mut session, "[");
+    assert_eq!(f.commit.as_deref(), Some("【】"));
+    assert_eq!(f.cursor_delta, -1);
+    type_keys(&mut session, "nihao<sp>");
+    let f = type_keys(&mut session, "]");
+    assert!(f.handled);
+    assert_eq!(f.commit, None);
+    assert_eq!(f.cursor_delta, 1);
+
+    // 3. 刚补全后紧接着按退格：成对删除（delete_next=true，放行 BackSpace）
+    let f = session.key(&Key::press(u32::from('<')));
+    assert_eq!(f.commit.as_deref(), Some("《》"));
+    assert_eq!(f.cursor_delta, -1);
+    let f = type_keys(&mut session, "<bs>");
+    assert!(!f.handled);
+    assert!(f.delete_next);
+    // 已被退格删掉，再按 > 正常上屏
+    let f = session.key(&Key::press(u32::from('>')));
+    assert_eq!(f.commit.as_deref(), Some("》"));
+    assert_eq!(f.cursor_delta, 0);
+
+    // 4. 补全后打过字再按退格：不成对删，但栈保留可跳过右标点
+    type_keys(&mut session, "{nihao<sp>");
+    let f = type_keys(&mut session, "<bs>");
+    assert!(!f.handled);
+    assert!(!f.delete_next);
+
+    // 5. 移动光标后清空配对栈
+    type_keys(&mut session, "{");
+    let f = type_keys(&mut session, "<left>");
+    assert!(!f.handled);
+    let f = type_keys(&mut session, "}");
+    assert_eq!(f.commit.as_deref(), Some("」"));
+    assert_eq!(f.cursor_delta, 0);
+
+    // 6. 数字后面保持 ASCII，不触发配对
+    let f = type_keys(&mut session, "3(");
+    assert!(!f.handled);
+    assert_eq!(f.commit, None);
+    assert_eq!(f.cursor_delta, 0);
+}

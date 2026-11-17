@@ -247,6 +247,9 @@ FCITX_CONFIGURATION(
     fcitx::Option<bool> autoSpace{this, "AutoSpace", "汉字和英文、数字之间自动加空格", false};
     fcitx::Option<bool> autoSpaceLetters{this, "AutoSpaceLetters", "汉字和英文字母之间", true};
     fcitx::Option<bool> autoSpaceDigits{this, "AutoSpaceDigits", "汉字和数字之间", true};
+    fcitx::Option<bool> autoPairPunct{this, "AutoPairPunct",
+                                      "中文标点自动配对（输入左标点自动补全右标点并移到中间）",
+                                      false};
     fcitx::Option<bool> voice{this, "Voice", "语音输入", true};
     fcitx::Option<fcitx::Key, fcitx::KeyConstrain> voiceKey{
         this, "VoiceKey", "语音输入键（按住说话，或点一下开始）", fcitx::Key(FcitxKey_Alt_R),
@@ -602,6 +605,7 @@ private:
     bool shuangpinShowKeys_ = false;
     /// 自动补空格（wowtype_autospace 的 flags）：1 字母、2 数字，0 关。
     int autoSpaceFlags_ = 0;
+    bool autoPairPunct_ = false;
     bool shuangpin_ = false;
     /// 五笔（设置里选了五笔；码表在 applyCoreSettings 里载入，没载入时会话照全拼打并提示）。
     bool wubi_ = false;
@@ -667,6 +671,12 @@ private:
     /// 到这个时刻（单调时钟，微秒）发请求；0 表示不用发。
     /// 上次画面板时的结果，没变就不重画。
     std::string translateDrawn_;
+
+    // 自动配对标点后的光标微调（延迟到 commitString 落到应用之后再发方向键）
+    fcitx::TrackableObjectReference<fcitx::InputContext> cursorTarget_;
+    int pendingCursorDelta_ = 0;
+    std::unique_ptr<fcitx::EventSourceTime> cursorTimer_;
+    void applyCursorDelta(fcitx::InputContext *ic, const WowtypeFrame *frame, bool afterCommit);
 
     // 语音浮条（GNOME 扩展画）：单独一条会话总线连接，盯着扩展注册的名字
     std::unique_ptr<fcitx::dbus::Bus> overlayBus_;
