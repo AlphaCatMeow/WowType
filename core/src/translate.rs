@@ -1210,6 +1210,70 @@ mod tests {
         assert!(body.get("chat_template_kwargs").is_none());
     }
 
+    /// 和 spec/config.json 的 translateBilibili 对照（设置界面、macOS 也对照同一份）。
+    /// 只有源码树里跑测试时才有 spec/，单独打包的 core 跳过。
+    #[test]
+    fn index_translate_matches_spec() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../spec/config.json");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            eprintln!("skip：没有 {}", path.display());
+            return;
+        };
+        let spec: Value = serde_json::from_str(&text).unwrap();
+        let bili = &spec["translateBilibili"];
+        assert_eq!(bili["url"], BILIBILI_BASE_URL);
+        assert_eq!(bili["host"], BILIBILI_HOST);
+        assert_eq!(bili["default"], BILIBILI_DEFAULT_MODEL);
+        assert_eq!(bili["modelPrefix"], "Index-Translate");
+        let ids: Vec<&str> = bili["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids[0], BILIBILI_DEFAULT_MODEL);
+        for id in &ids {
+            assert!(bilibili(id).is_index_translate() && bilibili(id).model() == *id);
+        }
+        let names: HashMap<&str, &str> = spec["settings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["key"] == "TranslateTarget")
+            .unwrap()["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| (v["value"].as_str().unwrap(), v["name"].as_str().unwrap()))
+            .collect();
+        let prompt = &bili["prompt"];
+        let piece = |k: &str| prompt[k].as_str().unwrap().to_string();
+        for (code, _, _) in LANGUAGES {
+            assert_eq!(chinese_name(code), names[code], "{code}");
+            for formal in [false, true] {
+                let c = TranslateConfig {
+                    target: code.to_string(),
+                    formal,
+                    ..bilibili("")
+                };
+                let tone = piece(if formal { "toneFormal" } else { "toneCasual" });
+                for (source, head) in [
+                    (
+                        " 明天见\n",
+                        piece("headChinese").replace("{target}", names[code]),
+                    ),
+                    ("See you", piece("headOther")),
+                ] {
+                    let want = piece("template")
+                        .replace("{head}", &head)
+                        .replace("{tone}", &tone)
+                        .replace("{text}", source.trim());
+                    assert_eq!(build_request(&c, source)["messages"][0]["content"], want);
+                }
+            }
+        }
+    }
+
     #[test]
     fn bilibili_needs_no_key() {
         let text = curl_config(&bilibili(""), "你好", "");
