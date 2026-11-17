@@ -49,7 +49,8 @@ final class FakeTextInput: NSObject, IMKTextInput {
 
     func insertText(_ string: Any!, replacementRange: NSRange) {
         let s = plain(string)
-        let range = replace(editRange, with: s)
+        // 和 NSTextView 一样：给了 replacementRange 就换那一段（自动配对靠它挪光标、删字），没给换编辑区或选区
+        let range = replace(replacementRange.location != NSNotFound ? replacementRange : editRange, with: s)
         marked = NSRange(location: NSNotFound, length: 0)
         selected = NSRange(location: range.upperBound, length: 0)
         inserted.append(s)

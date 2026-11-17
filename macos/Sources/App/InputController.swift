@@ -448,8 +448,16 @@ extension WowTypeInputController: TextClient {
         (client.attributedSubstring(from: range)?.length ?? 0) > 0
     }
 
+    /// 终端：文字是程序画的，换不了光标前面已经「打出去」的字，按位置换字只会多打一遍。不管报不报位置都不配对
+    static let terminalApps: Set<String> = [
+        "com.apple.Terminal", "com.googlecode.iterm2", "net.kovidgoyal.kitty", "com.github.wez.wezterm",
+        "org.alacritty", "io.alacritty", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "co.zeit.hyper",
+        "org.tabby", "com.raggesilver.BlackBox",
+    ]
+
     var canEditAroundCaret: Bool {
-        guard let client = textInput, let start = insertionStart(client) else { return false }
+        guard let client = textInput, !WowTypeInputController.terminalApps.contains(client.bundleIdentifier() ?? ""),
+              let start = insertionStart(client) else { return false }
         // 光标旁边的字读得到，才信应用会照位置换字（文档开头读后面那个字；空的输入框里先不配对）
         if start > 0 {
             return readable(client, NSRange(location: start - 1, length: 1))

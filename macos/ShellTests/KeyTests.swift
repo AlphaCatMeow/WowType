@@ -309,6 +309,53 @@ func runKeyTests() {
     commitCompositionTests()
     contextTests()
     panelDrawingTests()
+    autoPairTests()
+}
+
+/// 中文标点自动配对（AutoPairPunct）：真的输入控制器靠按位置换字（insertText 带 replacementRange）
+/// 把光标挪到两个中间、跳过补好的右半边、空的一对退格两个一起删。
+private func autoPairTests() {
+    let on = ["AutoPairPunct": "True", "EmojiSuggest": "False"]
+    func shown(_ f: FakeTextInput) -> String {
+        let t = f.text as NSString
+        let at = min(f.selected.location, t.length)
+        return t.substring(to: at) + "|" + t.substring(from: at)
+    }
+    do {
+        // 空格交给应用：输入框里有字了，光标旁边读得到
+        let (c, f) = session(on)
+        type(c, " (")
+        check(shown(f) == " （|）", "配对：( 上屏（），光标在中间", shown(f))
+        type(c, "3)")
+        check(shown(f) == " （3）|", "配对：( 3 ) 是（3），) 跳过补好的右括号", shown(f))
+    }
+    do {
+        let (c, f) = session(on)
+        type(c, " (nihao)")
+        check(shown(f) == " （你好）|", "配对：打拼音途中按 ) 先上屏再跳过", shown(f))
+    }
+    do {
+        let (c, f) = session(on)
+        type(c, " (")
+        check(press(c, .backspace) && shown(f) == " |", "配对：空的一对退格两个一起删", shown(f))
+    }
+    do {
+        // 读不到光标旁边的字的应用（终端这类）：不配对
+        let (c, f) = session(on, reliable: false)
+        type(c, " (")
+        check(shown(f) == " （|", "配对：应用说不清光标旁边是什么时不配对", shown(f))
+    }
+    do {
+        // 空的输入框里第一个字：光标旁边没有字可读，先不配对
+        let (c, f) = session(on)
+        type(c, "(")
+        check(shown(f) == "（|", "配对：空的输入框里第一个 ( 不配对", shown(f))
+    }
+    do {
+        let (c, f) = session()
+        type(c, " (")
+        check(shown(f) == " （|", "默认不配对", shown(f))
+    }
 }
 
 /// 候选框排的格子都在框里；CandidateView 真画出来（浅色、深色），高亮的绿色在格子上。
