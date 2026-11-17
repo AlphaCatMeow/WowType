@@ -800,11 +800,8 @@ WowtypeEngine::WowtypeEngine(fcitx::Instance *instance)
     lexicon_ = wantedLexicon_ = resolveLexicon(*config_.lexicon);
     lexiconStamp_ = fileStamp(lexicon_);
     loading_ = std::async(std::launch::async, loadCore, userDictPath(), lexicon_);
-    applyConfig();
-    setupVoiceOverlay();
-    setupControl();
-    const std::string statsDir = userDataDir();
-    if (!statsDir.empty()) {
+    // 打字统计的记录器建好时是关着的（不读不建文件），applyConfig 按 TypingStats 打开
+    if (const std::string statsDir = userDataDir(); !statsDir.empty()) {
         const std::string statsPath = statsDir + "/stats.json";
         stats_ = wowtype_stats_new(statsPath.c_str());
         if (!stats_) {
@@ -812,6 +809,9 @@ WowtypeEngine::WowtypeEngine(fcitx::Instance *instance)
                      << (wowtype_last_error() ? wowtype_last_error() : "unknown");
         }
     }
+    applyConfig();
+    setupVoiceOverlay();
+    setupControl();
 }
 
 namespace {
@@ -1092,6 +1092,11 @@ void WowtypeEngine::applyConfig() {
     }
     pickChar_ = envOr("WOWTYPE_PICK_CHAR", *config_.pickChar);
     association_ = envOr("WOWTYPE_ASSOCIATION", *config_.association);
+    typingStats_ = envOr("WOWTYPE_TYPING_STATS", *config_.typingStats);
+    if (stats_) {
+        // 关掉时记录器丢掉内存里还没写的计数，以后什么都不记
+        wowtype_stats_set_enabled(stats_, typingStats_ ? 1 : 0);
+    }
     dateTime_ = envOr("WOWTYPE_DATETIME", *config_.dateTime);
     calculator_ = envOr("WOWTYPE_CALC", *config_.calculator);
     toolbar_ = envOr("WOWTYPE_TOOLBAR", *config_.toolbar);
@@ -1216,7 +1221,7 @@ void WowtypeEngine::applyConfig() {
              << " 剪贴板历史=" << clipboardHistory_ << " 互译=" << translateEnabled_ << "("
              << (translateAvailable() ? translateModel + " → " + translateTarget : "未配置")
              << ")"
-             << " 检查更新=" << *config_.checkUpdate;
+             << " 检查更新=" << *config_.checkUpdate << " 打字统计=" << typingStats_;
     if (core_) {
         applyCoreSettings();
     }
@@ -1325,8 +1330,8 @@ WowtypeEngine::~WowtypeEngine() {
         wowtype_engine_free(core_);
         core_ = nullptr;
     }
-    flushStats();
     if (stats_) {
+        // 开着时交出最后攒着的、等写文件线程写完
         wowtype_stats_free(stats_);
         stats_ = nullptr;
     }
@@ -1432,7 +1437,7 @@ void WowtypeEngine::finishCommit(fcitx::InputContext *ic, WowtypeState *state,
     const bool learned = countLearned(frame);
     if (ic && !text.empty()) {
         // 会话已经补好了空格；互译时攒原文也是会话做的，这里上屏的是译文、原文或不在互译时的字
-        recordStats(text, frame);
+        recordStats(ic, text, frame);
         ic->commitString(text);
     }
     // 会话上屏时已经清好了它上屏的那部分，这里从不 reset 会话（reset 会把还在打的丢掉）：只丢掉抄的候选，
@@ -2055,7 +2060,7 @@ void WowtypeEngine::keyEvent(const fcitx::InputMethodEntry & /*entry*/,
     }};
 
     // 按键热力图：所有按键都经过这里（输入法消费掉的、还给应用的都算），松开也传，
-    // 长按和合成的自动重复由核心去重。密码框在 recordKey 里排除。
+    // 长按和合成的自动重复由核心去重。密码框在 recordKey 里排除，统计关着时什么都不做。
     recordKey(ic, event.origKey(), !event.isRelease());
 
     if (voice_ && handleVoiceKey(ic, state, event)) {
@@ -2690,38 +2695,45 @@ void WowtypeEngine::clearTranslation(WowtypeState *state) {
     }
 }
 
-void WowtypeEngine::recordStats(const std::string &text, const WowtypeFrame *frame) {
-    if (!stats_ || text.empty()) {
+namespace {
+/// 密码框、敏感输入框（Password / Sensitive 任一位）：打字统计整个不算。
+unsigned statsFlags(fcitx::InputContext *ic) {
+    return !ic || ic->capabilityFlags().testAny(fcitx::CapabilityFlag::PasswordOrSensitive)
+               ? WOWTYPE_STATS_SENSITIVE
+               : 0u;
+}
+} // namespace
+
+void WowtypeEngine::recordStats(fcitx::InputContext *ic, const std::string &text,
+                                const WowtypeFrame *frame) {
+    // 关着时核心什么都不做；这里先挡一下，省得算模式名
+    if (!stats_ || !typingStats_ || text.empty()) {
         return;
     }
     const std::string src = typingSource();
-    const std::string scheme = shuangpin_ ? typingScheme() : std::string();
+    const std::string scheme = shuangpin_ && !translateMode_ && !asciiMode_ ? typingScheme() : std::string();
     unsigned candidate = frame ? static_cast<unsigned>(frame->choice_index) : 0;
     if (src == "translate") {
         candidate = 0; // 互译上屏的不是候选
     }
-    wowtype_stats_commit(stats_, text.c_str(), src.c_str(),
-                         scheme.empty() ? nullptr : scheme.c_str(),
-                         static_cast<int>(candidate), statsNowMs());
+    // 文字只交给核心数各类字符有几个，核心不留下；密码框里的整个不算
+    wowtype_stats_commit(stats_, text.c_str(), src.c_str(), scheme.empty() ? nullptr : scheme.c_str(),
+                         static_cast<int>(candidate), statsFlags(ic), statsNowMs());
 }
 
 void WowtypeEngine::recordKey(fcitx::InputContext *ic, const fcitx::Key &key, bool down) {
-    if (!stats_ || !ic) {
+    if (!stats_ || !typingStats_ || !ic) {
         return;
     }
-    if (ic->capabilityFlags().test(fcitx::CapabilityFlag::PasswordOrSensitive)) {
-        return;
-    }
-    wowtype_stats_key(stats_, 0, static_cast<unsigned>(key.code()), down ? 1 : 0, statsNowMs());
+    // 只记哪个物理键按了一次（当天的次数），不记顺序和时刻；密码框里的不算
+    wowtype_stats_key(stats_, 0, static_cast<unsigned>(key.code()), down ? 1 : 0, statsFlags(ic),
+                      statsNowMs());
 }
 
 void WowtypeEngine::flushStats() {
-    if (!stats_) {
-        return;
-    }
-    if (wowtype_stats_flush(stats_, statsNowMs()) != 0) {
-        WLOG_W() << "WowType: 打字统计写入失败："
-                 << (wowtype_last_error() ? wowtype_last_error() : "unknown");
+    if (stats_ && typingStats_) {
+        // 交给核心的写文件线程，这里不等
+        wowtype_stats_flush(stats_, statsNowMs());
     }
 }
 
@@ -2731,6 +2743,9 @@ std::string WowtypeEngine::typingSource() const {
     }
     if (asciiMode_) {
         return "english";
+    }
+    if (wubi_) {
+        return "wubi";
     }
     return shuangpin_ ? "shuangpin" : "quanpin";
 }
@@ -2787,7 +2802,7 @@ uint32_t WowtypeEngine::tickTranslate() {
     }
     if (frame->commit) {
         // 按过回车，译好了：上屏译文（正在打的拼音留着，不清编辑区）
-        recordStats(frame->commit, frame);
+        recordStats(ic, frame->commit, frame);
         ic->commitString(frame->commit);
         translateDrawn_.clear();
         updateInputPanel(ic, state);

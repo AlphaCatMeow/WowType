@@ -1,7 +1,8 @@
 // 打字统计的读取和派生指标：和 core/src/stats.rs 的口径一致。
 //
-// 输入法只写聚合计数，不保存文字；设置页读同一个 JSON。这里不依赖 AppKit，
-// Linux 上的按键测试也能编译。
+// 统计默认关（wowtype.conf 的 TypingStats）。开着时只有输入法写 stats.json（聚合计数，不保存文字），
+// 设置页只读；清除时把旁边 stats.clear 里的整数加一、删掉 stats.json（和 core 的 stats::clear、
+// Linux 设置界面的 clear_stats 一样）。这里不依赖 AppKit，Linux 上的按键测试也能编译。
 import Foundation
 
 public struct StatsDay: Equatable {
@@ -24,9 +25,6 @@ public struct StatsDay: Equatable {
 }
 
 public struct StatsDocument: Equatable {
-    public var enabled = true
-    public var generation: Int = 0
-    public var lastCommitMs: Int = 0
     public var days: [String: StatsDay] = [:]
 }
 
@@ -51,16 +49,28 @@ public enum StatsStore {
     /// 一天里最快的速度至少要有 1 分钟活跃时间，避免几秒钟的输入霸榜。
     static let fastestDayMinimumMs = 60_000
 
+    /// stats.json 旁边的清除计数文件。
+    public static func clearPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).deletingPathExtension().appendingPathExtension("clear").path
+    }
+
+    /// 清除计数（stats.clear 里的整数）；没有文件、不是数时是 0。
+    public static func clearCount(_ path: String) -> UInt64 {
+        guard let text = try? String(contentsOfFile: clearPath(path), encoding: .utf8) else { return 0 }
+        return UInt64(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
+    /// 读统计文件；没有、坏了、清除过（cleared 和 stats.clear 对不上）都当成空的。
     public static func load(_ path: String) -> StatsDocument {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              data.count <= 16 * 1024 * 1024,
               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else {
             return StatsDocument()
         }
+        let cleared = (root["cleared"] as? NSNumber)?.uint64Value ?? 0
+        guard cleared == clearCount(path) else { return StatsDocument() }
         var document = StatsDocument()
-        document.enabled = (root["enabled"] as? Bool) ?? true
-        document.generation = integer(root["generation"])
-        document.lastCommitMs = integer(root["lastCommitMs"])
         for (day, value) in (root["days"] as? [String: Any]) ?? [:] {
             guard day.count == 10, let value = value as? [String: Any] else { continue }
             document.days[day] = parseDay(value)
@@ -68,41 +78,16 @@ public enum StatsStore {
         return document
     }
 
-    /// 只写开关/清空用；days 保持传进来的值。
-    public static func save(_ document: StatsDocument, to path: String) throws {
-        var days: [String: Any] = [:]
-        for (day, value) in document.days {
-            days[day] = encodeDay(value)
-        }
-        let root: [String: Any] = [
-            "version": 1,
-            "enabled": document.enabled,
-            "generation": document.generation,
-            "lastCommitMs": document.lastCommitMs,
-            "days": days,
-        ]
-        let data = try JSONSerialization.data(withJSONObject: root,
-                                              options: [.prettyPrinted, .sortedKeys])
-        let url = URL(fileURLWithPath: path)
+    /// 清除统计：清除计数加一（输入法据此丢掉攒着的旧计数、不写回来），再删掉统计文件。
+    public static func clear(path: String) throws {
+        let next = clearCount(path) &+ 1
+        let url = URL(fileURLWithPath: clearPath(path))
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
-                                                 withIntermediateDirectories: true)
-        try data.write(to: url, options: .atomic)
-    }
-
-    public static func setEnabled(_ enabled: Bool, path: String) throws {
-        var document = load(path)
-        document.enabled = enabled
-        try save(document, to: path)
-    }
-
-    /// 清空只换一个代号、删掉记录；输入法攒着没写的旧计数发现代号变了会丢掉。
-    public static func clear(path: String, enabled: Bool) throws {
-        var document = load(path)
-        document.enabled = enabled
-        document.generation = Int.random(in: 1...Int.max)
-        document.lastCommitMs = 0
-        document.days = [:]
-        try save(document, to: path)
+                                                withIntermediateDirectories: true)
+        try Data("\(max(next, 1))\n".utf8).write(to: url, options: .atomic)
+        for file in [path, path + ".bad"] where FileManager.default.fileExists(atPath: file) {
+            try FileManager.default.removeItem(atPath: file)
+        }
     }
 
     private static func parseDay(_ value: [String: Any]) -> StatsDay {
@@ -127,20 +112,6 @@ public enum StatsStore {
         }
         day.beyond = integer(value["beyond"])
         return day
-    }
-
-    private static func encodeDay(_ day: StatsDay) -> [String: Any] {
-        [
-            "chars": day.chars,
-            "kinds": ["han": day.han, "latin": day.latin, "number": day.number,
-                      "punct": day.punct, "emoji": day.emoji, "other": day.other],
-            "activeMs": day.activeMs,
-            "keys": day.keys,
-            "sources": day.sources,
-            "schemes": day.schemes,
-            "selections": day.selections,
-            "beyond": day.beyond,
-        ]
     }
 
     private static func integer(_ value: Any?) -> Int {

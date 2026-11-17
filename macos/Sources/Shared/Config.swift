@@ -139,6 +139,8 @@ public struct WowtypeConfig: Equatable {
     public var checkUpdate = true
     /// Beta 计划：检查更新也算 GitHub 上的预发布版（pre-release）
     public var betaUpdates = false
+    /// 打字统计（TypingStats，默认关）：开了才在本机按天记计数（字数、按键次数），不记打的内容
+    public var typingStats = false
     /// 词库文件，空串用安装包里的雾凇词库；文件不在也用自带的
     public var lexicon = ""
     /// 候选字号（磅），只有 macOS 有：Linux 上字号跟着 fcitx5 主题
@@ -276,7 +278,7 @@ public struct WowtypeConfig: Equatable {
         "Traditional",
         "PunctuationStyle", "DateTime", "Calculator", "EmojiSuggest", "AutoSpace", "AutoSpaceLetters",
         "AutoSpaceDigits", "Lexicon", "Toolbar", "ClipboardHistory", "Voice", "VoiceKey", "VoiceCopy", "EmojiKey",
-        "ToggleKey", "TranslateModeKey", "CheckUpdate", "BetaUpdates",
+        "ToggleKey", "TranslateModeKey", "CheckUpdate", "BetaUpdates", "TypingStats",
         "Translate", "TranslateTarget", "TranslateBaseUrl", "TranslateModel", "TranslateFormal", "TranslateLocal",
         "TranslateLocalModel", "TranslateLlamaServer", "TranslateIdleMinutes",
     ]
@@ -297,7 +299,7 @@ public struct WowtypeConfig: Equatable {
         "AutoSpace": \.autoSpace, "AutoSpaceLetters": \.autoSpaceLetters, "AutoSpaceDigits": \.autoSpaceDigits,
         "Toolbar": \.toolbar, "ClipboardHistory": \.clipboardHistory, "Voice": \.voice, "VoiceCopy": \.voiceCopy,
         "Translate": \.translate, "TranslateFormal": \.translateFormal, "TranslateLocal": \.translateLocal,
-        "CheckUpdate": \.checkUpdate, "BetaUpdates": \.betaUpdates,
+        "CheckUpdate": \.checkUpdate, "BetaUpdates": \.betaUpdates, "TypingStats": \.typingStats,
     ]
 
     /// 按文件里的写法改一项。不认识的键、认不出的值不管（保持原值）。
@@ -617,6 +619,8 @@ public struct WowtypeConfig: Equatable {
         CheckUpdate=\(b(d.checkUpdate))
         # Beta 计划：检查更新也算预发布版（新功能先到，可能不稳定）；关掉以后装上的预发布版不退回，等正式版追上来
         BetaUpdates=\(b(d.betaUpdates))
+        # 打字统计：只在本机按天记字数、按键次数这些计数，不记打的内容；默认关，关着时什么都不记
+        TypingStats=\(b(d.typingStats))
 
         # 词库文件（拼音<TAB>词<TAB>频次），留空用自带的雾凇词库；文件不在也用自带的
         Lexicon=

@@ -47,7 +47,8 @@ final class AppState {
     /// 下一次看要不要检查更新的时刻（systemUptime）：最多一小时看一次，没网时也不会每切一次输入框就去连
     private var nextUpdateLook: TimeInterval = 0
 
-    /// 打字统计的句柄（core 的 Recorder）：按天聚合，只在本机。
+    /// 打字统计的句柄（core 的 Recorder）：建好时是关着的（不读不建文件），loadConfig 按 TypingStats 打开。
+    /// 开着时只在本机按天记计数，不记打的内容。
     private(set) var stats: OpaquePointer?
 
     private init() {
@@ -61,35 +62,41 @@ final class AppState {
 
     deinit {
         if let stats {
+            // 开着时交出最后攒着的、等写完
             wowtype_stats_free(stats)
         }
     }
 
-    /// 记一次物理按键（按键热力图）。长按由 `isARepeat` 在外壳挡掉，这里每次按下都算。
-    func recordKey(_ keyCode: UInt16) {
+    /// 设置里的 TypingStats：关掉时记录器丢掉内存里还没写的计数，以后什么都不记。
+    private func applyStatsSettings() {
         guard let stats else { return }
-        _ = wowtype_stats_key(stats, 1, UInt32(keyCode), 1, wowtype_stats_now_ms())
+        _ = wowtype_stats_set_enabled(stats, config.typingStats ? 1 : 0)
     }
 
-    /// 记一次上屏；只分类计数，不保存文字。
-    func recordCommit(_ text: String, source: String, scheme: String, candidateIndex: Int) {
-        guard let stats else { return }
+    /// 记一次物理按键（按键热力图）。长按由 `isARepeat` 在外壳挡掉，这里每次按下都算；
+    /// 密码框（安全输入）里的不算。统计关着时什么都不做。
+    func recordKey(_ keyCode: UInt16, sensitive: Bool) {
+        guard let stats, config.typingStats, !sensitive else { return }
+        _ = wowtype_stats_key(stats, 1, UInt32(keyCode), 1, 0, wowtype_stats_now_ms())
+    }
+
+    /// 记一次上屏：文字只交给核心数各类字符有几个，核心不留下。密码框里的不算，统计关着时什么都不做。
+    func recordCommit(_ text: String, source: String, scheme: String, candidateIndex: Int, sensitive: Bool) {
+        guard let stats, config.typingStats, !sensitive else { return }
         text.withCString { textPointer in
             source.withCString { sourcePointer in
                 scheme.withCString { schemePointer in
                     _ = wowtype_stats_commit(stats, textPointer, sourcePointer, schemePointer,
-                                             Int32(candidateIndex), wowtype_stats_now_ms())
+                                             Int32(candidateIndex), 0, wowtype_stats_now_ms())
                 }
             }
         }
     }
 
-    /// 把攒着的统计写进文件（失焦、退出前）。
+    /// 把攒着的统计交给核心的写文件线程（失焦时），不等它写。
     func flushStats() {
-        guard let stats else { return }
-        if wowtype_stats_flush(stats, wowtype_stats_now_ms()) != 0 {
-            NSLog("WowType: 打字统计写入失败")
-        }
+        guard let stats, config.typingStats else { return }
+        _ = wowtype_stats_flush(stats, wowtype_stats_now_ms())
     }
 
     // 第一次要画候选框时才建窗口（自检时没有图形界面）
@@ -210,6 +217,7 @@ final class AppState {
             config = loaded
             configGeneration += 1
             applyTranslateSettings()
+            applyStatsSettings()
             NSLog("WowType: 设置 %@ 每页%d 模糊音=%d(%u) 纠错=%d 双拼=%d(%@) 五笔=%d Shift切换=%@ 繁体=%d 半角标点=%d 字号=%d 词库=%@ 工具栏=%d 剪贴板历史=%d 表情键=%@ 互译=%@",
                   config.horizontal ? "横排" : "竖排", config.pageSize, config.fuzzy ? 1 : 0, config.fuzzyGroups,
                   config.typoCorrection ? 1 : 0, config.shuangpin ? 1 : 0, config.shuangpinScheme, config.wubi ? 1 : 0,

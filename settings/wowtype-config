@@ -109,8 +109,11 @@ def _xdg(name, fallback):
 CONFIG_FILE = os.path.join(_xdg("XDG_CONFIG_HOME", "~/.config"), "fcitx5", "conf", "wowtype.conf")
 DATA_DIR = os.path.join(_xdg("XDG_DATA_HOME", "~/.local/share"), "wowtype")
 CUSTOM_FILE = os.environ.get("WOWTYPE_CUSTOM") or os.path.join(DATA_DIR, "custom.tsv")
-# 打字统计：插件按天聚合写这里，设置界面只读（改开关、清空除外）
+# 打字统计（TypingStats 开着时）：只有输入法写，设置界面只读；清除时把 STATS_CLEAR_FILE 里的数加一、删掉统计文件。
+# 做法和 core/src/stats.rs 的 clear、load_current 一样，见 docs/CONFIG.md「打字统计」
 STATS_FILE = os.path.join(DATA_DIR, "stats.json")
+STATS_CLEAR_FILE = os.path.join(DATA_DIR, "stats.clear")
+STATS_BAD_FILE = STATS_FILE + ".bad"
 VOICE_MODEL_DIR = os.environ.get("WOWTYPE_VOICE_MODEL_DIR") or os.path.join(DATA_DIR, "wtlocal")
 STATE_DIR = os.path.join(_xdg("XDG_STATE_HOME", "~/.local/state"), "wowtype")
 # 插件和设置界面共用的日志（插件那边见 fcitx5-addon/src/wowtype_log.h），不记打的字
@@ -377,6 +380,8 @@ DEFAULTS = {
     "TranslateIdleMinutes": "5",
     "CheckUpdate": "True",
     "BetaUpdates": "False",
+    # 打字统计默认关：关着时输入法什么都不记
+    "TypingStats": "False",
     # 词库文件，留空用默认的雾凇；切到万象时是 WANXIANG_LEXICON
     "Lexicon": "",
 }
@@ -594,10 +599,12 @@ STYLE_ACCENT_VARS = """
 
 # ---------------- 打字统计
 #
-# 插件把每天的聚合计数写进 DATA_DIR/stats.json（见 core/src/stats.rs），这里只读；
-# 开关和清空直接改同一个文件。速度只算汉字与字母，10 秒以上的间隔不算活跃时间。
+# TypingStats 开着时插件把每天的聚合计数写进 DATA_DIR/stats.json（见 core/src/stats.rs），这里只读；
+# 开关是 wowtype.conf 的 TypingStats，清除见 clear_stats。速度只算汉字与字母，10 秒以上的间隔不算活跃时间。
 
 STATS_UNIT = 36
+STATS_PRIVACY = ("打开以后只在本机按天记计数：上屏的字数和各类字符数、活跃时长、每个键按了几次、"
+                 "各输入模式的字数、选了第几个候选。不记打的字、拼音、按键顺序和时刻，密码框里的不算。")
 STATS_SPECIAL_NAMES = {
     "Escape": "Esc", "Backquote": "`", "Minus": "-", "Equal": "=",
     "BracketLeft": "[", "BracketRight": "]", "Backslash": "\\",
@@ -666,14 +673,27 @@ def stats_drawn_ids():
     return {code for row in stats_rows() for code, _label, _weight in row if code}
 
 
-def read_stats():
-    """读统计文件；没有或坏了就当成空记录（开关默认开）。"""
+def stats_clear_count(path=None):
+    """清除计数（stats.clear 里的整数）；没有文件、不是数时是 0。"""
     try:
-        with open(STATS_FILE, encoding="utf-8") as f:
+        with open(path or STATS_CLEAR_FILE, encoding="utf-8") as f:
+            value = int(f.read().strip())
+    except (OSError, ValueError):
+        return 0
+    return value if 0 <= value < 2 ** 64 else 0
+
+
+def read_stats(path=None, clear_path=None):
+    """读统计文件；没有、坏了、清除过（cleared 和 stats.clear 对不上）都当成空记录。"""
+    path = path or STATS_FILE
+    try:
+        if os.path.getsize(path) > 16 * 1024 * 1024:
+            raise ValueError("太大")
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
         data = {}
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or data.get("cleared", 0) != stats_clear_count(clear_path):
         data = {}
     days = {}
     raw = data.get("days")
@@ -681,16 +701,56 @@ def read_stats():
         for day, value in raw.items():
             if isinstance(day, str) and len(day) == 10 and isinstance(value, dict):
                 days[day] = value
-    return {
-        "enabled": data.get("enabled", True) is not False,
-        "generation": stats_number(data.get("generation")),
-        "lastCommitMs": stats_number(data.get("lastCommitMs")),
-        "days": days,
-    }
+    return {"days": days}
 
 
-def write_stats(data):
-    write_atomic(STATS_FILE, json.dumps(data, ensure_ascii=False, indent=2))
+def clear_stats(path=None, clear_path=None):
+    """清除统计：清除计数加一（输入法据此丢掉攒着的旧计数、不写回来），再删掉统计文件。
+
+    设置界面不改统计文件的内容，只删；输入法开着关着都行。"""
+    path = path or STATS_FILE
+    clear_path = clear_path or STATS_CLEAR_FILE
+    count = stats_clear_count(clear_path) + 1
+    if count >= 2 ** 64:
+        count = 1
+    write_atomic(clear_path, f"{count}\n")
+    for name in (path, path + ".bad"):
+        try:
+            os.remove(name)
+        except FileNotFoundError:
+            pass
+
+
+def stats_self_test():
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "wowtype", "stats.json")
+        marker = os.path.join(tmp, "wowtype", "stats.clear")
+        assert read_stats(path, marker) == {"days": {}}
+        os.makedirs(os.path.dirname(path))
+        day = {"chars": 3, "kinds": {"han": 3}, "keys": {"KeyA": 2}}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"version": 2, "cleared": 0, "days": {"2026-11-18": day, "bad": {}}}, f)
+        assert read_stats(path, marker) == {"days": {"2026-11-18": day}}
+        clear_stats(path, marker)
+        assert not os.path.exists(path) and stats_clear_count(marker) == 1
+        # 清除的同时输入法正好写回了旧的（cleared 还是 0）：当作没有记录
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"version": 2, "cleared": 0, "days": {"2026-11-18": day}}, f)
+        assert read_stats(path, marker) == {"days": {}}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"version": 2, "cleared": 1, "days": {"2026-11-18": day}}, f)
+        assert read_stats(path, marker)["days"]["2026-11-18"] == day
+        clear_stats(path, marker)
+        assert stats_clear_count(marker) == 2, "计数是递增的整数"
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write("不是数")
+        assert stats_clear_count(marker) == 0
+    assert stats_heat_level(0, 10) == 0 and stats_heat_level(10, 10) == 4
+    assert stats_key_name("KeyA") == "A" and stats_key_name("Numpad1") == "小键盘 1"
+    metrics = stats_metrics({"days": {}})
+    assert metrics["total_chars"] == 0 and metrics["streak"] == 0
+    print("stats self-test ok")
 
 
 def stats_number(value):
@@ -4975,9 +5035,9 @@ class SettingsWindow(Adw.ApplicationWindow):
     # ---------------- 统计
 
     def build_stats(self):
-        """统计页：概览、六个细分标签、开关和清空。
+        """统计页：开关、清除、说明在上面（只建一次）；开着时下面是概览和六个细分标签。
 
-        内容每次切到这一页或统计文件变了就重建（数据量小），标签位置保留。
+        下面的内容每次切到这一页、开关变了、统计文件变了就重建（数据量小），标签位置保留。
         """
         self.stats_tab = "keys"
         self.stats_mtime = None
@@ -4986,10 +5046,29 @@ class SettingsWindow(Adw.ApplicationWindow):
         # 透明区域会透出模糊的桌面，文字对比度也会掉。
         outer.add_css_class("wt-stats-page")
         clamp = Adw.Clamp(maximum_size=720)
-        self.stats_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18,
-                                 margin_top=30, margin_bottom=30,
-                                 margin_start=30, margin_end=30)
-        clamp.set_child(self.stats_box)
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18,
+                       margin_top=30, margin_bottom=30, margin_start=30, margin_end=30)
+        title = Gtk.Label(label="统计", xalign=0)
+        title.add_css_class("wt-page-title")
+        page.append(title)
+
+        group = Adw.PreferencesGroup()
+        self.stats_row = self.make_switch("TypingStats", "记录打字统计",
+                                          "默认关；只在本机记每天的计数，不记打的内容")
+        self.add_info(self.stats_row, STATS_PRIVACY)
+        self.stats_row.connect("notify::active", lambda _r, _p: GLib.idle_add(self.stats_render))
+        group.add(self.stats_row)
+        self.stats_clear_row = Adw.ActionRow(title="清除统计", subtitle="删掉已经记下的全部计数")
+        clear = Gtk.Button(label="清除", valign=Gtk.Align.CENTER)
+        clear.add_css_class("destructive-action")
+        clear.connect("clicked", self.stats_clear)
+        self.stats_clear_row.add_suffix(clear)
+        group.add(self.stats_clear_row)
+        page.append(group)
+
+        self.stats_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        page.append(self.stats_box)
+        clamp.set_child(page)
         outer.set_child(clamp)
         self.stats_render()
         GLib.timeout_add_seconds(2, self.stats_tick)
@@ -4998,30 +5077,48 @@ class SettingsWindow(Adw.ApplicationWindow):
     def stats_tick(self):
         if self.stack.get_visible_child_name() != "stats":
             return True
-        try:
-            mtime = os.stat(STATS_FILE).st_mtime_ns
-        except OSError:
-            mtime = 0
-        if mtime != self.stats_mtime:
+        if self.stats_stamp() != self.stats_mtime:
             self.stats_render()
         return True
+
+    @staticmethod
+    def stats_stamp():
+        stamp = []
+        for name in (STATS_FILE, STATS_CLEAR_FILE):
+            try:
+                stamp.append(os.stat(name).st_mtime_ns)
+            except OSError:
+                stamp.append(0)
+        return tuple(stamp)
 
     def stats_tab_changed(self, stack, _param):
         self.stats_tab = stack.get_visible_child_name() or "keys"
 
     def stats_render(self):
-        try:
-            self.stats_mtime = os.stat(STATS_FILE).st_mtime_ns
-        except OSError:
-            self.stats_mtime = 0
+        self.stats_mtime = self.stats_stamp()
         data = read_stats()
-        metrics = stats_metrics(data)
         while (child := self.stats_box.get_first_child()) is not None:
             self.stats_box.remove(child)
-
-        title = Gtk.Label(label="统计", xalign=0)
-        title.add_css_class("wt-page-title")
-        self.stats_box.append(title)
+        self.stats_clear_row.set_sensitive(bool(data["days"]) or os.path.exists(STATS_FILE))
+        if self.values.get("TypingStats") != "True":
+            # 关着：输入法什么都不记。说清楚开了以后记什么、不记什么；以前记下的还能清除
+            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            card.add_css_class("wt-stats-card")
+            card.append(self.stats_heading("打字统计关着"))
+            for text in ("关着时 WowType 什么都不记：不计数，也不建统计文件。",
+                         STATS_PRIVACY,
+                         f"文件在 {STATS_FILE}，随时可以在上面清除。"):
+                label = Gtk.Label(label=text, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
+                label.add_css_class("wt-stats-line")
+                card.append(label)
+            if data["days"]:
+                note = Gtk.Label(label=f"以前记下的 {len(data['days'])} 天还在，打开开关后接着记；不要了点「清除」。",
+                                 xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
+                note.add_css_class("wt-stats-note")
+                card.append(note)
+            self.stats_box.append(card)
+            return False
+        metrics = stats_metrics(data)
         self.stats_box.append(self.stats_overview(metrics))
 
         note = Gtk.Label(
@@ -5051,28 +5148,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.stats_stack = stack
         self.stats_box.append(switcher)
         self.stats_box.append(stack)
-
-        footer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        footer.set_margin_top(10)
-        row = Gtk.Box(spacing=10)
-        label = Gtk.Label(label="记录打字统计", xalign=0, hexpand=True)
-        switch = Gtk.Switch(active=data["enabled"], valign=Gtk.Align.CENTER)
-        switch.connect("notify::active", self.stats_toggle)
-        self.stats_switch = switch
-        clear = Gtk.Button(label="清空统计", valign=Gtk.Align.CENTER)
-        clear.add_css_class("flat")
-        clear.connect("clicked", self.stats_clear)
-        row.append(label)
-        row.append(switch)
-        row.append(clear)
-        footer.append(row)
-        privacy = Gtk.Label(
-            label="只在本机保存每天的字符类别、活跃时长、按键次数和候选位置，"
-                  "不保存输入内容、按键顺序或上下文。",
-            xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
-        privacy.add_css_class("wt-stats-note")
-        footer.append(privacy)
-        self.stats_box.append(footer)
+        return False
 
     def stats_overview(self, metrics):
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
@@ -5406,41 +5482,25 @@ class SettingsWindow(Adw.ApplicationWindow):
         row.append(value)
         return row
 
-    def stats_toggle(self, switch, _param):
-        data = read_stats()
-        if data["enabled"] == switch.get_active():
-            return
-        data["enabled"] = switch.get_active()
-        try:
-            write_stats(data)
-        except OSError as error:
-            self.toast(f"保存失败：{error}")
-            return
-        self.stats_render()
-
     def stats_clear(self, _button):
-        dialog = Adw.AlertDialog(
-            heading="清空打字统计？",
-            body="每天的字符数、按键次数和候选位置都会删掉，不能恢复。开关保持现在的位置。")
+        dialog = AlertDialog(
+            heading="清除打字统计？",
+            body="已经记下的每天的字数、按键次数和候选位置都会删掉，不能恢复。开关保持现在的位置。")
         dialog.add_response("cancel", "取消")
-        dialog.add_response("clear", "清空")
-        dialog.set_response_appearance("clear", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.add_response("clear", "清除")
+        dialog.set_response_appearance("clear", ResponseAppearance.DESTRUCTIVE)
         dialog.connect("response", self.on_stats_clear)
         dialog.present(self)
 
     def on_stats_clear(self, _dialog, response):
         if response != "clear":
             return
-        data = read_stats()
-        data["generation"] = int.from_bytes(os.urandom(8), "little")
-        data["days"] = {}
-        data["lastCommitMs"] = 0
         try:
-            write_stats(data)
+            clear_stats()
         except OSError as error:
-            self.toast(f"清空失败：{error}")
+            self.toast(f"清除失败：{error}")
             return
-        self.toast("已清空打字统计")
+        self.toast("已清除打字统计")
         self.stats_render()
 
     # ---------------- 常规
@@ -7643,6 +7703,7 @@ if __name__ == "__main__":
         voice_model_self_test()
         lexicon_self_test()
         stale_copy_self_test()
+        stats_self_test()
         nnlm_self_test()
         nnlm_choice_self_test()
         # fcitx5 默认配置：左 Shift 是「临时切换输入法」

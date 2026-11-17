@@ -640,7 +640,9 @@ public final class Composer {
             // 会话已经补好了空格、记了上文；互译时上屏的是译文、原文
             let text = String(cString: commit)
             client?.insertText(text)
-            onCommitStats?(text, statsSource, statsScheme, Int(frame.pointee.choice_index))
+            // 打字统计（外壳按 TypingStats 决定记不记）：互译上屏的不是候选，位置记 0
+            onCommitStats?(text, statsSource, statsScheme,
+                           mode == .translate ? 0 : Int(frame.pointee.choice_index))
             if frame.pointee.learned != 0 {
                 onCommit?(text)
             }
@@ -659,16 +661,17 @@ public final class Composer {
         apply(wowtype_session_commit_text(session, text, reliablePreviousCharacter))
     }
 
-    /// 统计用的输入模式：互译 / 英文 / 双拼 / 全拼。
+    /// 统计用的输入模式：互译 / 英文 / 五笔 / 双拼 / 全拼。
     private var statsSource: String {
         if mode == .translate { return "translate" }
         if mode == .english { return "english" }
+        if config.wubi { return "wubi" }
         return config.shuangpin ? "shuangpin" : "quanpin"
     }
 
     /// 双拼方案在统计里的名字（小写）；不是双拼时为空。
     private var statsScheme: String {
-        config.shuangpin ? config.shuangpinScheme.lowercased() : ""
+        config.shuangpin && mode != .translate && mode != .english ? config.shuangpinScheme.lowercased() : ""
     }
 
     func refresh() {
@@ -722,7 +725,8 @@ public final class Composer {
     // MARK: 互译
 
     /// 外壳每 50 毫秒调一次（会话的 wake_after_ms）：到时间就发请求，按过回车的译好了就上屏，
-    /// 结果变了就重画。返回 false 表示不用再调了（下一次原文变了会再叫 onTranslatePoll）。    @discardableResult
+    /// 结果变了就重画。返回 false 表示不用再调了（下一次原文变了会再叫 onTranslatePoll）。
+    @discardableResult
     public func pollTranslation() -> Bool {
         guard let frame = wowtype_session_tick(session, UInt64(max(clock(), 0) * 1000)) else {
             return false
@@ -741,7 +745,8 @@ public final class Composer {
     private func translateSignature(_ frame: UnsafePointer<WowtypeFrame>) -> String {
         let f = frame.pointee
         return [f.translate_source, f.translate_text, f.translate_status, f.translate_title]
-            .map { String(cString: $0) }.joined(separator: "|") + "|\(f.translate_done)"    }
+            .map { String(cString: $0) }.joined(separator: "|") + "|\(f.translate_done)"
+    }
 
     /// 互译时画编辑区和候选框（Linux 的 fillTranslateView）：编辑区里是译文，
     /// 候选框顶上是「中→英 互译：」+ 原文 + 正在打的拼音，底下是状态。内容都是会话给的。

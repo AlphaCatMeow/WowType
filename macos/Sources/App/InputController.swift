@@ -40,7 +40,7 @@ class WowTypeInputController: IMKInputController {
         composer.onCommit = { _ in AppState.shared.didCommit() }
         composer.onCommitStats = { text, source, scheme, index in
             AppState.shared.recordCommit(text, source: source, scheme: scheme,
-                                         candidateIndex: index)
+                                         candidateIndex: index, sensitive: IsSecureEventInputEnabled())
         }
         composer.onForget = { AppState.shared.didForget() }
         composer.sampleClipboard = { AppState.shared.sampleClipboard() }
@@ -137,22 +137,25 @@ class WowTypeInputController: IMKInputController {
         }
     }
 
-    /// 按键热力图：自动重复不算，密码框（安全输入）不计。功能键也在这一层记，
+    /// 按键热力图（TypingStats 开着时）：自动重复不算，密码框（安全输入）不计。功能键也在这一层记，
     /// 因为 `translateKeyDown` 会把 F 键、别的键盘布局打出的字符丢掉。
     private func recordKeyPress(_ event: NSEvent) {
-        guard !event.isARepeat, !IsSecureEventInputEnabled() else { return }
-        AppState.shared.recordKey(event.keyCode)
+        guard !event.isARepeat else { return }
+        AppState.shared.recordKey(event.keyCode, sensitive: IsSecureEventInputEnabled())
     }
 
     /// 修饰键只有 flagsChanged：按左右设备位判断是不是按下那一边。
     private var modifierHeld: Set<UInt16> = []
 
     private func recordModifierPress(_ event: NSEvent) {
+        // 统计关着时连按着哪个修饰键也不记
+        guard AppState.shared.config.typingStats else {
+            modifierHeld.removeAll()
+            return
+        }
         let code = event.keyCode
         if code == 0x39 {  // Caps Lock 只在切换时来一次，每次切换都算按了一下
-            if !IsSecureEventInputEnabled() {
-                AppState.shared.recordKey(code)
-            }
+            AppState.shared.recordKey(code, sensitive: IsSecureEventInputEnabled())
             return
         }
         let bit: NSEvent.ModifierFlags?
@@ -166,8 +169,8 @@ class WowTypeInputController: IMKInputController {
         guard let bit else { return }
         let down = event.modifierFlags.contains(bit)
         if down {
-            if modifierHeld.insert(code).inserted, !IsSecureEventInputEnabled() {
-                AppState.shared.recordKey(code)
+            if modifierHeld.insert(code).inserted {
+                AppState.shared.recordKey(code, sensitive: IsSecureEventInputEnabled())
             }
         } else {
             modifierHeld.remove(code)

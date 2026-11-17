@@ -1414,16 +1414,24 @@ private struct StatsPage: View {
 
     private var metrics: StatsMetrics { StatsMath.metrics(document) }
 
+    /// 和 Linux 设置界面的 STATS_PRIVACY 一样。
+    private static let privacy = "打开以后只在本机按天记计数：上屏的字数和各类字符数、活跃时长、每个键按了几次、"
+        + "各输入模式的字数、选了第几个候选。不记打的字、拼音、按键顺序和时刻，密码框里的不算。"
+
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            overview
-            Text("速度统计汉字与字母；两次上屏间隔超过 10 秒视为休息，不计入活跃时长。")
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            tabBar
-            content
-            footer
+            controls
+            if model.config.typingStats {
+                overview
+                Text("速度统计汉字与字母；两次上屏间隔超过 10 秒视为休息，不计入活跃时长。")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                tabBar
+                content
+            } else {
+                offNote
+            }
         }
         .onAppear {
             visible = true
@@ -1847,48 +1855,56 @@ private struct StatsPage: View {
         }
     }
 
-    // MARK: 底部
+    // MARK: 开关和清除
 
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                Toggle("记录打字统计", isOn: Binding(
-                    get: { document.enabled },
-                    set: { setEnabled($0) }))
-                    .toggleStyle(.switch)
-                Spacer()
-                Button("清空统计", role: .destructive) { showClear = true }
-                    .buttonStyle(.borderless)
-                    .confirmationDialog("清空打字统计？", isPresented: $showClear) {
-                        Button("清空", role: .destructive) { clear() }
-                        Button("取消", role: .cancel) {}
-                    } message: {
-                        Text("每天的字符数、按键次数和候选位置都会删掉，不能恢复。开关保持现在的位置。")
-                    }
+    /// 开关是 wowtype.conf 的 TypingStats（默认关），输入法读设置文件生效；清除关着时也能点。
+    private var controls: some View {
+        PrefGroup("打字统计", info: Self.privacy) {
+            SwitchRow(title: "记录打字统计", subtitle: "默认关；只在本机记每天的计数，不记打的内容",
+                      isOn: $model.config.typingStats)
+            RowDivider()
+            ActionRow(title: "清除统计", subtitle: "删掉已经记下的全部计数", action: { showClear = true }) {
+                Button("清除", role: .destructive) { showClear = true }
             }
-            Text("只在本机保存每天的字符类别、活跃时长、按键次数和候选位置，不保存输入内容、按键顺序或上下文。")
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            .confirmationDialog("清除打字统计？", isPresented: $showClear) {
+                Button("清除", role: .destructive) { clear() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("已经记下的每天的字数、按键次数和候选位置都会删掉，不能恢复。开关保持现在的位置。")
+            }
         }
-        .padding(.top, 4)
     }
 
-    private func setEnabled(_ enabled: Bool) {
-        do {
-            try StatsStore.setEnabled(enabled, path: path)
-        } catch {
-            model.showToast("保存失败：\(error.localizedDescription)")
+    /// 关着时：说清楚开了以后记什么、不记什么。
+    private var offNote: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("打字统计关着")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(palette.heading)
+            Text("关着时 WowType 什么都不记：不计数，也不建统计文件。")
+            Text(Self.privacy)
+            Text("文件在 \(path)，随时可以在上面清除。")
+            if !document.days.isEmpty {
+                Text("以前记下的 \(document.days.count) 天还在，打开开关后接着记；不要了点「清除」。")
+                    .foregroundColor(.secondary)
+            }
         }
-        reload()
+        .font(.system(size: 12))
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(palette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .stroke(palette.cardBorder, lineWidth: 1))
     }
 
     private func clear() {
         do {
-            try StatsStore.clear(path: path, enabled: document.enabled)
-            model.showToast("已清空打字统计")
+            try StatsStore.clear(path: path)
+            model.showToast("已清除打字统计")
         } catch {
-            model.showToast("清空失败：\(error.localizedDescription)")
+            model.showToast("清除失败：\(error.localizedDescription)")
         }
         reload()
     }
