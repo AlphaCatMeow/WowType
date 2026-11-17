@@ -347,6 +347,23 @@ private struct UpdateGroup: View {
                           + "关掉以后已经装上的预发布版不会退回，等下一个正式版出来再提示更新。",
                       isOn: $model.config.betaUpdates)
         }
+        // 有新版时下面列出「这一版」改了什么（和 Linux 设置「更新」页的「更新内容」一样）
+        if updater.hasUpdate, let notes = updater.release.map({ AppUpdate.notesText($0.notes) }), !notes.isEmpty {
+            PrefGroup("更新内容") {
+                Text(Self.rendered(notes))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+            }
+        }
+    }
+
+    /// 行内的粗体、行内代码、链接照 Markdown 画；认不出来时原样
+    private static func rendered(_ text: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
     }
 }
 

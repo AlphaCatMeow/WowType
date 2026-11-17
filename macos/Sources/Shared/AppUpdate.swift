@@ -110,6 +110,77 @@ public enum AppUpdate {
         now - state.checked >= checkInterval || now < state.checked
     }
 
+    /// 发布说明里只留「## 这一版」那一节（去掉标题本身）；没有这一节就整个原样（和 Linux 设置的 release_highlights 一样）。
+    /// 后面的安装步骤、自动生成的提交列表对已经装好的人没用。
+    public static func highlights(_ notes: String) -> String {
+        let all = notes.trimmingWhitespace()
+        let lines = all.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
+        for (i, line) in lines.enumerated() {
+            let stripped = line.trimmingWhitespace()
+            guard stripped.hasPrefix("##"), String(stripped.dropFirst(2)).trimmingWhitespace() == "这一版" else {
+                continue
+            }
+            var body: [String] = []
+            for rest in lines[(i + 1)...] {
+                if isSectionHeading(rest) { break }
+                body.append(rest)
+            }
+            let text = body.joined(separator: "\n").trimmingWhitespace()
+            return text.isEmpty ? all : text
+        }
+        return all
+    }
+
+    /// 「# 」「## 」开头的一行（一节的开始；### 小标题不算）
+    private static func isSectionHeading(_ line: String) -> Bool {
+        var rest = Substring(line)
+        var hashes = 0
+        while hashes < 2, rest.first == "#" {
+            hashes += 1
+            rest.removeFirst()
+        }
+        guard hashes > 0, let next = rest.first else { return false }
+        return next == " " || next == "\t"
+    }
+
+    /// 设置窗口「更新内容」显示的字（Linux 是 markdown_to_pango）：只留「这一版」，标题换成粗体、列表换成 •、
+    /// 去掉代码块的 ```（粗体、行内代码、链接留给界面按行内 Markdown 画）。太长的截到 6000 个字。
+    public static func notesText(_ notes: String) -> String {
+        var out: [String] = []
+        var inCode = false
+        for raw in highlights(notes).split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+            var line = String(raw)
+            while line.last == " " || line.last == "\t" {
+                line.removeLast()
+            }
+            if line.trimmingWhitespace().hasPrefix("```") {
+                inCode.toggle()
+                continue
+            }
+            if inCode {
+                out.append("    " + line)
+                continue
+            }
+            let body = line.drop { $0 == " " || $0 == "\t" }
+            let indent = line.count - body.count
+            let title = body.drop { $0 == "#" }
+            if title.count < body.count, title.first == " " {
+                if let last = out.last, !last.isEmpty {
+                    out.append("")
+                }
+                out.append("**" + String(title.dropFirst()).trimmingWhitespace() + "**")
+                continue
+            }
+            if let first = body.first, "-*+".contains(first), body.dropFirst().first == " " {
+                out.append(String(repeating: "  ", count: indent / 2) + "• " + String(body.dropFirst(2)))
+                continue
+            }
+            out.append(line)
+        }
+        let text = out.joined(separator: "\n")
+        return text.count > 6000 ? String(text.prefix(6000)) + "…" : text
+    }
+
     private static func isAlnum(_ s: Unicode.Scalar) -> Bool {
         ("0"..."9").contains(s) || ("a"..."z").contains(s) || ("A"..."Z").contains(s)
     }

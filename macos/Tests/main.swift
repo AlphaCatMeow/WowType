@@ -2082,6 +2082,13 @@ do {
     check(AppUpdate.version(tag: "") == nil && AppUpdate.version(tag: "v") == nil && AppUpdate.version(tag: "v1/../x") == nil
           && AppUpdate.version(tag: "v1 2") == nil && AppUpdate.version(tag: "-1") == nil, "不像版本号的 tag 不认")
     check(AppUpdate.packageName(version: "0.4.1") == "WowType-0.4.1-macos.pkg", "macOS 安装包的名字")
+    // 更新内容：只留「## 这一版」那一节（和 Linux 设置的 release_highlights 一样）
+    let notes = "# WowType 0.5.2\n\n## 这一版\n\n### 新功能\n- 自动配对\n  - 套着打\n```\nbrew x\n```\n## 安装\n下载 pkg\n"
+    check(AppUpdate.highlights(notes) == "### 新功能\n- 自动配对\n  - 套着打\n```\nbrew x\n```",
+          "更新内容只留「这一版」", AppUpdate.highlights(notes))
+    check(AppUpdate.highlights("修了一个问题\n") == "修了一个问题", "没有「这一版」时原样")
+    check(AppUpdate.notesText(notes) == "**新功能**\n• 自动配对\n  • 套着打\n    brew x",
+          "更新内容：标题加粗、列表换成 •、去掉代码块记号", AppUpdate.notesText(notes))
     // Beta 计划：版本号最大的（预发布也算），一样大要正式版；数据的发布（nnlm-…）、草稿不算
     typealias L = AppUpdate.Listed
     check(AppUpdate.pickNewest([L(tag: "v0.4.0"), L(tag: "v0.5.0", prerelease: true),

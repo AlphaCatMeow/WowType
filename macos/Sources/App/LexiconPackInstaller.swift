@@ -16,6 +16,8 @@ enum LexiconPackInstaller {
         let tag: String
         let assets: [String: URL]
         var prerelease = false
+        /// 发布说明（Markdown），「常规」页有新版时显示里面「这一版」那一节
+        var notes = ""
 
         var wanxiang: (name: String, url: URL, version: String)? {
             LexiconPack.pickAsset(Array(assets.keys)).flatMap { pick in
@@ -67,7 +69,7 @@ enum LexiconPackInstaller {
             }
         }
         return Release(tag: json["tag_name"] as? String ?? "", assets: assets,
-                       prerelease: json["prerelease"] as? Bool ?? false)
+                       prerelease: json["prerelease"] as? Bool ?? false, notes: json["body"] as? String ?? "")
     }
 
     /// 下载最新发布页上的万象词库包并按 SHA256SUMS 校验，返回临时文件（用完删掉）。
