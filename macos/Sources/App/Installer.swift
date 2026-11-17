@@ -72,6 +72,15 @@ enum Installer {
         return ok
     }
 
+    /// 系统现在用的输入源是不是 WowType（InitialMode 用来分清切走了输入法还是只换了应用）；问不到是 nil。在主线程上调。
+    static var isCurrentSource: Bool? {
+        guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return nil }
+        if let bundle = string(source, kTISPropertyBundleID) {
+            return bundle == bundleID
+        }
+        return string(source, kTISPropertyInputSourceID).map { $0.hasPrefix(bundleID) }
+    }
+
     /// 诊断信息用：系统里登记了没有、打开了没有、是不是正在用（在主线程上调）
     static var sourceSummary: String {
         guard let source = mode() else { return "系统里没有登记（没找到 \(modeID)）" }

@@ -25,6 +25,11 @@ public struct WowtypeConfig: Equatable {
         case off = "Off", semicolon = "Semicolon", semicolonQuote = "SemicolonQuote"
     }
 
+    /// 从别的输入法切到 WowType、这个进程里第一次用时是中文、英文，还是不动（Last），见 spec/config.json 的 InitialMode
+    public enum InitialMode: String, CaseIterable {
+        case chinese = "Chinese", english = "English", last = "Last"
+    }
+
     /// 打字途中方向键做什么（#129），见 spec/config.json 的 ArrowKeys
     public enum ArrowKeys: String, CaseIterable {
         case candidates = "Candidates", caret = "Caret"
@@ -106,8 +111,12 @@ public struct WowtypeConfig: Equatable {
     /// 五笔候选后面显示还要打的码
     public var wubiHint = true
     public var shiftToggle = ShiftToggle.both
+    /// 切到 WowType 时的模式（换窗口不算）；关了 Shift 切换、也没另设切换键时总是中文
+    public var initialMode = InitialMode.chinese
     public var traditional = false
     public var halfwidthPunct = false
+    /// 中文标点自动配对：打 ( [ < { " ' 上屏成对的（）【】《》「」“”‘’，光标放到中间（应用要能按位置改字才开）
+    public var autoPairPunct = false
     public var selectKeys = SelectKeys.off
     public var pickChar = true
     /// 联想：上屏以后给出常跟在后面的词（Tab 进联想行再选；数字、空格照常）
@@ -274,9 +283,9 @@ public struct WowtypeConfig: Equatable {
         "FuzzyAn", "FuzzyEn", "FuzzyIn", "FuzzyIan", "FuzzyUan", "FuzzyUn",
         "FuzzyAnAi", "FuzzyHuangWang", "FuzzyUnIong", "FuzzyEngOng",
         "TypoCorrection", "RareExtChars", "InputScheme", "ShuangpinScheme", "ShuangpinShowKeys",
-        "WubiAutoCommit", "WubiHint", "ShiftToggle",
+        "WubiAutoCommit", "WubiHint", "ShiftToggle", "InitialMode",
         "Traditional",
-        "PunctuationStyle", "DateTime", "Calculator", "EmojiSuggest", "AutoSpace", "AutoSpaceLetters",
+        "PunctuationStyle", "AutoPairPunct", "DateTime", "Calculator", "EmojiSuggest", "AutoSpace", "AutoSpaceLetters",
         "AutoSpaceDigits", "Lexicon", "Toolbar", "ClipboardHistory", "Voice", "VoiceKey", "VoiceCopy", "EmojiKey",
         "ToggleKey", "TranslateModeKey", "CheckUpdate", "BetaUpdates", "TypingStats",
         "Translate", "TranslateTarget", "TranslateBaseUrl", "TranslateModel", "TranslateFormal", "TranslateLocal",
@@ -294,7 +303,7 @@ public struct WowtypeConfig: Equatable {
         "FuzzyUnIong": \.fuzzyUnIong, "FuzzyEngOng": \.fuzzyEngOng,
         "TypoCorrection": \.typoCorrection, "RareExtChars": \.rareExtChars,
         "ShuangpinShowKeys": \.shuangpinShowKeys, "WubiAutoCommit": \.wubiAutoCommit, "WubiHint": \.wubiHint,
-        "Traditional": \.traditional, "PickChar": \.pickChar, "Association": \.association,
+        "Traditional": \.traditional, "AutoPairPunct": \.autoPairPunct, "PickChar": \.pickChar, "Association": \.association,
         "DateTime": \.dateTime, "Calculator": \.calculator, "EmojiSuggest": \.emojiSuggest,
         "AutoSpace": \.autoSpace, "AutoSpaceLetters": \.autoSpaceLetters, "AutoSpaceDigits": \.autoSpaceDigits,
         "Toolbar": \.toolbar, "ClipboardHistory": \.clipboardHistory, "Voice": \.voice, "VoiceCopy": \.voiceCopy,
@@ -321,6 +330,8 @@ public struct WowtypeConfig: Equatable {
             if let v = matchName(value, WowtypeConfig.shuangpinSchemes) { shuangpinScheme = v }
         case "ShiftToggle":
             if let v = matchName(value, ShiftToggle.allCases.map(\.rawValue)) { shiftToggle = ShiftToggle(rawValue: v)! }
+        case "InitialMode":
+            if let v = matchName(value, InitialMode.allCases.map(\.rawValue)) { initialMode = InitialMode(rawValue: v)! }
         case "PunctuationStyle":
             if let v = matchName(value, ["Fullwidth", "Halfwidth"]) { halfwidthPunct = v == "Halfwidth" }
         case "SelectKeys":
@@ -369,6 +380,7 @@ public struct WowtypeConfig: Equatable {
         case "InputScheme": return inputScheme.rawValue
         case "ShuangpinScheme": return shuangpinScheme
         case "ShiftToggle": return shiftToggle.rawValue
+        case "InitialMode": return initialMode.rawValue
         case "PunctuationStyle": return halfwidthPunct ? "Halfwidth" : "Fullwidth"
         case "SelectKeys": return selectKeys.rawValue
         case "Lexicon": return lexicon
@@ -581,10 +593,16 @@ public struct WowtypeConfig: Equatable {
 
         # 单按哪个 Shift 切中英文：Both、Left、Right、Off
         ShiftToggle=Both
+        # 从别的输入法切到 WowType、开机后第一次用时：Chinese 中文、English 英文、Last 和上次一样（每个应用自己记）。
+        # 换窗口、换应用不算；关了 Shift 切换（ShiftToggle 是 Off）、也没设 ToggleKey 时总是中文
+        InitialMode=\(d.initialMode.rawValue)
         # 输出繁体字
         Traditional=\(b(d.traditional))
         # 标点：Fullwidth 中文标点、Halfwidth 英文标点
         PunctuationStyle=Fullwidth
+        # 中文标点自动配对：打 ( [ < { " ' 上屏成对的（）【】《》「」“”‘’，光标放到中间；在里面打完再按右半边跳过补好的那个，
+        # 里面空着时退格两个一起删。应用说不清光标在哪（比如终端）时不配对
+        AutoPairPunct=\(b(d.autoPairPunct))
         # 打 riqi、shijian、xingqi 时给出当前日期时间
         DateTime=\(b(d.dateTime))
         # v 开头算算式（v1+2*3；双拼、五笔时是大写 V）

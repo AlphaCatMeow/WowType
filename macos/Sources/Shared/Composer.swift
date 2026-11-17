@@ -193,11 +193,61 @@ public protocol TextClient: AnyObject {
     /// previousCharacter 是应用告诉的（不是外壳猜的）。中英文之间自动加空格只信应用告诉的，
     /// 和 Linux 一样：读不到光标前的文字就不猜。
     var previousCharacterIsReliable: Bool { get }
+    /// 能按位置改应用里的字（中文标点自动配对要：挪光标、删补好的右半边）：应用说得清光标在哪、
+    /// 读得到光标旁边的字。这一下不能时不配对，标点照常一个一个上屏（不会留下一个光标在它后面的右括号）。
+    var canEditAroundCaret: Bool { get }
+    /// 应用里光标后一个字（Unicode 码位）；不知道（应用不说、有选区、光标在文字末尾）是 nil。
+    /// 自动配对跳过右标点、成对删之前拿它核对。
+    var nextCharacter: UInt32? { get }
+    /// 按位置改一次字（见 CaretEdit）；改不了（不知道光标在哪）返回 false。
+    func edit(_ edit: CaretEdit) -> Bool
 }
 
 extension TextClient {
     public var previousCharacterIsReliable: Bool { true }
     public var allowsTranslation: Bool { true }
+    public var canEditAroundCaret: Bool { false }
+    public var nextCharacter: UInt32? { nil }
+    public func edit(_ edit: CaretEdit) -> Bool { false }
+}
+
+/// 自动配对（AutoPairPunct）要应用做的一次修改：光标（刚上屏的字后面）往后 offset 个字（UTF-16，负数往前）起，
+/// 换掉 length 个字，换成 text；光标落在换上的字后面。
+///
+/// IMK 里没有「挪光标」，只有按位置换字（insertText 带 replacementRange，长按出重音字母也是这么换的）。
+/// 挪光标就是把目标位置前面那个字原样换一遍：上屏「（）」后把「（」换成「（」，光标落在两个中间；
+/// 跳过补好的「）」是把它换成它自己。不知道那个字是什么时换空的（长度 0 的位置换成空串），只把光标放过去。
+public struct CaretEdit: Equatable {
+    public var offset: Int
+    public var length: Int
+    public var text: String
+
+    public init(offset: Int, length: Int, text: String) {
+        self.offset = offset
+        self.length = length
+        self.text = text
+    }
+
+    /// 空的一对按退格：光标前、后各删一个字（左右半边都是一个 UTF-16 单元的中文标点）。
+    public static let deletePair = CaretEdit(offset: -1, length: 2, text: "")
+
+    /// 光标挪 delta 个字（会话的 frame->cursor_delta）。inserted 是这一下刚上屏的字（光标在它后面），
+    /// next 是按键之前光标后面那个字（跳过右标点时就是它）。
+    public static func move(by delta: Int, inserted: String, next: UInt32?) -> CaretEdit {
+        if delta < 0 {
+            // 往左：把目标位置前面那个字（刚上屏的字里的）原样换一遍
+            let units = Array(inserted.utf16)
+            let index = units.count + delta - 1
+            if index >= 0, index < units.count, !(0xD800...0xDFFF).contains(units[index]) {
+                return CaretEdit(offset: delta - 1, length: 1, text: String(decoding: [units[index]], as: UTF16.self))
+            }
+        } else if delta == 1, let next, next > 0, next < 0xD800 || (next >= 0xE000 && next < 0x10000),
+                  let scalar = Unicode.Scalar(next) {
+            // 往右跳过一个：把光标后面那个字（补好的右半边）换成它自己
+            return CaretEdit(offset: 0, length: 1, text: String(Character(scalar)))
+        }
+        return CaretEdit(offset: delta, length: 0, text: "")
+    }
 }
 
 public final class Composer {
@@ -266,6 +316,10 @@ public final class Composer {
     private var translateDrawn = ""
     /// 候选框上画着上屏以后的联想：会话关掉了联想、键又交给了应用时要收起来
     private var associationShown = false
+    /// 会话的自动配对开着（设置里打开了、这个输入框现在能按位置改字）。变了才重新配会话（关掉时会话丢掉记着的配对）
+    private var pairing = false
+    /// 这一下按键之前应用里光标后面的字（报给了会话的），跳过补好的右标点时换它自己
+    private var keyNextCharacter: UInt32?
     /// 原文变了、在等译文：外壳开始每 50 毫秒调一次 pollTranslation（已经在调就不用管）。
     public var onTranslatePoll: (() -> Void)?
     /// 单调时钟（秒），测试里换成假的。
@@ -486,6 +540,25 @@ public final class Composer {
         apply(wowtype_session_set_mode(session, raw))
     }
 
+    /// 能自己切中 / 英：单按 Shift 没关，或者另设了切换键（只设了进出「译」的键不算）。
+    public var canToggleMode: Bool {
+        config.shiftToggle != .off || config.toggleKey != nil
+    }
+
+    /// 切到 WowType 时（从别的输入法切过来、这个进程里第一次用到这个输入框）按设置里的 InitialMode 定中 / 英，
+    /// 和 Linux 的 applyInitialMode 一样：Last 不动；切不回中文时不进英文；在「译」里的回到中文 / 英文。
+    /// 不弹「中 / 英」提示。外壳负责只在切输入法时调（换窗口、换应用不调）。
+    public func applyInitialMode() {
+        switch config.initialMode {
+        case .last:
+            return
+        case .chinese:
+            switchMode(to: .chinese)
+        case .english:
+            switchMode(to: canToggleMode ? .english : .chinese)
+        }
+    }
+
     /// 系统要结束组字（换输入框、点了别处、切走输入法）：已选的词 + 打的字母原样上屏（和回车一样，
     /// 双拼是打的键、五笔是码，不带分音节的隔音符）；互译时拼音先进原文，原文再原样上屏。
     /// 工具栏、表情面板收起来，会话记的上文作废（回来时光标可能在别处）。
@@ -547,6 +620,9 @@ public final class Composer {
         config.wubi_auto_commit = settings.wubiAutoCommit ? 1 : 0
         config.wubi_hint = settings.wubiHint ? 1 : 0
         config.association = settings.association ? 1 : 0
+        // 自动配对要能挪应用里的光标：这个输入框现在不能时先不开（sendToSession 每个键看一眼，变了再配）
+        pairing = settings.autoPairPunct && client?.canEditAroundCaret == true
+        config.auto_pair_punct = pairing ? 1 : 0
         wowtype_session_configure(session, &config)
         if isComposing {
             refresh()
@@ -593,6 +669,13 @@ public final class Composer {
 
     @discardableResult
     func sendToSession(_ key: KeyInput, action: UInt32 = UInt32(WOWTYPE_KEY_ACTION_NONE)) -> Bool {
+        if config.autoPairPunct || pairing {
+            // 输入框能不能按位置改字可能变了（换了输入框、点到了说不清光标的地方）：变了重新配会话
+            let wanted = config.autoPairPunct && client?.canEditAroundCaret == true
+            if wanted != pairing {
+                configure()
+            }
+        }
         var raw = WowtypeKey()
         raw.size = UInt32(MemoryLayout<WowtypeKey>.size)
         raw.keysym = key.keysym
@@ -601,8 +684,17 @@ public final class Composer {
         raw.action = action
         raw.time_ms = UInt64(max(clock(), 0) * 1000)
         if client?.allowsTranslation != true {
-            // 密码框（安全输入）：「译」里也照常上屏、不往外发，进出「译」的键进不去
+            // 密码框（安全输入）：「译」里也照常上屏、不往外发，进出「译」的键进不去。
+            // 不带 NO_LEARN（「确定是密码框」）：真的密码框里系统换成英文键盘，按键根本到不了输入法；
+            // 安全输入开着还能打中文的是终端的「安全键盘输入」、没关掉安全输入的密码管理器，在那里照常学词
             raw.hints |= WOWTYPE_KEY_HINT_NO_TRANSLATE
+        }
+        keyNextCharacter = nil
+        if pairing && !translating, let next = client?.nextCharacter {
+            // 自动配对：跳过右标点、成对删之前，会话拿光标后的字核对补好的右半边还在不在
+            raw.next_char = next
+            raw.hints |= WOWTYPE_KEY_HINT_NEXT_CHAR
+            keyNextCharacter = next
         }
         if translating {
             // 互译时上屏的字进原文：光标前的字是原文的最后一个字（3.14 的点、20:22 的冒号原样进原文），不补空格
@@ -622,6 +714,11 @@ public final class Composer {
         let handled = frame.pointee.handled != 0
         if handled {
             apply(frame)
+        } else if Int(frame.pointee.size) >= MemoryLayout<WowtypeFrame>.size, frame.pointee.delete_next != 0,
+                  client?.edit(.deletePair) == true {
+            // 自动配对：空的一对按退格，左右两半一起删（这个退格吃掉，不再交给应用）
+            refresh()
+            return true
         } else if associationShown {
             // 联想开着时按了打字以外的键（空格、回车、数字、方向键……）：会话关掉了联想、键交给应用
             refresh()
@@ -636,9 +733,12 @@ public final class Composer {
 
     /// 按会话给的 frame 上屏、更新编辑区和候选框。
     func apply(_ frame: UnsafePointer<WowtypeFrame>?) {
+        let delta = frame.map { Int($0.pointee.size) >= MemoryLayout<WowtypeFrame>.size ? Int($0.pointee.cursor_delta) : 0 } ?? 0
+        var inserted = ""
         if let frame, let commit = frame.pointee.commit {
             // 会话已经补好了空格、记了上文；互译时上屏的是译文、原文
             let text = String(cString: commit)
+            inserted = text
             client?.insertText(text)
             // 打字统计（外壳按 TypingStats 决定记不记）：互译上屏的不是候选，位置记 0
             onCommitStats?(text, statsSource, statsScheme,
@@ -647,6 +747,10 @@ public final class Composer {
                 onCommit?(text)
             }
             // 选了 emoji（打字推荐的、表情面板的）会话记进最近用过
+        }
+        if delta != 0 {
+            // 自动配对：上屏「（）」后光标放到中间（-1），跳过补好的右半边（+1）。紧跟在上屏后面、下一个键之前
+            _ = client?.edit(CaretEdit.move(by: delta, inserted: inserted, next: keyNextCharacter))
         }
         if let frame, Int(frame.pointee.size) >= MemoryLayout<WowtypeFrame>.size, frame.pointee.forgot != 0 {
             onForget?()

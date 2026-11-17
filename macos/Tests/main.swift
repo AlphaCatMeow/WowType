@@ -2115,6 +2115,236 @@ do {
     }
 }
 
+// MARK: 切到 WowType 时（InitialMode）
+
+do {
+    check(WowtypeConfig().initialMode == .chinese, "切到 WowType 时默认中文")
+    check(WowtypeConfig.parse("InitialMode=English\n").initialMode == .english
+          && WowtypeConfig.parse("InitialMode=Last\n").initialMode == .last, "InitialMode 读得出来")
+    check(WowtypeConfig.parse("InitialMode=english\n").initialMode == .chinese, "InitialMode 大小写不对用默认")
+    var english = WowtypeConfig()
+    english.initialMode = .english
+    check(WowtypeConfig.parse(english.serialized(into: nil)).initialMode == .english, "InitialMode 写进文件再读一样")
+}
+
+withConfig({ $0.initialMode = .english }) { c, _ in
+    c.applyInitialMode()
+    check(c.mode == .english, "InitialMode=English：切过来是英文")
+    tapShift(c)
+    check(c.mode == .chinese, "单按 Shift 照常切回中文")
+    c.applyInitialMode()
+    check(c.mode == .english, "再从别的输入法切过来又是英文")
+}
+
+withConfig({ $0.initialMode = .chinese }) { c, client in
+    tapShift(c)
+    check(c.mode == .english, "先切到英文")
+    c.applyInitialMode()
+    check(c.mode == .chinese && client.committed.isEmpty, "InitialMode=Chinese：切过来是中文")
+}
+
+withConfig({ $0.initialMode = .last }) { c, _ in
+    tapShift(c)
+    c.applyInitialMode()
+    check(c.mode == .english, "InitialMode=Last：和切走时一样")
+}
+
+withConfig({ $0.initialMode = .english; $0.shiftToggle = .off }) { c, _ in
+    c.applyInitialMode()
+    check(c.mode == .chinese, "关了 Shift 切换、也没另设切换键：切不回来，总是中文")
+}
+
+withConfig({ $0.initialMode = .english; $0.shiftToggle = .off; $0.toggleKey = Shortcut(name: "Control+Shift+space") }) { c, _ in
+    c.applyInitialMode()
+    check(c.mode == .english, "关了 Shift 切换、另设了切换键：照样进英文")
+}
+
+// MARK: 中文标点自动配对（AutoPairPunct，和 fcitx5-addon/test/key_harness.cpp 的一样）
+
+/// 有光标的假输入框：text 是应用里的字（UTF-16），caret 是光标；按位置改字照 IMK 的 insertText(_:replacementRange:)
+/// （换完光标落在换上的字后面）。editable 是 false 时像终端：说不清光标在哪。
+final class CaretClient: TextClient {
+    var text: [UInt16] = []
+    var caret = 0
+    var marked = ""
+    var page: CandidatePage?
+    var editable = true
+    var edits: [CaretEdit] = []
+
+    /// 应用里的字，光标处画一个 |
+    var shown: String {
+        String(decoding: text[..<caret], as: UTF16.self) + "|" + String(decoding: text[caret...], as: UTF16.self)
+    }
+
+    func set(_ s: String, caret: Int) {
+        text = Array(s.utf16)
+        self.caret = caret
+    }
+
+    func replace(_ location: Int, _ length: Int, with s: String) {
+        text.replaceSubrange(location..<(location + length), with: Array(s.utf16))
+        caret = location + s.utf16.count
+    }
+
+    func insertText(_ s: String) {
+        replace(caret, 0, with: s)
+        marked = ""
+    }
+
+    func setMarkedText(_ s: String, cursor: Int) {
+        marked = s
+    }
+
+    func showCandidates(_ page: CandidatePage?) {
+        self.page = page
+    }
+
+    var previousCharacter: UInt32 { caret > 0 ? UInt32(text[caret - 1]) : 0 }
+    var previousCharacterIsReliable: Bool { editable }
+    var canEditAroundCaret: Bool { editable }
+    var nextCharacter: UInt32? { editable && caret < text.count ? UInt32(text[caret]) : nil }
+
+    func edit(_ e: CaretEdit) -> Bool {
+        let location = caret + e.offset
+        guard editable, location >= 0, e.length >= 0, location + e.length <= text.count else { return false }
+        edits.append(e)
+        replace(location, e.length, with: e.text)
+        return true
+    }
+
+    /// 输入法交给应用的键：字和空格插在光标处，退格删光标前一个，左右键挪光标
+    func appKey(_ key: KeyInput) {
+        switch key.keysym {
+        case Keysym.backspace:
+            if caret > 0 {
+                text.remove(at: caret - 1)
+                caret -= 1
+            }
+        case Keysym.left:
+            caret = max(caret - 1, 0)
+        case Keysym.right:
+            caret = min(caret + 1, text.count)
+        default:
+            if let a = key.ascii {
+                replace(caret, 0, with: String(UnicodeScalar(a)))
+            }
+        }
+    }
+}
+
+/// 打一串键（⌫ 退格、← 左键），输入法不要的交给假应用。
+func pairType(_ c: Composer, _ client: CaretClient, _ keys: String) {
+    for ch in keys {
+        let key: KeyInput
+        switch ch {
+        case "⌫": key = .key(Keysym.backspace)
+        case "←": key = .key(Keysym.left)
+        default: key = .char(ch)
+        }
+        if !c.handle(key) {
+            client.appKey(key)
+        }
+    }
+}
+
+func withPairing(_ change: (inout WowtypeConfig) -> Void = { _ in }, _ body: (Composer, CaretClient) -> Void) {
+    var config = WowtypeConfig()
+    config.autoPairPunct = true
+    config.emojiSuggest = false
+    change(&config)
+    engine.apply(config)
+    let client = CaretClient()
+    let c = Composer(engine: engine, client: client)
+    c.apply(config)
+    body(c, client)
+    engine.apply(WowtypeConfig())
+}
+
+do {
+    check(!WowtypeConfig().autoPairPunct, "自动配对默认关")
+    check(CaretEdit.move(by: -1, inserted: "你好（）", next: nil) == CaretEdit(offset: -2, length: 1, text: "（"),
+          "光标左移一格：把「（」原样换一遍")
+    check(CaretEdit.move(by: 1, inserted: "", next: 0xFF09) == CaretEdit(offset: 0, length: 1, text: "）"),
+          "跳过右括号：把它换成它自己")
+    check(CaretEdit.move(by: 1, inserted: "", next: nil) == CaretEdit(offset: 1, length: 0, text: "")
+          && CaretEdit.move(by: -1, inserted: "", next: nil) == CaretEdit(offset: -1, length: 0, text: ""),
+          "不知道那个字：只把光标放过去")
+}
+
+withPairing { c, client in
+    pairType(c, client, "(")
+    check(client.shown == "（|）", "( 上屏（），光标在中间", client.shown)
+    pairType(c, client, "3)")
+    check(client.shown == "（3）|", "( 3 ) 是（3）：) 跳过补好的右括号", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "( )")
+    check(client.shown == "（ ）|", "( 空格 ) 是（ ）", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "(nihao)")
+    check(client.shown == "（你好）|", "( nihao ) 上屏你好再跳过右括号", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "nihao(")
+    check(client.shown == "你好（|）", "打拼音途中按 (：先上屏候选，再上屏（），光标在中间", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "((")
+    check(client.shown == "（（|））", "连着两个 (", client.shown)
+    pairType(c, client, "))")
+    check(client.shown == "（（））|", "套着的两层都跳过", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "(")
+    check(c.handle(.key(Keysym.backspace)) && client.shown == "|", "空的一对退格：吃掉退格，两个一起删", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "(1⌫")
+    check(client.shown == "（|）", "里面有字时退格照常交给应用", client.shown)
+    pairType(c, client, "⌫")
+    check(client.shown == "|", "删空了再退格：两个一起删", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "(←)")
+    check(client.shown == "）|（）", "按了方向键以后 ) 照常上屏", client.shown)
+}
+
+withPairing { c, client in
+    pairType(c, client, "(1")
+    // 点到了别处：光标后面不是补好的右括号
+    client.set("别的字", caret: 1)
+    pairType(c, client, ")")
+    check(client.shown == "别）|的字", "光标后面不是补好的右括号：不跳，照常上屏", client.shown)
+}
+
+withPairing { c, client in
+    // 终端这类说不清光标在哪的应用：不配对，不会留下光标在后面的右括号
+    client.editable = false
+    pairType(c, client, "(")
+    check(client.shown == "（|" && client.edits.isEmpty, "应用说不清光标在哪：不配对", client.shown)
+    client.editable = true
+    pairType(c, client, "(")
+    check(client.shown == "（（|）", "换到说得清光标的地方：接着配对", client.shown)
+}
+
+withPairing({ $0.halfwidthPunct = true }) { c, client in
+    pairType(c, client, "(")
+    check(client.shown == "(|", "半角标点不配对", client.shown)
+}
+
+withPairing({ $0.autoPairPunct = false }) { c, client in
+    pairType(c, client, "(")
+    check(client.shown == "（|" && client.edits.isEmpty, "默认不配对", client.shown)
+}
+
 // MARK: 候选框摆在哪（PanelPlacement，#227）
 
 do {

@@ -467,6 +467,12 @@ private struct InputPage: View {
                       selection: shortcutBinding(\.translateModeKey),
                       options: shortcutOptions([("不用", "")] + shortcuts(Array(Shortcut.translateModeKeyPresets.dropFirst())),
                                                current: model.config.translateModeKey?.name ?? ""))
+            RowDivider()
+            PickerRow(title: "切到 WowType 时", subtitle: "从别的输入法切过来、开机后第一次用时；换窗口不变",
+                      info: "「和上次切走时一样」：每个应用记着自己切走时是中文还是英文。"
+                          + "关掉了单按 Shift、也没另设切换键时总是中文（切过去就切不回来了）。",
+                      selection: $model.config.initialMode,
+                      options: [("中文", .chinese), ("英文", .english), ("和上次切走时一样", .last)])
         }
 
         PrefGroup("拼音") {
@@ -487,6 +493,14 @@ private struct InputPage: View {
             RowDivider()
             PickerRow(title: "标点样式", info: "数字后面的符号总是半角的，比如 3.14。",
                       selection: $model.config.halfwidthPunct, options: [("全角 ，。", false), ("半角 , .", true)])
+            RowDivider()
+            SwitchRow(title: "中文标点自动配对", subtitle: "打（【《「“‘ 时自动补上右半边",
+                      info: "中文标点下打左括号、左引号，上屏成对的，光标放到中间；"
+                          + "在里面打完再按右半边，跳过补好的那个，不会多出一个。"
+                          + "里面空着时按退格，两个一起删。按了方向键、回车，或者点到别处以后照常打字。"
+                          + "数字后面的括号照常是英文的。\n\n"
+                          + "要应用告诉输入法光标在哪、旁边是什么字；有些程序（比如终端）里不配对，照常一个一个上屏。",
+                      isOn: $model.config.autoPairPunct)
         }
 
         PrefGroup("快捷输入") {

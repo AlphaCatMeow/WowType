@@ -1,6 +1,7 @@
 // 进程里只有一份的东西：词库（后台载入）、设置、数据目录、定时保存学习数据、互译的翻译器。
 
 import AppKit
+import Carbon
 import CWowtype
 
 final class AppState {
@@ -46,6 +47,32 @@ final class AppState {
     private var updateChecking = false
     /// 下一次看要不要检查更新的时刻（systemUptime）：最多一小时看一次，没网时也不会每切一次输入框就去连
     private var nextUpdateLook: TimeInterval = 0
+
+    /// 第几轮「切到 WowType」（InitialMode）：进程起来算第 1 轮，每次从别的输入法切回来加一。
+    /// 每个输入框（输入控制器）在新的一轮里第一次用到 WowType 时按 InitialMode 定一次中 / 英
+    private(set) var switchGeneration = 1
+    /// 切走过 WowType（停用以后系统当前的输入源不是它）：下一次有输入框用到 WowType 时开新的一轮
+    private var switchedAway = false
+    /// 停用以后过这么久再看系统当前的输入源（切输入法时系统先停用、再换输入源）
+    private let switchCheckDelay: TimeInterval = 0.3
+
+    /// 输入控制器停用了（切输入法、换应用、点到别处都会）：过一会儿看系统现在用的还是不是 WowType，
+    /// 不是就记下切走了。安全输入开着（密码框里系统临时换成英文键盘）时不算，和 Linux 一样。
+    func noteDeactivated() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + switchCheckDelay) { [weak self] in
+            guard let self, !IsSecureEventInputEnabled(), Installer.isCurrentSource == false else { return }
+            self.switchedAway = true
+        }
+    }
+
+    /// 输入控制器启用了：切走过就开新的一轮，返回现在是第几轮。
+    func noteActivated() -> Int {
+        if switchedAway {
+            switchedAway = false
+            switchGeneration += 1
+        }
+        return switchGeneration
+    }
 
     /// 打字统计的句柄（core 的 Recorder）：建好时是关着的（不读不建文件），loadConfig 按 TypingStats 打开。
     /// 开着时只在本机按天记计数，不记打的内容。
