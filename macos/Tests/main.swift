@@ -2115,6 +2115,17 @@ do {
     }
 }
 
+// MARK: 翻译服务的地址、测试连接的结果（和 Linux 设置的 models_endpoint、test_finished 一样）
+
+do {
+    check(TranslateService.modelsEndpoint("https://x/v1/chat/completions") == "https://x/v1/models"
+          && TranslateService.modelsEndpoint(" https://x/v1// ") == "https://x/v1/models",
+          "列模型的接口地址", TranslateService.modelsEndpoint("https://x/v1/chat/completions"))
+    check(TranslateService.testSummary("Hello\n（解释）", seconds: 1.04) == "✓ 你好 → Hello（1.0 秒）",
+          "测试连接：译文只要第一行", TranslateService.testSummary("Hello\n（解释）", seconds: 1.04))
+    check(TranslateService.testSummary("Hi", seconds: 3.25).hasSuffix("，有点慢，可以换个小一点的模型"), "测试连接：慢了提示换小模型")
+}
+
 // MARK: 切到 WowType 时（InitialMode）
 
 do {

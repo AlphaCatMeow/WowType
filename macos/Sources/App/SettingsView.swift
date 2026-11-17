@@ -770,6 +770,7 @@ private let translateLanguages = WowtypeConfig.translateLanguages
 private struct TranslatePage: View {
     @ObservedObject var model: SettingsModel
     @State private var key = ""
+    @State private var showModels = false
     @Environment(\.palette) private var palette
 
     var body: some View {
@@ -833,8 +834,29 @@ private struct TranslatePage: View {
             }
             .rowPadding()
             RowDivider()
-            TextRow(title: "模型", placeholder: suggestedModel.isEmpty ? "服务商给的模型名" : suggestedModel,
-                    text: trimmed(\.translateModel))
+            HStack(spacing: 12) {
+                RowLabel(title: "模型")
+                TextField(suggestedModel.isEmpty ? "服务商给的模型名" : suggestedModel, text: trimmed(\.translateModel))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 252)
+                IconButton(symbol: "list.bullet", help: "从服务里挑模型") { showModels = true }
+                    .popover(isPresented: $showModels, arrowEdge: .bottom) {
+                        ModelPicker(model: model, pick: { picked in
+                            model.config.translateModel = picked
+                            showModels = false
+                        })
+                    }
+            }
+            .rowPadding()
+            RowDivider()
+            ActionRow(title: "测试连接", subtitle: model.translateTestResult ?? "用「你好」试一下") {
+                if model.translateTesting {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Button("测试") { model.testTranslate() }
+                }
+            }
         }
     }
 
@@ -893,6 +915,53 @@ private struct TranslatePage: View {
         guard !value.isEmpty else { return }
         model.setTranslateKey(value)
         key = ""
+    }
+}
+
+/// 「从服务里挑模型」的小窗：搜索框、提示、服务列出来的模型，点一个填进模型框（和 Linux 设置的模型弹出框一样）。
+private struct ModelPicker: View {
+    @ObservedObject var model: SettingsModel
+    let pick: (String) -> Void
+    @State private var query = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("搜模型", text: $query)
+                .textFieldStyle(.roundedBorder)
+            if let status = model.translateModelsStatus {
+                Text(status)
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(shown, id: \.self) { id in
+                        Button(action: { pick(id) }) {
+                            Text(id)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 4)
+                                .padding(.horizontal, 6)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .frame(height: 280)
+        }
+        .padding(8)
+        .frame(width: 320)
+        .onAppear { model.loadTranslateModels() }
+    }
+
+    /// 按搜索框筛（不分大小写）
+    private var shown: [String] {
+        let all = model.translateModels ?? []
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        return q.isEmpty ? all : all.filter { $0.lowercased().contains(q) }
     }
 }
 

@@ -173,6 +173,38 @@ private func posixWrite(_ fd: Int32, _ buffer: UnsafeRawPointer?, _ count: Int) 
     #endif
 }
 
+/// OpenAI 格式的翻译服务地址（和 Linux 设置的 _api_base、chat_endpoint、models_endpoint 一样）。
+public enum TranslateService {
+    /// 根地址：去掉首尾空白和末尾的 /，写成 …/chat/completions 的也去掉。
+    public static func apiBase(_ base: String) -> String {
+        var s = base.trimmingWhitespace()
+        while s.hasSuffix("/") {
+            s.removeLast()
+        }
+        let suffix = "/chat/completions"
+        if s.hasSuffix(suffix) {
+            s.removeLast(suffix.count)
+        }
+        return s
+    }
+
+    /// 列模型的接口（设置窗口「从服务里挑模型」用）
+    public static func modelsEndpoint(_ base: String) -> String {
+        apiBase(base) + "/models"
+    }
+
+    /// 测试连接成功时的那一行（和 Linux 设置的 test_finished 一样）：译文只要第一行，慢了提示换小模型。
+    public static func testSummary(_ text: String, seconds: Double) -> String {
+        let first = text.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? text
+        let tenths = Int((seconds * 10).rounded())
+        var message = "✓ 你好 → \(first)（\(tenths / 10).\(tenths % 10) 秒）"
+        if seconds > 2.5 {
+            message += "，有点慢，可以换个小一点的模型"
+        }
+        return message
+    }
+}
+
 extension String {
     /// 去掉首尾的空格、制表符、换行（不引 Foundation）。
     func trimmingWhitespace() -> String {
