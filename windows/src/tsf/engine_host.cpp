@@ -22,8 +22,10 @@ namespace wowtype::tsf {
 
 namespace {
 
-/// 每上屏这么多次存一次（和 fcitx5、macOS 外壳一样）。
-constexpr int kSaveEvery = 20;
+/// 学到了词以后最多隔这么久存一次（毫秒）。Linux、macOS 是一个输入法进程，攒 20 次上屏再存；Windows 上每个应用
+/// 进程各有一个引擎，学到的要尽快写下去，别的应用下一次按键时合并进来（mergeLearning），学到的词才几秒内各处都有。
+/// 写文件在核心的存盘线程上，不挡打字。
+constexpr ULONGLONG kSaveAfterMs = 2000;
 /// 翻页时一个音节的字要列全（yi 有八百多个字），候选上限给 1000（和 macOS 一样）。
 constexpr unsigned kMaxCandidates = 1000;
 
@@ -141,6 +143,11 @@ void EngineHost::checkForChanges() {
         loadConfig();
     }
     if (WowtypeEngineHandle *engine = engine_.load()) {
+        // 别的应用进程刚存过学到的词：合并进来；自己攒着没存的、隔了一会儿了：存
+        mergeLearning(engine);
+        if (commitsSinceSave_ > 0 && GetTickCount64() - lastSave_ >= kSaveAfterMs) {
+            save();
+        }
         const std::wstring custom = dataDir() + L"\\custom.tsv";
         if (!sameStamp(fileStamp(custom), customStamp_)) {
             customStamp_ = fileStamp(custom);
@@ -285,8 +292,40 @@ void EngineHost::ensureLoading() {
 }
 
 void EngineHost::didCommit() {
-    if (++commitsSinceSave_ >= kSaveEvery) {
+    ++commitsSinceSave_;
+    if (GetTickCount64() - lastSave_ >= kSaveAfterMs) {
         save();
+    }
+}
+
+void EngineHost::mergeLearning(WowtypeEngineHandle *engine) {
+    const std::wstring userPath = dataDir() + L"\\user.tsv";
+    const std::wstring historyPath = dataDir() + L"\\history.tsv";
+    // 上次后台写失败了现在才知道：记下来，下次接着存
+    const int state = wowtype_engine_save_wait(engine, 0);
+    if (state < 0) {
+        const char *error = wowtype_last_error();
+        log(L"保存用户词库或输入习惯失败：" + widen(error ? error : ""));
+        commitsSinceSave_ = std::max(commitsSinceSave_, 1);
+    }
+    if (state <= 0 && savePending_) {
+        // 我们交出去的都写完了：现在文件的时间是我们写的
+        userStamp_ = fileStamp(userPath);
+        historyStamp_ = fileStamp(historyPath);
+        savePending_ = false;
+    }
+    if (savePending_) {
+        return;
+    }
+    // 每个应用进程各有一个引擎、各存各的：别的进程存过的合并进来（用户词取并集，输入习惯同一条留最近用过的，
+    // 核心的 load 就是这么合并的），免得把别的应用里学到的词盖掉，也让那边学到的词这边马上能用
+    if (const FILETIME now = fileStamp(userPath); !sameStamp(now, userStamp_)) {
+        wowtype_engine_load_user_dict(engine, narrow(userPath).c_str());
+        userStamp_ = now;
+    }
+    if (const FILETIME now = fileStamp(historyPath); !sameStamp(now, historyStamp_)) {
+        wowtype_engine_load_history(engine, narrow(historyPath).c_str());
+        historyStamp_ = now;
     }
 }
 
@@ -301,34 +340,10 @@ void EngineHost::save(bool wait) {
     if (!engine) {
         return;
     }
-    const std::wstring userPath = dataDir() + L"\\user.tsv";
-    const std::wstring historyPath = dataDir() + L"\\history.tsv";
-    // 上次后台写失败了现在才知道：记下来，这次接着存
-    const int state = wowtype_engine_save_wait(engine, 0);
-    if (state < 0) {
-        const char *error = wowtype_last_error();
-        log(L"保存用户词库或输入习惯失败：" + widen(error ? error : ""));
-        commitsSinceSave_ = std::max(commitsSinceSave_, 1);
-    }
-    if (state <= 0 && savePending_) {
-        // 我们交出去的都写完了：现在文件的时间是我们写的
-        userStamp_ = fileStamp(userPath);
-        historyStamp_ = fileStamp(historyPath);
-        savePending_ = false;
-    }
-    if (!savePending_) {
-        // 每个应用进程各有一个引擎、各存各的：别的进程存过的先合并进来（用户词取并集，输入习惯同一条留最近用过的，
-        // 核心的 load 就是这么合并的），再写，免得把别的应用里学到的词盖掉
-        if (const FILETIME now = fileStamp(userPath); !sameStamp(now, userStamp_)) {
-            wowtype_engine_load_user_dict(engine, narrow(userPath).c_str());
-            userStamp_ = now;
-        }
-        if (const FILETIME now = fileStamp(historyPath); !sameStamp(now, historyStamp_)) {
-            wowtype_engine_load_history(engine, narrow(historyPath).c_str());
-            historyStamp_ = now;
-        }
-    }
+    // 先把别的进程存过的合并进来，再写
+    mergeLearning(engine);
     if (commitsSinceSave_ > 0) {
+        lastSave_ = GetTickCount64();
         CreateDirectoryW(dataDir().c_str(), nullptr);
         const bool dict = wowtype_engine_save_user_dict_async(engine, narrow(dataDir() + L"\\user.tsv").c_str()) == 0;
         const bool history =

@@ -50,7 +50,7 @@ public:
     /// 互译的翻译器（设置里第一次打开 Translate 时建，之后一直留着，所有输入框共用）。
     WowtypeTranslator *translator() const { return translator_; }
 
-    /// 上屏里有学到的词：攒够 20 次存一次（应用随时可能退出）。忘掉了学错的词：马上存。
+    /// 上屏里有学到的词：最多隔 2 秒存一次（别的应用进程要尽快看到）。忘掉了学错的词：马上存。
     void didCommit();
     void didForget();
     /// 存用户词库和输入习惯（核心的后台线程写）。wait：等写完。
@@ -83,6 +83,8 @@ private:
     void loadConfig();
     void applyEngineSettings(WowtypeEngineHandle *engine);
     void applyTranslateSettings();
+    /// 别的应用进程存过的学习数据合并进来（自己交出去的还没写完时不动）。
+    void mergeLearning(WowtypeEngineHandle *engine);
     WowtypeEngineHandle *makeEngine();
     std::wstring lexiconPath() const;
 
@@ -104,6 +106,7 @@ private:
     FILETIME historyStamp_{};
     /// 交给核心的后台存盘还没确认写完（写完了才记下上面两个时间）
     bool savePending_ = false;
+    ULONGLONG lastSave_ = 0;
     bool updateChecking_ = false;
     ULONGLONG nextUpdateLook_ = 0;
     DWORD clipboardSequence_ = 0;
