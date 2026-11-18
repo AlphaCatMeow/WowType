@@ -268,6 +268,8 @@ void EngineHost::ensureLoading() {
         }
         applyEngineSettings(engine);
         customStamp_ = FILETIME{};
+        userStamp_ = fileStamp(dataDir() + L"\\user.tsv");
+        historyStamp_ = fileStamp(dataDir() + L"\\history.tsv");
         engine_.store(engine);
         log(L"词库载入好了");
     }).detach();
@@ -290,11 +292,32 @@ void EngineHost::save(bool wait) {
     if (!engine) {
         return;
     }
+    const std::wstring userPath = dataDir() + L"\\user.tsv";
+    const std::wstring historyPath = dataDir() + L"\\history.tsv";
     // 上次后台写失败了现在才知道：记下来，这次接着存
-    if (wowtype_engine_save_wait(engine, 0) < 0) {
+    const int state = wowtype_engine_save_wait(engine, 0);
+    if (state < 0) {
         const char *error = wowtype_last_error();
         log(L"保存用户词库或输入习惯失败：" + widen(error ? error : ""));
         commitsSinceSave_ = std::max(commitsSinceSave_, 1);
+    }
+    if (state <= 0 && savePending_) {
+        // 我们交出去的都写完了：现在文件的时间是我们写的
+        userStamp_ = fileStamp(userPath);
+        historyStamp_ = fileStamp(historyPath);
+        savePending_ = false;
+    }
+    if (!savePending_) {
+        // 每个应用进程各有一个引擎、各存各的：别的进程存过的先合并进来（用户词取并集，输入习惯同一条留最近用过的，
+        // 核心的 load 就是这么合并的），再写，免得把别的应用里学到的词盖掉
+        if (const FILETIME now = fileStamp(userPath); !sameStamp(now, userStamp_)) {
+            wowtype_engine_load_user_dict(engine, narrow(userPath).c_str());
+            userStamp_ = now;
+        }
+        if (const FILETIME now = fileStamp(historyPath); !sameStamp(now, historyStamp_)) {
+            wowtype_engine_load_history(engine, narrow(historyPath).c_str());
+            historyStamp_ = now;
+        }
     }
     if (commitsSinceSave_ > 0) {
         CreateDirectoryW(dataDir().c_str(), nullptr);
@@ -304,6 +327,7 @@ void EngineHost::save(bool wait) {
         if (dict && history) {
             commitsSinceSave_ = 0;
         }
+        savePending_ = true;
     }
     if (wait && wowtype_engine_save_wait(engine, -1) < 0) {
         const char *error = wowtype_last_error();

@@ -92,6 +92,11 @@ private:
     WowtypeStats *stats_ = nullptr;
     VoiceInput voice_;
     int commitsSinceSave_ = 0;
+    /// user.tsv、history.tsv 上次是我们读的或者写的时候的修改时间：变了就是别的应用进程存过，存盘前先合并进来
+    FILETIME userStamp_{};
+    FILETIME historyStamp_{};
+    /// 交给核心的后台存盘还没确认写完（写完了才记下上面两个时间）
+    bool savePending_ = false;
     DWORD clipboardSequence_ = 0;
     std::string lastClipboard_;
 };
