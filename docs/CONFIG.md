@@ -164,6 +164,7 @@ WubiAutoCommit=True
 WubiHint=True
 ShiftToggle=Both
 InitialMode=Chinese
+WindowMode=Same
 Traditional=False
 SelectKeys=Off
 PickChar=True
@@ -220,6 +221,8 @@ Lexicon=
 | `ShuangpinShowKeys` | 双拼时编辑区显示打的键（`uivs`），不翻成全拼（`shi'zhong`），中英混打时看得出打了什么。默认 `False` |
 | `ShiftToggle` | 单按哪个 Shift 切中英文：`Both`、`Left`、`Right`、`Off`。fcitx5 自己的全局快捷键（「临时切换输入法」「切换输入法」「向前切换输入法」等任何一项）里用了同一个 Shift 时，fcitx5 先处理，WowType 收不到；设置界面「输入」页会提示，并能一键把 Shift 从 fcitx5 那边去掉（改的是 `~/.config/fcitx5/config`，关掉开关就还原；这个文件写不了时提示「只在这次有效」，NixOS 见[安装说明](INSTALL.md#单按-shift-在-nixos-上)） |
 | `InitialMode` | 从别的输入法切到 WowType、开机后第一次用时的模式：`Chinese`（默认）、`English`、`Last`（和上次切走时一样）。换窗口不算，中英文照旧全局保持；关了 Shift 切换（`ShiftToggle=Off`）、也没另设切换键（`ToggleKey`）时总是中文（`TranslateModeKey` 只进出「译」，不算）。macOS 上每个应用记着自己的中英文：输入法停用以后系统现在用的不是 WowType（切到了别的输入法；密码框里系统临时换成英文键盘不算）就记一笔，之后每个应用第一次用到 WowType 时按这一项定一次，换应用、换窗口不动；`Last` 是每个应用和它上次一样 |
+| `WindowMode` | 换到新窗口、新应用时的默认中 / 英（#254）：`Same`（默认，保持当前模式，和以前一样）、`Chinese`、`English`。选了中 / 英以后，每次切到一个窗口、应用都先定成它；在窗口里用 Shift 切了只算这一次，切走再回来又按这一项定。只在 Linux；macOS 每个应用记着自己的模式。设置界面「输入 → 默认状态 → 默认中/英文」 |
+| `PunctuationStyle` | 标点样式，设置界面「输入 → 默认状态 → 默认全角/半角」：`Fullwidth` 全角中文标点（默认）、`Halfwidth` 半角英文标点 |
 | `VoiceKey` | fcitx5 的键名，如 `Alt_R`、`Control_R`、`Menu`、`F8` |
 | `ToggleKey` | 另设一个切换中 / 英文的快捷键（fcitx5 键名，如 `Control+Shift+space`），留空不用；单按 Shift 照常。在「译」里按回到中文。fcitx5 自己的全局快捷键先处理：`Control+space` 默认是 fcitx5「切换启用/禁用输入法」的键（macOS 上是系统「选择上一个输入法」的键），设成它 WowType 收不到，所以设置里不再列它；Linux 设置界面会提示被 fcitx5 占着的键 |
 | `TranslateModeKey` | 进出「译」的快捷键（如 `Control+Shift+Y`），留空不用：按它进「译」（打到一半的拼音带进去），在「译」里再按回到进来前的模式；设了以后单按 Shift 只在中 ↔ 英之间切（在「译」里单按回中文）。互译没打开、翻译没配好、密码框里这个键交给应用。和 `ToggleKey` 设成同一个键时算这个 |
