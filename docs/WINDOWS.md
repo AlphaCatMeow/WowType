@@ -112,12 +112,12 @@ DLL 装进每个应用的进程里，载入以后不会卸载：换 DLL 前先�
 - 设置窗口（`wowtype-settings.exe`，`windows/src/settings/`）有了基本的：常规、候选、输入、模糊音、标点与表情、语音、翻译、自定义词八页，
   按 `spec/config.json` 里 Windows 认的项生成，只写改过的键（和 macOS 一样，别处改的、注释、不认识的键留着），API Key 存 `translate.key`。
   「自定义词」页能加词（照词库自动猜拼音）、删词、导入，规则和 macOS 的 `CustomWords` 一样（`windows/src/common/custom_words.*`）。
-  「输入」页能导入整句增强模型（核心先试着解析，放到 `wetype\`），「语音」页能导入语音模型文件夹（放到 `wtlocal\`）。
-  还没有的：语音模型和本地翻译模型的一键下载（要自己有文件）、看统计、诊断信息
+  「输入」页能导入整句增强模型（核心先试着解析，放到 `wetype\`）；「语音」页能一键下载语音模型（和 Linux 设置同一个地址，
+  校验大小和 MD5，用系统的 `tar.exe` 解包到 `wtlocal\`），也能导入现成的模型文件夹；「统计」页看打字统计的摘要
+  （今天、一共、最快的一天、连续天数、最近 7 天、按得最多的键，口径和 macOS 一样），能清空；「常规」页能复制诊断信息
+  （版本、数据文件、打过码的设置、最近的日志）。
+  还没有的：本地翻译模型的一键下载（自己放进 `models\`）、统计的图表和键盘热力图（只有文字摘要）
 - 图形安装程序（现在是 zip + `install.ps1`，还不进 Release）和自动更新（`CheckUpdate`、`BetaUpdates`）
-- 语音模型的一键下载：语音输入本身有（按住 `VoiceKey`，默认右 Alt，和另两端一样），但模型要自己有：
-  从 Linux 的 `~/.local/share/wowtype/wtlocal`、macOS 的 `~/Library/Application Support/WowType/wtlocal` 拷过来，
-  在设置窗口「语音」页导入（放进数据目录的 `wtlocal\`）
 - 打字统计（`TypingStats`）记是记了（`stats.json`，按键按扫描码记，ABI 1.13 起核心认 Windows 的键码），但还没有看统计的界面
 - 本地翻译模型、整句增强模型的一键下载、导入（文件自己放进数据目录就能用）
 - ARM64 只编不跑：CI 编出 `WowType-<版本>-windows-arm64.zip`（`windows-arm64` artifact），但没有 ARM64 的机器试过；

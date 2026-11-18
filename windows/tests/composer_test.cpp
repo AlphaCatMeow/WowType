@@ -18,6 +18,7 @@
 #include "composer.h"
 #include "config.h"
 #include "custom_words.h"
+#include "stats_view.h"
 #include "keys.h"
 #include "utf.h"
 #include "voice.h"
@@ -364,6 +365,42 @@ int main(int argc, char **argv) {
         check(CustomWords::shown("四川省\\n宜宾市") == "四川省⏎宜宾市", "界面上 \\n 画成 ⏎");
         check(CustomWords::guessPinyin("你好", "ni hao\t你好\t100\n") == std::optional<std::string>("ni hao"),
               "从词库猜拼音");
+    }
+
+    // ---------------------------------------------------------------- 统计页、诊断信息（和 macOS 的 StatsStore、DiagnosticsText 一样）
+    {
+        const std::string conf = "# 注释 TranslateBaseUrl=https://a@b/c\nPageSize=5\n"
+                                 "TranslateBaseUrl=https://user:sk-123@api.example.com:8443/v1/sk-456\nTranslateKey=sk-789\n"
+                                 "ApiToken = \"abc\"\nEmojiKey=Control+period\nTranslateModel=\nMyKey=\n[Hotkey]\nX=1";
+        const std::string masked = diagnostics::maskConfig(conf);
+        check(masked == "# 注释 TranslateBaseUrl=https://a@b/c\nPageSize=5\n"
+                        "TranslateBaseUrl=https://api.example.com:8443/…\nTranslateKey=（已打码）\n"
+                        "ApiToken=（已打码）\nEmojiKey=Control+period\nTranslateModel=\nMyKey=\n[Hotkey]\nX=1",
+              "诊断信息里的设置：接口地址只留主机，像密钥的键打码，别的原样", masked);
+        check(diagnostics::maskUrl("").empty() && diagnostics::maskUrl("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434/…" &&
+                  diagnostics::maskUrl("\"https://k@x.org\"") == "https://x.org/…" && diagnostics::maskUrl("sk-abc") == "（已打码）",
+              "网址只留协议和主机");
+
+        const auto doc = StatsDocument::parse(R"({"version":1,"cleared":0,"days":{
+            "2026-11-17":{"chars":100,"kinds":{"han":80,"latin":10},"activeMs":120000,"keys":{"KeyA":5,"Space":9}},
+            "2026-11-18":{"chars":300,"kinds":{"han":200,"latin":40},"activeMs":30000,"keys":{"KeyA":7}},
+            "2026-11-19":{"chars":50,"kinds":{"han":50},"activeMs":60000,"keys":{"Space":1},"selections":[3,1]}}})");
+        check(doc.days.size() == 3 && doc.days.at("2026-11-19").selections[0] == 3, "读 stats.json");
+        const auto m = stats::metrics(doc, "2026-11-19");
+        check(m.todayChars == 50 && m.totalChars == 450 && m.recordedDays == 3, "今天、一共");
+        check(m.bestDay == std::optional<std::string>("2026-11-18") && m.bestChars == 300, "打得最多的一天");
+        check(m.fastestDay == std::optional<std::string>("2026-11-19") && static_cast<int>(m.fastestSpeed) == 50,
+              "最快的一天至少 1 分钟活跃（11-18 只有 30 秒不算）");
+        check(m.streak == 3 && m.longestStreak == 3 && stats::metrics(doc, "2026-11-21").streak == 0, "连续天数");
+        check(stats::shift("2026-03-01", -1) == "2026-02-28" && stats::shift("2024-12-31", 1) == "2025-01-01",
+              "日期加减");
+        check(stats::formatActive(0) == "0分" && stats::formatActive(30000) == "30秒" &&
+                  stats::formatActive(3720000) == "1小时2分",
+              "活跃时间的写法");
+        const auto keys = stats::topKeys(doc, 1);
+        check(keys.size() == 1 && keys[0].first == "KeyA" && keys[0].second == 12, "按得最多的键");
+        check(StatsDocument::parse("不是 JSON").days.empty() && !stats::summary(StatsDocument{}, "2026-11-19").empty(),
+              "读不出来是空的，空的也有一段说明");
     }
 
     const auto fresh = [&](Config config = Config{}) {

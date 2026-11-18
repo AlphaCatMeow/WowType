@@ -7,6 +7,9 @@
 
 #include <windows.h>
 
+#include <bcrypt.h>
+#include <urlmon.h>
+
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
@@ -15,15 +18,20 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "config.h"
 #include "custom_words.h"
+#include "stats_view.h"
 #include "utf.h"
 #include "wowtype_core.h"
 
@@ -48,6 +56,23 @@ constexpr int kIdWordRemove = 110;
 constexpr int kIdWordImport = 111;
 constexpr int kIdNnlm = 112;
 constexpr int kIdVoiceModel = 113;
+constexpr int kIdStatsText = 114;
+constexpr int kIdStatsRefresh = 115;
+constexpr int kIdStatsClear = 116;
+constexpr int kIdDiagnostics = 117;
+constexpr int kIdVoiceDownload = 118;
+constexpr UINT kMessageVoiceDone = WM_APP + 1;
+
+// 离线语音包（微信输入法资源 CDN，和 voice/src/wtlocal/pack.rs、Linux 设置界面的一样；windows/test.sh 核对）。
+// 模型是腾讯的，不随安装包分发，用户自己点下载
+constexpr wchar_t kVoicePackUrl[] =
+    L"https://download.z.weixin.qq.com/publish_words/v1/ime_asr_decoder_model/20260710220526250_ime_asr_decoder_model.apk";
+constexpr unsigned long long kVoicePackSize = 102920639ULL;
+constexpr char kVoicePackMd5[] = "28386481eb94ff73b28ee3949c0cf690";
+
+#ifndef WOWTYPE_VERSION
+#define WOWTYPE_VERSION "dev"
+#endif
 constexpr int kIdFirstSetting = 1000;
 
 std::wstring widen(const std::string &s) {
@@ -255,6 +280,10 @@ private:
     bool save();
     int scale(int dip) const { return MulDiv(dip, static_cast<int>(dpi_), 96); }
     int customPage() const { return static_cast<int>(pages().size()); }
+    int statsPage() const { return static_cast<int>(pages().size()) + 1; }
+    void refreshStats();
+    void clearStats();
+    void copyDiagnostics();
     // 自定义词页
     void loadWords();
     bool saveWords();
@@ -264,6 +293,7 @@ private:
     void wordChanged();
     void importNnlm();
     void importVoiceModel();
+    void downloadVoiceModel();
     int pageNamed(const wchar_t *title) const;
     HWND child(const wchar_t *cls, const wchar_t *text, DWORD style, int id);
 
@@ -286,7 +316,13 @@ private:
     HWND removeWord_ = nullptr;
     HWND importWords_ = nullptr;
     HWND nnlm_ = nullptr;
+    HWND statsText_ = nullptr;
+    HWND statsRefresh_ = nullptr;
+    HWND statsClear_ = nullptr;
+    HWND diagnostics_ = nullptr;
     HWND voiceModel_ = nullptr;
+    HWND voiceDownload_ = nullptr;
+    bool downloading_ = false;
     CustomWords words_{std::nullopt};
     std::optional<std::string> lexicon_;
     bool codeTouched_ = false;
@@ -403,6 +439,19 @@ void SettingsWindow::build() {
     removeWord_ = child(L"BUTTON", L"删除选中的", BS_PUSHBUTTON | WS_TABSTOP, kIdWordRemove);
     importWords_ = child(L"BUTTON", L"导入…", BS_PUSHBUTTON | WS_TABSTOP, kIdWordImport);
     custom_ = child(L"BUTTON", L"用记事本编辑", BS_PUSHBUTTON | WS_TABSTOP, kIdCustom);
+    {
+        TCITEMW item{};
+        item.mask = TCIF_TEXT;
+        item.pszText = const_cast<wchar_t *>(L"统计");
+        SendMessageW(tabs_, TCM_INSERTITEMW, pages().size() + 1, reinterpret_cast<LPARAM>(&item));
+    }
+    statsText_ = child(L"EDIT", L"", WS_BORDER | ES_MULTILINE | ES_READONLY | WS_VSCROLL | ES_AUTOVSCROLL, kIdStatsText);
+    statsRefresh_ = child(L"BUTTON", L"刷新", BS_PUSHBUTTON | WS_TABSTOP, kIdStatsRefresh);
+    statsClear_ = child(L"BUTTON", L"清空统计", BS_PUSHBUTTON | WS_TABSTOP, kIdStatsClear);
+    diagnostics_ = child(L"BUTTON", L"复制诊断信息（版本、数据文件、打码后的设置、最近的日志）", BS_PUSHBUTTON | WS_TABSTOP,
+                         kIdDiagnostics);
+    voiceDownload_ = child(L"BUTTON", L"下载语音模型（约 100 MB，从微信输入法的服务器）…", BS_PUSHBUTTON | WS_TABSTOP,
+                           kIdVoiceDownload);
     nnlm_ = child(L"BUTTON", L"导入整句增强模型（微信输入法的 nlrgpt2_nnlm.bin）…", BS_PUSHBUTTON | WS_TABSTOP, kIdNnlm);
     voiceModel_ = child(L"BUTTON", L"导入语音模型（含 .xnet 和 dict.decoder.utf8.txt 的文件夹）…",
                         BS_PUSHBUTTON | WS_TABSTOP, kIdVoiceModel);
@@ -450,7 +499,9 @@ void SettingsWindow::layout() {
     }
     // 输入页、语音页最后各有一个导入模型的按钮
     using ButtonOnPage = std::pair<HWND, const wchar_t *>;
-    for (const auto &[button, title] : {ButtonOnPage{nnlm_, L"输入"}, ButtonOnPage{voiceModel_, L"语音"}}) {
+    for (const auto &[button, title] :
+         {ButtonOnPage{nnlm_, L"输入"}, ButtonOnPage{voiceDownload_, L"语音"}, ButtonOnPage{voiceModel_, L"语音"},
+          ButtonOnPage{diagnostics_, L"常规"}}) {
         const auto page = static_cast<std::size_t>(pageNamed(title));
         MoveWindow(button, margin * 2, y[page] + scale(6), width - margin * 4, scale(28), FALSE);
         y[page] += rowHeight + scale(6);
@@ -475,6 +526,10 @@ void SettingsWindow::layout() {
     MoveWindow(removeWord_, margin * 2 + scale(88), buttonRow, scale(100), scale(26), FALSE);
     MoveWindow(importWords_, margin * 2 + scale(196), buttonRow, scale(80), scale(26), FALSE);
     MoveWindow(custom_, margin * 2 + scale(284), buttonRow, scale(110), scale(26), FALSE);
+    // 统计页：一段摘要，下面两个按钮
+    MoveWindow(statsText_, margin * 2, top, inner, buttonRow - top - scale(8), FALSE);
+    MoveWindow(statsRefresh_, margin * 2, buttonRow, scale(80), scale(26), FALSE);
+    MoveWindow(statsClear_, margin * 2 + scale(88), buttonRow, scale(100), scale(26), FALSE);
     const int tabHeight = bottom - tabTop + margin;
     MoveWindow(tabs_, margin, tabTop, width - margin * 2, tabHeight, FALSE);
     const int buttons = tabTop + tabHeight + margin;
@@ -500,7 +555,15 @@ void SettingsWindow::showPage(int page) {
     ShowWindow(apiKeyLabel_, page == translate ? SW_SHOW : SW_HIDE);
     ShowWindow(apiKey_, page == translate ? SW_SHOW : SW_HIDE);
     ShowWindow(nnlm_, page == pageNamed(L"输入") ? SW_SHOW : SW_HIDE);
+    ShowWindow(diagnostics_, page == pageNamed(L"常规") ? SW_SHOW : SW_HIDE);
+    for (HWND h : {statsText_, statsRefresh_, statsClear_}) {
+        ShowWindow(h, page == statsPage() ? SW_SHOW : SW_HIDE);
+    }
+    if (page == statsPage()) {
+        refreshStats();
+    }
     ShowWindow(voiceModel_, page == pageNamed(L"语音") ? SW_SHOW : SW_HIDE);
+    ShowWindow(voiceDownload_, page == pageNamed(L"语音") ? SW_SHOW : SW_HIDE);
     for (HWND h : {wordList_, wordLabel_, word_, codeLabel_, code_, addWord_, removeWord_, importWords_, custom_}) {
         ShowWindow(h, page == customPage() ? SW_SHOW : SW_HIDE);
     }
@@ -696,6 +759,243 @@ void SettingsWindow::importWords() {
     }
 }
 
+namespace {
+
+/// 文件的 MD5（小写十六进制）；读不了是空串。
+std::string md5File(const std::wstring &path) {
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    std::string out;
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_MD5_ALGORITHM, nullptr, 0) != 0) {
+        return out;
+    }
+    if (BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) == 0) {
+        std::ifstream in(path, std::ios::binary);
+        std::vector<char> buffer(1 << 20);
+        bool ok = static_cast<bool>(in);
+        while (ok && in) {
+            in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            const auto n = static_cast<ULONG>(in.gcount());
+            if (n > 0 && BCryptHashData(hash, reinterpret_cast<PUCHAR>(buffer.data()), n, 0) != 0) {
+                ok = false;
+            }
+        }
+        unsigned char digest[16] = {};
+        if (ok && BCryptFinishHash(hash, digest, sizeof digest, 0) == 0) {
+            char hex[33] = {};
+            for (int i = 0; i < 16; ++i) {
+                std::snprintf(hex + i * 2, 3, "%02x", digest[i]);
+            }
+            out = hex;
+        }
+        BCryptDestroyHash(hash);
+    }
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    return out;
+}
+
+/// 用系统自带的 tar.exe（Windows 10 1803 起有，认 zip）解包；不弹黑框。
+bool runTar(const std::wstring &archive, const std::wstring &dir, const std::wstring &member) {
+    wchar_t system[MAX_PATH] = {};
+    GetSystemDirectoryW(system, MAX_PATH);
+    std::wstring command = L"\"" + std::wstring(system) + L"\\tar.exe\" -xf \"" + archive + L"\" -C \"" + dir + L"\"";
+    if (!member.empty()) {
+        command += L" " + member;
+    }
+    STARTUPINFOW startup{};
+    startup.cb = sizeof startup;
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup,
+                        &process)) {
+        return false;
+    }
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(process.hProcess, &code);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return code == 0;
+}
+
+/// 在 dir 里（含子目录）找模型（.xnet）和词表，拷到 target；返回拷了几个。
+int collectVoiceFiles(const std::wstring &dir, const std::wstring &target) {
+    int copied = 0;
+    WIN32_FIND_DATAW found{};
+    HANDLE find = FindFirstFileW((dir + L"\\*").c_str(), &found);
+    if (find == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    do {
+        const std::wstring name = found.cFileName;
+        if (name == L"." || name == L"..") {
+            continue;
+        }
+        const std::wstring path = dir + L"\\" + name;
+        if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            copied += collectVoiceFiles(path, target);
+        } else if ((name.size() > 5 && name.compare(name.size() - 5, 5, L".xnet") == 0) ||
+                   name == L"dict.decoder.utf8.txt") {
+            copied += CopyFileW(path.c_str(), (target + L"\\" + name).c_str(), FALSE) ? 1 : 0;
+        }
+    } while (FindNextFileW(find, &found));
+    FindClose(find);
+    return copied;
+}
+
+void removeTree(const std::wstring &dir) {
+    WIN32_FIND_DATAW found{};
+    HANDLE find = FindFirstFileW((dir + L"\\*").c_str(), &found);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            const std::wstring name = found.cFileName;
+            if (name == L"." || name == L"..") {
+                continue;
+            }
+            const std::wstring path = dir + L"\\" + name;
+            if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                removeTree(path);
+            } else {
+                DeleteFileW(path.c_str());
+            }
+        } while (FindNextFileW(find, &found));
+        FindClose(find);
+    }
+    RemoveDirectoryW(dir.c_str());
+}
+
+} // namespace
+
+void SettingsWindow::downloadVoiceModel() {
+    if (downloading_) {
+        return;
+    }
+    if (MessageBoxW(hwnd_,
+                    L"语音识别用的是微信输入法的离线模型（腾讯的，不随 WowType 分发）。\n"
+                    L"现在从微信输入法的服务器下载（约 100 MB），校验以后放到数据目录的 wtlocal\\。继续吗？",
+                    L"下载语音模型", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) {
+        return;
+    }
+    downloading_ = true;
+    EnableWindow(voiceDownload_, FALSE);
+    SetWindowTextW(status_, L"正在下载语音模型（约 100 MB）……");
+    const std::wstring dir = dataDir();
+    HWND window = hwnd_;
+    std::thread([dir, window] {
+        auto *result = new std::wstring;
+        CreateDirectoryW(dir.c_str(), nullptr);
+        const std::wstring pack = dir + L"\\wtlocal.apk";
+        const std::wstring tmp = dir + L"\\wtlocal.tmp";
+        const std::wstring target = dir + L"\\wtlocal";
+        WIN32_FILE_ATTRIBUTE_DATA info{};
+        if (FAILED(URLDownloadToFileW(nullptr, kVoicePackUrl, pack.c_str(), 0, nullptr))) {
+            *result = L"下载失败：连不上服务器";
+        } else if (!GetFileAttributesExW(pack.c_str(), GetFileExInfoStandard, &info) ||
+                   ((static_cast<unsigned long long>(info.nFileSizeHigh) << 32) | info.nFileSizeLow) != kVoicePackSize ||
+                   md5File(pack) != kVoicePackMd5) {
+            *result = L"下载的语音包校验不对，再试一次";
+        } else {
+            removeTree(tmp);
+            CreateDirectoryW(tmp.c_str(), nullptr);
+            // 外层是签名过的 zip（.apk），只取里面的模型包，再解开模型包
+            const std::wstring inner = tmp + L"\\ime_asr_decoder_model.zip";
+            const std::wstring unpacked = tmp + L"\\model";
+            CreateDirectoryW(unpacked.c_str(), nullptr);
+            CreateDirectoryW(target.c_str(), nullptr);
+            if (!runTar(pack, tmp, L"ime_asr_decoder_model.zip") || !runTar(inner, unpacked, L"") ||
+                collectVoiceFiles(unpacked, target) < 2) {
+                *result = L"解包失败（要 Windows 10 1803 以后自带的 tar.exe）";
+            } else {
+                *result = L"语音模型装好了：按住语音键说话";
+            }
+            removeTree(tmp);
+        }
+        DeleteFileW(pack.c_str());
+        PostMessageW(window, kMessageVoiceDone, 0, reinterpret_cast<LPARAM>(result));
+    }).detach();
+}
+
+void SettingsWindow::refreshStats() {
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    char today[16];
+    std::snprintf(today, sizeof today, "%04u-%02u-%02u", t.wYear, t.wMonth, t.wDay);
+    const auto doc = StatsDocument::parse(readFile(dataDir() + L"\\stats.json").value_or(""));
+    SetWindowTextW(statsText_, widen(stats::summary(doc, today)).c_str());
+}
+
+void SettingsWindow::clearStats() {
+    if (MessageBoxW(hwnd_, L"清空所有打字统计？清空以后找不回来。", L"WowType", MB_OKCANCEL | MB_ICONQUESTION) != IDOK) {
+        return;
+    }
+    // 和另两端一样由核心清：清除计数加一（开着的输入法丢掉攒着的旧计数），再删掉 stats.json
+    if (wowtype_stats_clear(narrow(dataDir() + L"\\stats.json").c_str()) != 0) {
+        SetWindowTextW(status_, L"清空失败");
+        return;
+    }
+    refreshStats();
+    SetWindowTextW(status_, L"统计清空了");
+}
+
+void SettingsWindow::copyDiagnostics() {
+    std::string text = "WowType " WOWTYPE_VERSION "（Windows）\n";
+    {
+        wchar_t build[64] = {};
+        DWORD size = sizeof build;
+        RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", L"CurrentBuild",
+                     RRF_RT_REG_SZ, nullptr, build, &size);
+        text += "系统：Windows build " + narrow(build) + "\n";
+    }
+    text += "安装目录：" + narrow(installDir()) + "\n数据目录：" + narrow(dataDir()) + "\n\n数据文件：\n";
+    for (const auto &[dir, names] :
+         {std::pair<std::wstring, std::vector<const wchar_t *>>{installDir() + L"\\data",
+                                                                 {L"lexicon.tsv", L"english.txt", L"words.lm", L"nnlm.bin",
+                                                                  L"s2t.tsv", L"wubi86.tsv", L"DATA-VERSION"}},
+          std::pair<std::wstring, std::vector<const wchar_t *>>{dataDir(),
+                                                                 {L"user.tsv", L"history.tsv", L"custom.tsv",
+                                                                  L"words.domain.lm", L"wetype\\nlrgpt2_nnlm.bin",
+                                                                  L"wtlocal\\dict.decoder.utf8.txt", L"stats.json"}}}) {
+        for (const wchar_t *name : names) {
+            WIN32_FILE_ATTRIBUTE_DATA info{};
+            const std::wstring path = dir + L"\\" + name;
+            if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) {
+                const unsigned long long bytes = (static_cast<unsigned long long>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+                text += "  " + narrow(name) + "  " + std::to_string(bytes) + " 字节\n";
+            } else {
+                text += "  " + narrow(name) + "  没有\n";
+            }
+        }
+    }
+    text += "\n设置（打过码）：\n" + diagnostics::maskConfig(readFile(dataDir() + L"\\wowtype.conf").value_or("（没有设置文件，全用默认值）")) + "\n";
+    // 日志最后 80 行（核心的错误、载入词库的情况；日志里不记打的字）
+    const std::string log = readFile(dataDir() + L"\\wowtype.log").value_or("");
+    std::size_t at = log.size();
+    for (int lines = 0; at > 0 && lines <= 80; ) {
+        --at;
+        if (log[at] == '\n') {
+            ++lines;
+        }
+    }
+    text += "\n最近的日志：\n" + log.substr(at == 0 ? 0 : at + 1);
+    const std::wstring wide = widen(text);
+    if (OpenClipboard(hwnd_)) {
+        EmptyClipboard();
+        const SIZE_T bytes = (wide.size() + 1) * sizeof(wchar_t);
+        if (HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes)) {
+            if (void *p = GlobalLock(memory)) {
+                std::memcpy(p, wide.c_str(), bytes);
+                GlobalUnlock(memory);
+                if (!SetClipboardData(CF_UNICODETEXT, memory)) {
+                    GlobalFree(memory);
+                }
+            } else {
+                GlobalFree(memory);
+            }
+        }
+        CloseClipboard();
+        SetWindowTextW(status_, L"诊断信息复制好了，贴到问题里（看一眼有没有不想给别人看的）");
+    }
+}
+
 int SettingsWindow::pageNamed(const wchar_t *title) const {
     for (std::size_t i = 0; i < pages().size(); ++i) {
         if (std::wstring(pages()[i].title) == title) {
@@ -817,6 +1117,18 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
             ShellExecuteW(hwnd_, L"open", L"notepad.exe", path.c_str(), nullptr, SW_SHOWNORMAL);
             return 0;
         }
+        case kIdStatsRefresh:
+            refreshStats();
+            return 0;
+        case kIdStatsClear:
+            clearStats();
+            return 0;
+        case kIdDiagnostics:
+            copyDiagnostics();
+            return 0;
+        case kIdVoiceDownload:
+            downloadVoiceModel();
+            return 0;
         case kIdNnlm:
             importNnlm();
             return 0;
@@ -856,6 +1168,13 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
             load();
         }
         break;
+    case kMessageVoiceDone: {
+        std::unique_ptr<std::wstring> result(reinterpret_cast<std::wstring *>(lParam));
+        downloading_ = false;
+        EnableWindow(voiceDownload_, TRUE);
+        SetWindowTextW(status_, result->c_str());
+        return 0;
+    }
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;

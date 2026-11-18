@@ -23,5 +23,13 @@ FLAGS=(-std=c++17 -O1 -Wall -Wextra -Icore/include -Iwindows/src/common)
 "$CXX" "${FLAGS[@]}" windows/src/common/config.cpp windows/src/common/keys.cpp windows/tests/config_dump.cpp \
   -o "$OUT/wowtype-windows-config-dump"
 
+# 设置窗口下载的语音包（地址、大小、MD5）和核心的 voice/src/wtlocal/pack.rs 一样
+for c in URL SIZE MD5; do
+  rust=$(sed -n "s/^pub const $c: [^=]*= \(.*\);/\1/p" voice/src/wtlocal/pack.rs | tr -d '"')
+  if [[ $c == SIZE ]]; then rust=${rust//_/}; fi
+  grep -q -- "$rust" <(tr -d "'" < windows/src/settings/settings_app.cpp) \
+    || { echo "FAIL 语音包的 $c 和 voice/src/wtlocal/pack.rs 对不上（$rust）"; exit 1; }
+done
+
 "$OUT/wowtype-windows-harness" "$@"
 python3 scripts/test-config-contract.py --windows "$OUT/wowtype-windows-config-dump"

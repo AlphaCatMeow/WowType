@@ -60,6 +60,8 @@ jobs:
       - run: cargo test --workspace --locked
       - name: C ABI 冒烟测试
         run: ./scripts/abi-smoke.sh
+      - name: Windows 外壳里和平台无关的部分（组字、设置、语音键、自定义词、统计）在 Linux 上也测
+        run: windows/test.sh
 
   core-macos:
     # 核心和 C 接口在 macOS 上一直能编、能过测试。不在 release 的 needs 里，挂了不挡 Linux 发版。

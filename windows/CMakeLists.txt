@@ -71,6 +71,7 @@ add_library(wowtype_common STATIC
   src/common/config.cpp
   src/common/keys.cpp
   src/common/custom_words.cpp
+  src/common/stats_view.cpp
   src/common/voice.cpp)
 target_include_directories(wowtype_common PUBLIC ${REPO}/core/include src/common)
 
@@ -94,8 +95,9 @@ target_compile_definitions(wowtype PRIVATE
 # 设置窗口：单独的进程，读写 wowtype.conf、custom.tsv、translate.key
 add_executable(wowtype-settings WIN32 src/settings/settings_app.cpp src/settings/settings.rc)
 # 自定义词页要核心整理编码、猜拼音（wowtype_custom_code、wowtype_guess_pinyin）
+target_compile_definitions(wowtype-settings PRIVATE "WOWTYPE_VERSION=\"${WOWTYPE_VERSION}\"")
 target_link_libraries(wowtype-settings PRIVATE wowtype_common "${WOWTYPE_CORE_LIB}" ${CORE_SYSTEM_LIBS}
-  comctl32 comdlg32 shell32 ole32 user32 gdi32)
+  comctl32 comdlg32 shell32 ole32 user32 gdi32 urlmon bcrypt advapi32)
 
 if(WOWTYPE_WINDOWS_TESTS)
   add_executable(wowtype-windows-harness tests/composer_test.cpp)
