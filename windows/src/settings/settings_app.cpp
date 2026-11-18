@@ -702,7 +702,9 @@ void SettingsWindow::layout() {
     MoveWindow(statsRefresh_, margin * 2, buttonRow, scale(80), scale(26), FALSE);
     MoveWindow(statsClear_, margin * 2 + scale(88), buttonRow, scale(100), scale(26), FALSE);
     const int tabHeight = bottom - tabTop + margin;
-    MoveWindow(tabs_, margin, tabTop, width - margin * 2, tabHeight, FALSE);
+    // 标签控件只当一排标签用：Windows 11 主题下它的页面底色是 #F9F9F9，和白底的控件对不上（CI 截图看出来一条条的），
+    // 页面直接画在白色的窗口上
+    MoveWindow(tabs_, margin, tabTop, width - margin * 2, scale(30), FALSE);
     const int buttons = tabTop + tabHeight + margin;
     MoveWindow(dataDirButton_, margin, buttons, scale(110), scale(28), FALSE);
     MoveWindow(status_, margin + scale(118), buttons + scale(5), width - scale(118) - margin * 2 - scale(176), scale(22), FALSE);
