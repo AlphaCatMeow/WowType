@@ -200,9 +200,9 @@ int main() {
         RECT edit{};
         GetWindowRect(candidates, &box);
         GetWindowRect(g_edit, &edit);
-        const bool near = box.top >= edit.top - 400 && box.top <= edit.bottom + 400 && box.left >= edit.left - 400 &&
+        const bool nearby = box.top >= edit.top - 400 && box.top <= edit.bottom + 400 && box.left >= edit.left - 400 &&
                           box.left <= edit.right + 400;
-        check(near, "候选框在输入框附近",
+        check(nearby, "候选框在输入框附近",
               std::to_wstring(box.left) + L"," + std::to_wstring(box.top) + L" / " + std::to_wstring(edit.left) + L"," +
                   std::to_wstring(edit.top));
     }
