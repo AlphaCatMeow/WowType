@@ -70,6 +70,25 @@ constexpr wchar_t kVoicePackUrl[] =
 constexpr unsigned long long kVoicePackSize = 102920639ULL;
 constexpr char kVoicePackMd5[] = "28386481eb94ff73b28ee3949c0cf690";
 
+constexpr int kIdLocalModel = 119;
+constexpr UINT kMessageLocalDone = WM_APP + 2;
+constexpr UINT kMessageProgress = WM_APP + 3;
+
+// 本地翻译模型（腾讯混元 HY-MT 1.5 1.8B，GGUF）和 llama.cpp 的 Windows 包：和 Linux 设置界面（settings/wowtype-config 的
+// LOCAL_MODEL_*、LLAMA_BUILD）、macOS 的 LocalModel.swift 同一个模型、同一个 llama.cpp 构建（windows/test.sh 核对）
+constexpr char kLocalModelFile[] = "HY-MT1.5-1.8B-Q4_K_M.gguf";
+constexpr wchar_t kLocalModelUrl[] =
+    L"https://huggingface.co/tencent/HY-MT1.5-1.8B-GGUF/resolve/main/HY-MT1.5-1.8B-Q4_K_M.gguf";
+constexpr char kLocalModelSha256[] = "4383ac0c3c8e476de98ff979c2a3f069f8c4fb385e7860cf2d28da896cc477c7";
+constexpr char kLlamaBuild[] = "b12110";
+#if defined(_M_ARM64)
+constexpr wchar_t kLlamaUrl[] = L"https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-win-cpu-arm64.zip";
+constexpr char kLlamaSha256[] = "f8d20fb07d0b499988ced8963afcd5ded2d2cdd9983b757fbc7e51c4abd722e8";
+#else
+constexpr wchar_t kLlamaUrl[] = L"https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-win-cpu-x64.zip";
+constexpr char kLlamaSha256[] = "98901e327c252875accaf2d1bf364e10e868843b0b63468baad1aa945cdc5da2";
+#endif
+
 #ifndef WOWTYPE_VERSION
 #define WOWTYPE_VERSION "dev"
 #endif
@@ -294,6 +313,7 @@ private:
     void importNnlm();
     void importVoiceModel();
     void downloadVoiceModel();
+    void downloadLocalModel();
     int pageNamed(const wchar_t *title) const;
     HWND child(const wchar_t *cls, const wchar_t *text, DWORD style, int id);
 
@@ -322,6 +342,7 @@ private:
     HWND diagnostics_ = nullptr;
     HWND voiceModel_ = nullptr;
     HWND voiceDownload_ = nullptr;
+    HWND localModel_ = nullptr;
     bool downloading_ = false;
     CustomWords words_{std::nullopt};
     std::optional<std::string> lexicon_;
@@ -452,6 +473,7 @@ void SettingsWindow::build() {
                          kIdDiagnostics);
     voiceDownload_ = child(L"BUTTON", L"下载语音模型（约 100 MB，从微信输入法的服务器）…", BS_PUSHBUTTON | WS_TABSTOP,
                            kIdVoiceDownload);
+    localModel_ = child(L"BUTTON", L"下载本地翻译模型（1.13 GB）和 llama-server…", BS_PUSHBUTTON | WS_TABSTOP, kIdLocalModel);
     nnlm_ = child(L"BUTTON", L"导入整句增强模型（微信输入法的 nlrgpt2_nnlm.bin）…", BS_PUSHBUTTON | WS_TABSTOP, kIdNnlm);
     voiceModel_ = child(L"BUTTON", L"导入语音模型（含 .xnet 和 dict.decoder.utf8.txt 的文件夹）…",
                         BS_PUSHBUTTON | WS_TABSTOP, kIdVoiceModel);
@@ -501,6 +523,7 @@ void SettingsWindow::layout() {
     using ButtonOnPage = std::pair<HWND, const wchar_t *>;
     for (const auto &[button, title] :
          {ButtonOnPage{nnlm_, L"输入"}, ButtonOnPage{voiceDownload_, L"语音"}, ButtonOnPage{voiceModel_, L"语音"},
+          ButtonOnPage{localModel_, L"翻译"},
           ButtonOnPage{diagnostics_, L"常规"}}) {
         const auto page = static_cast<std::size_t>(pageNamed(title));
         MoveWindow(button, margin * 2, y[page] + scale(6), width - margin * 4, scale(28), FALSE);
@@ -564,6 +587,7 @@ void SettingsWindow::showPage(int page) {
     }
     ShowWindow(voiceModel_, page == pageNamed(L"语音") ? SW_SHOW : SW_HIDE);
     ShowWindow(voiceDownload_, page == pageNamed(L"语音") ? SW_SHOW : SW_HIDE);
+    ShowWindow(localModel_, page == pageNamed(L"翻译") ? SW_SHOW : SW_HIDE);
     for (HWND h : {wordList_, wordLabel_, word_, codeLabel_, code_, addWord_, removeWord_, importWords_, custom_}) {
         ShowWindow(h, page == customPage() ? SW_SHOW : SW_HIDE);
     }
@@ -761,12 +785,12 @@ void SettingsWindow::importWords() {
 
 namespace {
 
-/// 文件的 MD5（小写十六进制）；读不了是空串。
-std::string md5File(const std::wstring &path) {
+/// 文件的摘要（BCRYPT_MD5_ALGORITHM、BCRYPT_SHA256_ALGORITHM，小写十六进制）；读不了是空串。
+std::string hashFile(const std::wstring &path, LPCWSTR algorithmName) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
     std::string out;
-    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_MD5_ALGORITHM, nullptr, 0) != 0) {
+    if (BCryptOpenAlgorithmProvider(&algorithm, algorithmName, nullptr, 0) != 0) {
         return out;
     }
     if (BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) == 0) {
@@ -780,13 +804,16 @@ std::string md5File(const std::wstring &path) {
                 ok = false;
             }
         }
-        unsigned char digest[16] = {};
-        if (ok && BCryptFinishHash(hash, digest, sizeof digest, 0) == 0) {
-            char hex[33] = {};
-            for (int i = 0; i < 16; ++i) {
-                std::snprintf(hex + i * 2, 3, "%02x", digest[i]);
+        DWORD length = 0;
+        ULONG got = 0;
+        BCryptGetProperty(algorithm, BCRYPT_HASH_LENGTH, reinterpret_cast<PUCHAR>(&length), sizeof length, &got, 0);
+        std::vector<unsigned char> digest(length);
+        if (ok && length > 0 && BCryptFinishHash(hash, digest.data(), length, 0) == 0) {
+            for (const unsigned char b : digest) {
+                char hex[3];
+                std::snprintf(hex, sizeof hex, "%02x", b);
+                out += hex;
             }
-            out = hex;
         }
         BCryptDestroyHash(hash);
     }
@@ -863,7 +890,116 @@ void removeTree(const std::wstring &dir) {
     RemoveDirectoryW(dir.c_str());
 }
 
+/// 下载进度：每过一个百分点给窗口发一次（窗口在状态栏里写「已下载 x%」）。
+class Progress final : public IBindStatusCallback {
+public:
+    Progress(HWND window, const wchar_t *what) : window_(window), what_(what) {}
+    STDMETHODIMP QueryInterface(REFIID riid, void **ppv) override {
+        if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_IBindStatusCallback)) {
+            *ppv = static_cast<IBindStatusCallback *>(this);
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+    // 在栈上，跟着下载的线程走完：不用引用计数
+    STDMETHODIMP_(ULONG) AddRef() override { return 2; }
+    STDMETHODIMP_(ULONG) Release() override { return 1; }
+    STDMETHODIMP OnStartBinding(DWORD, IBinding *) override { return S_OK; }
+    STDMETHODIMP GetPriority(LONG *) override { return E_NOTIMPL; }
+    STDMETHODIMP OnLowResource(DWORD) override { return S_OK; }
+    STDMETHODIMP OnProgress(ULONG done, ULONG total, ULONG, LPCWSTR) override {
+        const int percent = total > 0 ? static_cast<int>(100ULL * done / total) : -1;
+        if (percent >= 0 && percent != last_) {
+            last_ = percent;
+            auto *text = new std::wstring(std::wstring(what_) + L"：已下载 " + std::to_wstring(percent) + L"%");
+            PostMessageW(window_, kMessageProgress, 0, reinterpret_cast<LPARAM>(text));
+        }
+        return S_OK;
+    }
+    STDMETHODIMP OnStopBinding(HRESULT, LPCWSTR) override { return S_OK; }
+    STDMETHODIMP GetBindInfo(DWORD *, BINDINFO *) override { return S_OK; }
+    STDMETHODIMP OnDataAvailable(DWORD, DWORD, FORMATETC *, STGMEDIUM *) override { return S_OK; }
+    STDMETHODIMP OnObjectAvailable(REFIID, IUnknown *) override { return S_OK; }
+
+private:
+    HWND window_;
+    const wchar_t *what_;
+    int last_ = -1;
+};
+
+/// llama-server 在不在：设置里写了路径、PATH 里有、数据目录的 llama\ 里有（和核心找的顺序一样）。
+bool llamaServerFound(const std::wstring &dir, const std::string &configured) {
+    if (!configured.empty()) {
+        return GetFileAttributesW(widen(configured).c_str()) != INVALID_FILE_ATTRIBUTES;
+    }
+    wchar_t found[MAX_PATH] = {};
+    if (SearchPathW(nullptr, L"llama-server.exe", nullptr, MAX_PATH, found, nullptr) > 0) {
+        return true;
+    }
+    return GetFileAttributesW((dir + L"\\llama\\llama-server.exe").c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
 } // namespace
+
+void SettingsWindow::downloadLocalModel() {
+    if (downloading_) {
+        return;
+    }
+    if (MessageBoxW(hwnd_,
+                    L"本地翻译用腾讯混元 HY-MT 1.5 1.8B（1.13 GB），从 Hugging Face 下载，WowType 不分发它。\n"
+                    L"模型用的是《腾讯混元社区许可协议》：不适用于欧盟、英国和韩国境内，月活超过 1 亿的产品要另外向腾讯申请。\n"
+                    L"找不到 llama-server 时一起下载 llama.cpp 官方的 Windows 程序（MIT 许可）。继续吗？",
+                    L"下载本地翻译模型", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) {
+        return;
+    }
+    downloading_ = true;
+    EnableWindow(localModel_, FALSE);
+    SetWindowTextW(status_, L"正在下载本地翻译模型……");
+    const std::wstring dir = dataDir();
+    const Config config = fromControls();
+    std::wstring model = widen(config.value("TranslateLocalModel"));
+    if (model.empty()) {
+        model = dir + L"\\models\\" + widen(kLocalModelFile);
+    }
+    const bool needLlama = !llamaServerFound(dir, config.value("TranslateLlamaServer"));
+    HWND window = hwnd_;
+    std::thread([dir, model, needLlama, window] {
+        auto *result = new std::wstring(L"本地翻译模型装好了，在这一页打开「互译」和「用本地翻译模型」就能用");
+        CreateDirectoryW(dir.c_str(), nullptr);
+        if (GetFileAttributesW(model.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            const auto slash = model.find_last_of(L"\\/");
+            if (slash != std::wstring::npos) {
+                SHCreateDirectoryExW(nullptr, model.substr(0, slash).c_str(), nullptr);
+            }
+            const std::wstring part = model + L".part";
+            Progress progress(window, L"本地翻译模型");
+            if (FAILED(URLDownloadToFileW(nullptr, kLocalModelUrl, part.c_str(), 0, &progress))) {
+                *result = L"下载模型失败：连不上 Hugging Face";
+            } else if (hashFile(part, BCRYPT_SHA256_ALGORITHM) != kLocalModelSha256) {
+                DeleteFileW(part.c_str());
+                *result = L"下载的模型校验不对（SHA256 不一致），已删除，请重试";
+            } else if (!MoveFileExW(part.c_str(), model.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+                *result = L"模型下好了，但放不到 " + model;
+            }
+        }
+        if (needLlama && result->find(L"装好了") != std::wstring::npos) {
+            const std::wstring zip = dir + L"\\llama.zip";
+            const std::wstring target = dir + L"\\llama";
+            CreateDirectoryW(target.c_str(), nullptr);
+            Progress progress(window, L"llama-server");
+            if (FAILED(URLDownloadToFileW(nullptr, kLlamaUrl, zip.c_str(), 0, &progress))) {
+                *result = L"模型装好了，但下载 llama-server 失败：连不上 GitHub";
+            } else if (hashFile(zip, BCRYPT_SHA256_ALGORITHM) != kLlamaSha256) {
+                *result = L"下载的 llama-server 校验不对，已删除，请重试";
+            } else if (!runTar(zip, target, L"")) {
+                *result = L"解开 llama-server 失败（要 Windows 10 1803 以后自带的 tar.exe）";
+            }
+            DeleteFileW(zip.c_str());
+        }
+        PostMessageW(window, kMessageLocalDone, 0, reinterpret_cast<LPARAM>(result));
+    }).detach();
+}
 
 void SettingsWindow::downloadVoiceModel() {
     if (downloading_) {
@@ -887,11 +1023,12 @@ void SettingsWindow::downloadVoiceModel() {
         const std::wstring tmp = dir + L"\\wtlocal.tmp";
         const std::wstring target = dir + L"\\wtlocal";
         WIN32_FILE_ATTRIBUTE_DATA info{};
-        if (FAILED(URLDownloadToFileW(nullptr, kVoicePackUrl, pack.c_str(), 0, nullptr))) {
+        Progress progress(window, L"语音模型");
+        if (FAILED(URLDownloadToFileW(nullptr, kVoicePackUrl, pack.c_str(), 0, &progress))) {
             *result = L"下载失败：连不上服务器";
         } else if (!GetFileAttributesExW(pack.c_str(), GetFileExInfoStandard, &info) ||
                    ((static_cast<unsigned long long>(info.nFileSizeHigh) << 32) | info.nFileSizeLow) != kVoicePackSize ||
-                   md5File(pack) != kVoicePackMd5) {
+                   hashFile(pack, BCRYPT_MD5_ALGORITHM) != kVoicePackMd5) {
             *result = L"下载的语音包校验不对，再试一次";
         } else {
             removeTree(tmp);
@@ -1126,6 +1263,9 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
         case kIdDiagnostics:
             copyDiagnostics();
             return 0;
+        case kIdLocalModel:
+            downloadLocalModel();
+            return 0;
         case kIdVoiceDownload:
             downloadVoiceModel();
             return 0;
@@ -1168,6 +1308,18 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
             load();
         }
         break;
+    case kMessageProgress: {
+        std::unique_ptr<std::wstring> text(reinterpret_cast<std::wstring *>(lParam));
+        SetWindowTextW(status_, text->c_str());
+        return 0;
+    }
+    case kMessageLocalDone: {
+        std::unique_ptr<std::wstring> result(reinterpret_cast<std::wstring *>(lParam));
+        downloading_ = false;
+        EnableWindow(localModel_, TRUE);
+        SetWindowTextW(status_, result->c_str());
+        return 0;
+    }
     case kMessageVoiceDone: {
         std::unique_ptr<std::wstring> result(reinterpret_cast<std::wstring *>(lParam));
         downloading_ = false;
