@@ -202,6 +202,77 @@ StatsMetrics metrics(const StatsDocument &document, const std::string &today) {
     return out;
 }
 
+std::vector<std::pair<std::string, long long>> recentDays(const StatsDocument &document, int length,
+                                                          const std::string &today) {
+    std::vector<std::pair<std::string, long long>> out;
+    for (int offset = 0; offset < length; ++offset) {
+        const std::string key = shift(today, offset - length + 1);
+        const auto it = document.days.find(key);
+        out.emplace_back(key, it == document.days.end() ? 0 : it->second.chars);
+    }
+    return out;
+}
+
+const std::vector<std::vector<KeyCap>> &keyboardRows() {
+    static const std::vector<std::vector<KeyCap>> rows = [] {
+        std::vector<std::vector<KeyCap>> r;
+        std::vector<KeyCap> row = {{"Escape", "Esc", 1}, {"", "", 1}};
+        for (int i = 1; i <= 12; ++i) {
+            row.push_back({"F" + std::to_string(i), "F" + std::to_string(i), 1});
+            if (i == 4 || i == 8) {
+                row.push_back({"", "", 0.5});
+            }
+        }
+        r.push_back(row);
+        row = {{"Backquote", "`", 1}};
+        for (const char c : std::string("1234567890")) {
+            row.push_back({std::string("Digit") + c, std::string(1, c), 1});
+        }
+        row.insert(row.end(), {{"Minus", "-", 1}, {"Equal", "=", 1}, {"Backspace", "Backspace", 2}});
+        r.push_back(row);
+        row = {{"Tab", "Tab", 1.5}};
+        for (const char c : std::string("QWERTYUIOP")) {
+            row.push_back({std::string("Key") + c, std::string(1, c), 1});
+        }
+        row.insert(row.end(), {{"BracketLeft", "[", 1}, {"BracketRight", "]", 1}, {"Backslash", "\\", 1.5}});
+        r.push_back(row);
+        row = {{"CapsLock", "Caps Lock", 1.75}};
+        for (const char c : std::string("ASDFGHJKL")) {
+            row.push_back({std::string("Key") + c, std::string(1, c), 1});
+        }
+        row.insert(row.end(), {{"Semicolon", ";", 1}, {"Quote", "'", 1}, {"Enter", "Enter", 2.25}});
+        r.push_back(row);
+        row = {{"ShiftLeft", "Shift", 2.25}};
+        for (const char c : std::string("ZXCVBNM")) {
+            row.push_back({std::string("Key") + c, std::string(1, c), 1});
+        }
+        row.insert(row.end(), {{"Comma", ",", 1}, {"Period", ".", 1}, {"Slash", "/", 1}, {"ShiftRight", "Shift", 2.75}});
+        r.push_back(row);
+        r.push_back({{"ControlLeft", "Ctrl", 1.25}, {"MetaLeft", "Win", 1.25}, {"AltLeft", "Alt", 1.25},
+                     {"Space", "Space", 6.25}, {"AltRight", "Alt", 1.25}, {"MetaRight", "Win", 1.25},
+                     {"ContextMenu", "Menu", 1.25}, {"ControlRight", "Ctrl", 1.25}});
+        return r;
+    }();
+    return rows;
+}
+
+std::map<std::string, long long> keyTotals(const StatsDocument &document) {
+    std::map<std::string, long long> totals;
+    for (const auto &entry : document.days) {
+        for (const auto &[key, count] : entry.second.keys) {
+            totals[key] += count;
+        }
+    }
+    return totals;
+}
+
+int level(long long count, long long maximum) {
+    if (count <= 0 || maximum <= 0) {
+        return 0;
+    }
+    return static_cast<int>(std::max(1LL, std::min(4LL, (count * 4 + maximum - 1) / maximum)));
+}
+
 std::vector<std::pair<std::string, long long>> topKeys(const StatsDocument &document, std::size_t limit) {
     std::map<std::string, long long> totals;
     for (const auto &entry : document.days) {

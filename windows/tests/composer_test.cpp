@@ -400,6 +400,21 @@ int main(int argc, char **argv) {
               "活跃时间的写法");
         const auto keys = stats::topKeys(doc, 1);
         check(keys.size() == 1 && keys[0].first == "KeyA" && keys[0].second == 12, "按得最多的键");
+        const auto days = stats::recentDays(doc, 30, "2026-11-19");
+        check(days.size() == 30 && days.back().first == "2026-11-19" && days.back().second == 50 &&
+                  days.front().first == "2026-10-21" && days[28].second == 300,
+              "最近 30 天的柱子");
+        check(stats::level(0, 10) == 0 && stats::level(1, 100) == 1 && stats::level(100, 100) == 4 &&
+                  stats::level(50, 100) == 2,
+              "热力图的深浅（和 macOS 一样）");
+        std::size_t keyCount = 0;
+        for (const auto &row : stats::keyboardRows()) {
+            for (const auto &cap : row) {
+                keyCount += cap.code.empty() ? 0 : 1;
+            }
+        }
+        check(stats::keyboardRows().size() == 6 && keyCount == 74 && stats::keyTotals(doc).at("KeyA") == 12,
+              "热力图的键盘", std::to_string(keyCount));
         check(StatsDocument::parse("不是 JSON").days.empty() && !stats::summary(StatsDocument{}, "2026-11-19").empty(),
               "读不出来是空的，空的也有一段说明");
     }

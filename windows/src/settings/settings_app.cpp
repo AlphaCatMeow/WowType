@@ -285,6 +285,104 @@ bool writeFile(const std::wstring &path, const std::string &text) {
     return MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 }
 
+// ---------------------------------------------------------------- 统计页的图：最近 30 天的柱子、键盘热力图（和 macOS 的统计页一样）
+
+constexpr wchar_t kChartClass[] = L"WowTypeStatsChart";
+
+struct ChartData {
+    std::vector<std::pair<std::string, long long>> days;
+    std::map<std::string, long long> keys;
+};
+ChartData g_chart;
+
+LRESULT CALLBACK chartProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message != WM_PAINT) {
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(hwnd, &ps);
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const UINT dpi = GetDpiForWindow(hwnd);
+    const auto px = [dpi](int dip) { return MulDiv(dip, static_cast<int>(dpi), 96); };
+    FillRect(dc, &client, GetSysColorBrush(COLOR_WINDOW));
+    HFONT font = CreateFontW(-px(11), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
+    const int width = client.right - client.left;
+
+    // 最近 30 天：每天一根柱子，最高的那天顶满
+    RECT title{0, 0, width, px(18)};
+    DrawTextW(dc, L"最近 30 天上屏的字数", -1, &title, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    const int chartTop = px(20);
+    const int chartHeight = px(70);
+    long long most = 1;
+    for (const auto &day : g_chart.days) {
+        most = std::max(most, day.second);
+    }
+    HBRUSH bar = CreateSolidBrush(RGB(0x2F, 0x6F, 0xD6));
+    const int n = static_cast<int>(g_chart.days.size());
+    for (int i = 0; i < n; ++i) {
+        const int left = width * i / std::max(n, 1);
+        const int right = width * (i + 1) / std::max(n, 1) - px(2);
+        const int h = static_cast<int>(chartHeight * g_chart.days[static_cast<std::size_t>(i)].second / most);
+        RECT r{left, chartTop + chartHeight - std::max(h, g_chart.days[static_cast<std::size_t>(i)].second ? px(1) : 0),
+               right, chartTop + chartHeight};
+        FillRect(dc, &r, bar);
+    }
+    DeleteObject(bar);
+    if (n > 0) {
+        RECT first{0, chartTop + chartHeight + px(2), width / 2, chartTop + chartHeight + px(18)};
+        RECT last{width / 2, first.top, width, first.bottom};
+        DrawTextW(dc, widen(stats::dayLabel(g_chart.days.front().first)).c_str(), -1, &first, DT_LEFT | DT_SINGLELINE);
+        DrawTextW(dc, L"今天", -1, &last, DT_RIGHT | DT_SINGLELINE);
+    }
+
+    // 键盘热力图：按得越多颜色越深（五档，和 macOS 一样）
+    const int mapTop = chartTop + chartHeight + px(28);
+    RECT mapTitle{0, mapTop - px(4), width, mapTop + px(14)};
+    DrawTextW(dc, L"按键热力图（全部日子）", -1, &mapTitle, DT_LEFT | DT_SINGLELINE);
+    long long hottest = 0;
+    for (const auto &row : stats::keyboardRows()) {
+        for (const auto &cap : row) {
+            if (!cap.code.empty()) {
+                const auto it = g_chart.keys.find(cap.code);
+                hottest = std::max(hottest, it == g_chart.keys.end() ? 0LL : it->second);
+            }
+        }
+    }
+    const COLORREF levels[] = {RGB(0xEE, 0xEE, 0xEE), RGB(0xC6, 0xE2, 0xFF), RGB(0x8C, 0xC4, 0xFF),
+                               RGB(0x4A, 0x9B, 0xF5), RGB(0x1F, 0x6F, 0xD6)};
+    const double unit = width / 15.25;
+    const int keyHeight = std::max(px(18), static_cast<int>(unit * 0.8));
+    int y = mapTop + px(18);
+    for (const auto &row : stats::keyboardRows()) {
+        double x = 0;
+        for (const auto &cap : row) {
+            const int left = static_cast<int>(x);
+            x += cap.weight * unit;
+            if (cap.code.empty()) {
+                continue;
+            }
+            const auto it = g_chart.keys.find(cap.code);
+            const int heat = stats::level(it == g_chart.keys.end() ? 0 : it->second, hottest);
+            RECT r{left + px(1), y, static_cast<int>(x) - px(1), y + keyHeight - px(2)};
+            HBRUSH brush = CreateSolidBrush(levels[heat]);
+            FillRect(dc, &r, brush);
+            DeleteObject(brush);
+            SetTextColor(dc, heat >= 3 ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x33, 0x33, 0x33));
+            DrawTextW(dc, widen(cap.label).c_str(), -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+        y += keyHeight;
+    }
+    SelectObject(dc, oldFont);
+    DeleteObject(font);
+    EndPaint(hwnd, &ps);
+    return 0;
+}
+
 struct Row {
     const SettingDef *def;
     HWND label = nullptr;
@@ -352,6 +450,7 @@ private:
     HWND importWords_ = nullptr;
     HWND nnlm_ = nullptr;
     HWND statsText_ = nullptr;
+    HWND statsChart_ = nullptr;
     HWND statsRefresh_ = nullptr;
     HWND statsClear_ = nullptr;
     HWND diagnostics_ = nullptr;
@@ -485,6 +584,16 @@ void SettingsWindow::build() {
         SendMessageW(tabs_, TCM_INSERTITEMW, pages().size() + 1, reinterpret_cast<LPARAM>(&item));
     }
     statsText_ = child(L"EDIT", L"", WS_BORDER | ES_MULTILINE | ES_READONLY | WS_VSCROLL | ES_AUTOVSCROLL, kIdStatsText);
+    {
+        WNDCLASSEXW chart{};
+        chart.cbSize = sizeof chart;
+        chart.lpfnWndProc = chartProc;
+        chart.hInstance = instance_;
+        chart.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        chart.lpszClassName = kChartClass;
+        RegisterClassExW(&chart);
+        statsChart_ = child(kChartClass, L"", 0, 0);
+    }
     statsRefresh_ = child(L"BUTTON", L"刷新", BS_PUSHBUTTON | WS_TABSTOP, kIdStatsRefresh);
     statsClear_ = child(L"BUTTON", L"清空统计", BS_PUSHBUTTON | WS_TABSTOP, kIdStatsClear);
     updateCheck_ = child(L"BUTTON", L"检查更新", BS_PUSHBUTTON | WS_TABSTOP, kIdUpdateCheck);
@@ -556,7 +665,7 @@ void SettingsWindow::layout() {
     MoveWindow(apiKey_, margin * 2 + scale(260), y[translatePage], width - margin * 4 - scale(260), scale(24), FALSE);
     bottom = std::max(bottom, y[translatePage] + rowHeight);
     // 自定义词页：上面是列表，下面是加词的两个框和按钮
-    bottom = std::max(bottom, top + scale(360));
+    bottom = std::max(bottom, top + scale(500));
     const int inner = width - margin * 4;
     const int formTop = bottom - rowHeight * 3;
     MoveWindow(wordList_, margin * 2, top, inner, formTop - top - scale(8), FALSE);
@@ -570,7 +679,10 @@ void SettingsWindow::layout() {
     MoveWindow(importWords_, margin * 2 + scale(196), buttonRow, scale(80), scale(26), FALSE);
     MoveWindow(custom_, margin * 2 + scale(284), buttonRow, scale(110), scale(26), FALSE);
     // 统计页：一段摘要，下面两个按钮
-    MoveWindow(statsText_, margin * 2, top, inner, buttonRow - top - scale(8), FALSE);
+    // 上面一段文字摘要，下面画图
+    const int textHeight = scale(110);
+    MoveWindow(statsText_, margin * 2, top, inner, textHeight, FALSE);
+    MoveWindow(statsChart_, margin * 2, top + textHeight + scale(8), inner, buttonRow - top - textHeight - scale(16), FALSE);
     MoveWindow(statsRefresh_, margin * 2, buttonRow, scale(80), scale(26), FALSE);
     MoveWindow(statsClear_, margin * 2 + scale(88), buttonRow, scale(100), scale(26), FALSE);
     const int tabHeight = bottom - tabTop + margin;
@@ -601,7 +713,7 @@ void SettingsWindow::showPage(int page) {
     ShowWindow(diagnostics_, page == pageNamed(L"常规") ? SW_SHOW : SW_HIDE);
     ShowWindow(updateCheck_, page == pageNamed(L"常规") ? SW_SHOW : SW_HIDE);
     ShowWindow(updateInstall_, page == pageNamed(L"常规") ? SW_SHOW : SW_HIDE);
-    for (HWND h : {statsText_, statsRefresh_, statsClear_}) {
+    for (HWND h : {statsText_, statsChart_, statsRefresh_, statsClear_}) {
         ShowWindow(h, page == statsPage() ? SW_SHOW : SW_HIDE);
     }
     if (page == statsPage()) {
@@ -1177,6 +1289,9 @@ void SettingsWindow::refreshStats() {
     std::snprintf(today, sizeof today, "%04u-%02u-%02u", t.wYear, t.wMonth, t.wDay);
     const auto doc = StatsDocument::parse(readFile(dataDir() + L"\\stats.json").value_or(""));
     SetWindowTextW(statsText_, widen(stats::summary(doc, today)).c_str());
+    g_chart.days = stats::recentDays(doc, 30, today);
+    g_chart.keys = stats::keyTotals(doc);
+    InvalidateRect(statsChart_, nullptr, TRUE);
 }
 
 void SettingsWindow::clearStats() {

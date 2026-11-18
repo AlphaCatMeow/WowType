@@ -62,6 +62,22 @@ std::string shift(const std::string &key, int days);
 std::vector<std::pair<std::string, long long>> topKeys(const StatsDocument &document, std::size_t limit);
 /// 给人看的一段摘要（设置窗口「统计」页）。
 std::string summary(const StatsDocument &document, const std::string &today);
+/// 最近 length 天（最早的在前，最后一个是 today）每天的字数，画柱状图用。
+std::vector<std::pair<std::string, long long>> recentDays(const StatsDocument &document, int length,
+                                                          const std::string &today);
+
+/// 键盘热力图上的一个键：code 是 KeyboardEvent.code 风格的 id（空的是占位），weight 是宽度（一个字母键是 1）。
+struct KeyCap {
+    std::string code;
+    std::string label;
+    double weight;
+};
+/// 热力图画的键盘（和 macOS 的 StatsKeyboard.rows 一样的排法，Windows 的叫法：Alt、Win）。
+const std::vector<std::vector<KeyCap>> &keyboardRows();
+/// 全部日子各键按下的次数。
+std::map<std::string, long long> keyTotals(const StatsDocument &document);
+/// 热力图的颜色深浅：0 没按过，1–4（和 macOS 的 StatsKeyboard.level 一样）。
+int level(long long count, long long maximum);
 } // namespace stats
 
 namespace diagnostics {
