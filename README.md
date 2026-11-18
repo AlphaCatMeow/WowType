@@ -101,6 +101,7 @@
 - Ubuntu 22.04 的 GNOME 是 42：绿色候选框主题和语音浮条（GNOME 扩展，要 GNOME 45+）用不了，见[安装说明](docs/INSTALL.md#ubuntu-2204fcitx5-50)
 - deepin 的安装包只有 x86_64
 - **macOS 12 或更新**（Apple 芯片和 Intel 都行），见下面的 [macOS](#macos)
+- Windows 10 / 11：开发中，还没有安装包，开发者可以先手动装上试，见 [docs/WINDOWS.md](docs/WINDOWS.md)
 
 ### 一行命令安装（推荐）
 

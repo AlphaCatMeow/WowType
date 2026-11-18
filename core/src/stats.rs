@@ -1074,13 +1074,10 @@ fn macos_key_id(code: u16) -> Option<&'static str> {
 
 /// Unix 毫秒 → 本地日期 `YYYY-MM-DD`。
 pub fn local_day(now_ms: i64) -> String {
-    let seconds = now_ms.div_euclid(1000);
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let time = seconds as libc::time_t;
-    if unsafe { libc::localtime_r(&time, &mut tm) }.is_null() {
-        return String::new();
+    match crate::platform::local_time(now_ms.div_euclid(1000)) {
+        Some(t) => format!("{:04}-{:02}-{:02}", t.year, t.month, t.day),
+        None => String::new(),
     }
-    format!("{:04}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday)
 }
 
 pub fn now_ms() -> i64 {

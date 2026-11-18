@@ -25,7 +25,15 @@ fn local_ms(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32
     tm.tm_min = minute as i32;
     tm.tm_sec = second as i32;
     tm.tm_isdst = -1;
-    let time = unsafe { libc::mktime(&mut tm) };
+    #[cfg(windows)]
+    extern "C" {
+        // libc 没给 Windows 绑 mktime；CRT 里 64 位的叫 _mktime64
+        #[link_name = "_mktime64"]
+        fn mktime(tm: *mut libc::tm) -> i64;
+    }
+    #[cfg(not(windows))]
+    use libc::mktime;
+    let time = unsafe { mktime(&mut tm) };
     time as i64 * 1000
 }
 

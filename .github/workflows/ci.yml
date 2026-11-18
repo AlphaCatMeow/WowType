@@ -73,6 +73,54 @@ jobs:
       - name: C ABI 冒烟测试
         run: ./scripts/abi-smoke.sh
 
+  windows:
+    # Windows 输入法（windows/，TSF 文本服务，第一阶段，见 docs/WINDOWS.md）：核心在 Windows 上的测试、
+    # 编 x64 的核心静态库和输入法 DLL、按键测试、设置契约、真用 regsvr32 注册再注销一遍。
+    # 还不发 Windows 安装包，不在 release 的 needs 里。
+    name: Windows 输入法（x64）
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 核心测试
+        run: cargo test -p wowtype-core --locked
+      - name: 编核心静态库（不带语音，静态 C 运行库）
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --locked -p wowtype-core --no-default-features --target-dir target/windows
+      - name: 编输入法 DLL、按键测试、设置导出
+        run: |
+          cmake -S windows -B build/windows -A x64 -DWOWTYPE_CORE_LIB="$(pwd -W)/target/windows/release/wowtype_core.lib"
+          cmake --build build/windows --config Release
+      - name: 按键测试（和 macOS、fcitx5 的同名用例一样）
+        run: build/windows/Release/wowtype-windows-harness.exe
+      - name: 设置契约（spec/config.json）
+        run: python scripts/test-config-contract.py --windows build/windows/Release/wowtype-windows-config-dump.exe
+      - name: 注册、注销一遍（regsvr32）
+        shell: pwsh
+        run: |
+          $dll = (Resolve-Path build/windows/Release/wowtype.dll).Path
+          $clsid = 'HKLM:\SOFTWARE\Classes\CLSID\{A895B83F-8F60-4990-A48F-17821E3BC14A}'
+          $p = Start-Process regsvr32 -ArgumentList '/s', "`"$dll`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "regsvr32 失败：$($p.ExitCode)" }
+          $server = (Get-ItemProperty "$clsid\InprocServer32").'(default)'
+          if ($server -ne $dll) { throw "InprocServer32 不对：$server" }
+          if (-not (Test-Path 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{A895B83F-8F60-4990-A48F-17821E3BC14A}')) { throw '没注册到 TSF' }
+          Get-ChildItem -Recurse 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{A895B83F-8F60-4990-A48F-17821E3BC14A}' | Select-Object -ExpandProperty Name
+          $p = Start-Process regsvr32 -ArgumentList '/u', '/s', "`"$dll`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "regsvr32 /u 失败：$($p.ExitCode)" }
+          if (Test-Path $clsid) { throw '注销以后 CLSID 还在' }
+      - uses: actions/upload-artifact@v4
+        with:
+          # 开发、试用：没有安装包，照 docs/WINDOWS.md 手动放数据、注册
+          name: windows-x64
+          path: build/windows/Release/wowtype.dll
+          retention-days: 7
+
   macos-app:
     # macOS 输入法外壳（macos/）：按键测试、打通用安装包、用安装包里的词库自检、真装一遍 pkg。
     # 发版时 WowType-<版本>-macos.pkg 跟 Linux 的包一起进 Release（artifact 叫 pkg-macos）。

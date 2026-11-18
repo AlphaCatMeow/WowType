@@ -3499,31 +3499,8 @@ fn utf8_tail(text: &str, max_bytes: usize) -> &str {
 }
 
 /// 本地时间（日期时间候选用）。
-#[cfg(unix)]
 pub fn system_time() -> Option<LocalTime> {
-    let mut now: libc::time_t = 0;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: time 和 localtime_r 只写我们给的两个变量
-    unsafe {
-        libc::time(&mut now);
-        if libc::localtime_r(&now, &mut tm).is_null() {
-            return None;
-        }
-    }
-    Some(LocalTime {
-        year: tm.tm_year + 1900,
-        month: (tm.tm_mon + 1).max(0) as u32,
-        day: tm.tm_mday.max(0) as u32,
-        hour: tm.tm_hour.max(0) as u32,
-        minute: tm.tm_min.max(0) as u32,
-        second: tm.tm_sec.max(0) as u32,
-        weekday: tm.tm_wday.max(0) as u32,
-    })
-}
-
-#[cfg(not(unix))]
-pub fn system_time() -> Option<LocalTime> {
-    None
+    crate::platform::local_now()
 }
 
 #[cfg(test)]

@@ -20,6 +20,7 @@ pub mod lexicon;
 pub mod llama;
 pub mod lm;
 pub mod nnlm;
+pub mod platform;
 pub mod preedit;
 pub mod rank;
 pub mod recent_emoji;

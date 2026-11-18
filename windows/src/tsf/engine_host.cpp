@@ -1,0 +1,329 @@
+#include "engine_host.h"
+
+#include <shlobj.h>
+
+#include <algorithm>
+#include <fstream>
+#include <iterator>
+#include <vector>
+
+#include "globals.h"
+
+namespace wowtype::tsf {
+
+namespace {
+
+/// 每上屏这么多次存一次（和 fcitx5、macOS 外壳一样）。
+constexpr int kSaveEvery = 20;
+/// 翻页时一个音节的字要列全（yi 有八百多个字），候选上限给 1000（和 macOS 一样）。
+constexpr unsigned kMaxCandidates = 1000;
+
+bool sameStamp(const FILETIME &a, const FILETIME &b) {
+    return a.dwLowDateTime == b.dwLowDateTime && a.dwHighDateTime == b.dwHighDateTime;
+}
+
+std::string readFileUtf8(const std::wstring &path, bool &ok) {
+    std::ifstream in(path, std::ios::binary);
+    ok = static_cast<bool>(in);
+    if (!ok) {
+        return {};
+    }
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    // 记事本存的 UTF-8 可能带 BOM
+    if (text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF && static_cast<unsigned char>(text[1]) == 0xBB &&
+        static_cast<unsigned char>(text[2]) == 0xBF) {
+        text.erase(0, 3);
+    }
+    return text;
+}
+
+/// 把开头的 ~\ 或 ~/ 换成用户目录（设置里常这么写，和另两端一样）。
+std::wstring expandHome(const std::wstring &path) {
+    if (path.size() >= 2 && path[0] == L'~' && (path[1] == L'/' || path[1] == L'\\')) {
+        wchar_t *profile = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &profile))) {
+            std::wstring out = std::wstring(profile) + L"\\" + path.substr(2);
+            CoTaskMemFree(profile);
+            return out;
+        }
+    }
+    return path;
+}
+
+} // namespace
+
+FILETIME fileStamp(const std::wstring &path) {
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) {
+        return FILETIME{};
+    }
+    return info.ftLastWriteTime;
+}
+
+bool fileExists(const std::wstring &path) {
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+EngineHost &EngineHost::instance() {
+    // 故意不析构：核心有自己的线程（存盘、翻译），DLL 一旦载入引擎就钉住不卸载（见 ensureLoading），进程退出时由系统收
+    static EngineHost *host = new EngineHost();
+    return *host;
+}
+
+std::wstring EngineHost::dataDir() const {
+    wchar_t buffer[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"WOWTYPE_DATA_DIR", buffer, MAX_PATH) > 0) {
+        return buffer;
+    }
+    wchar_t *local = nullptr;
+    std::wstring dir;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local))) {
+        dir = std::wstring(local) + L"\\WowType";
+        CoTaskMemFree(local);
+    }
+    return dir;
+}
+
+std::wstring EngineHost::resource(const wchar_t *name) const {
+    const std::wstring path = moduleDir() + L"\\data\\" + name;
+    return fileExists(path) ? path : std::wstring();
+}
+
+std::wstring EngineHost::lexiconPath() const {
+    const std::string configured = config_.value("Lexicon");
+    if (!configured.empty()) {
+        const std::wstring path = expandHome(widen(configured));
+        if (fileExists(path)) {
+            return path;
+        }
+        log(L"设置里的词库 " + path + L" 不在，用自带的词库");
+    }
+    return resource(L"lexicon.tsv");
+}
+
+void EngineHost::loadConfig() {
+    configStamp_ = fileStamp(configPath());
+    bool ok = false;
+    const std::string text = readFileUtf8(configPath(), ok);
+    Config loaded = ok ? Config::parse(text) : Config();
+    if (loaded != config_ || configGeneration_ == 0) {
+        config_ = loaded;
+        ++configGeneration_;
+        applyTranslateSettings();
+        if (WowtypeEngineHandle *engine = engine_.load()) {
+            applyEngineSettings(engine);
+        }
+        log(L"设置：每页 " + std::to_wstring(config_.pageSize()) + L"，方案 " + widen(config_.value("InputScheme")) +
+            L"，Shift 切换 " + widen(config_.value("ShiftToggle")) + L"，词库 " +
+            (config_.value("Lexicon").empty() ? std::wstring(L"自带") : widen(config_.value("Lexicon"))));
+    }
+}
+
+void EngineHost::checkForChanges() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (configGeneration_ == 0 || !sameStamp(fileStamp(configPath()), configStamp_)) {
+        loadConfig();
+    }
+    if (WowtypeEngineHandle *engine = engine_.load()) {
+        const std::wstring custom = dataDir() + L"\\custom.tsv";
+        if (!sameStamp(fileStamp(custom), customStamp_)) {
+            customStamp_ = fileStamp(custom);
+            const int n = wowtype_engine_load_custom_words(engine, narrow(custom).c_str());
+            if (n < 0) {
+                log(L"自定义词载入失败 " + custom);
+            }
+        }
+    }
+}
+
+void EngineHost::applyEngineSettings(WowtypeEngineHandle *engine) {
+    // 设置里管引擎的部分，和 macOS 的 Engine.apply、Linux 的 applyCoreSettings 一样
+    wowtype_engine_set_fuzzy(engine, config_.flag("Fuzzy"));
+    wowtype_engine_set_fuzzy_groups(engine, config_.fuzzyGroups());
+    wowtype_engine_set_shuangpin(engine, config_.shuangpin());
+    if (wowtype_engine_set_shuangpin_scheme(engine, config_.value("ShuangpinScheme").c_str()) != 0) {
+        log(L"不认识双拼方案 " + widen(config_.value("ShuangpinScheme")) + L"，用自然码");
+        wowtype_engine_set_shuangpin_scheme(engine, "ziranma");
+    }
+    wowtype_engine_set_typo_correction(engine, config_.flag("TypoCorrection"));
+    wowtype_engine_set_rare_ext_chars(engine, config_.flag("RareExtChars"));
+    if (config_.flag("Traditional") && !conversionLoaded_) {
+        const std::wstring s2t = resource(L"s2t.tsv");
+        if (!s2t.empty() && wowtype_engine_load_conversion(engine, narrow(s2t).c_str()) > 0) {
+            conversionLoaded_ = true;
+        } else {
+            log(L"简繁表载入失败（没有 data\\s2t.tsv）");
+        }
+    }
+    wowtype_engine_set_traditional(engine, config_.flag("Traditional") && conversionLoaded_);
+    if (config_.wubi() && !wubiLoaded_) {
+        const std::wstring wubi = resource(L"wubi86.tsv");
+        if (!wubi.empty() && wowtype_engine_load_wubi(engine, narrow(wubi).c_str()) > 0) {
+            wubiLoaded_ = true;
+        } else {
+            log(L"五笔码表载入失败（没有 data\\wubi86.tsv），先按全拼打");
+        }
+    }
+}
+
+void EngineHost::applyTranslateSettings() {
+    if (config_.flag("Translate") && !translator_) {
+        translator_ = wowtype_translate_new();
+    }
+    if (!translator_) {
+        return;
+    }
+    const std::string keyFile = narrow(dataDir() + L"\\translate.key");
+    wowtype_translate_configure(translator_, config_.value("TranslateBaseUrl").c_str(),
+                                config_.value("TranslateModel").c_str(), config_.value("TranslateTarget").c_str(),
+                                config_.flag("TranslateFormal"), keyFile.c_str());
+    std::string model;
+    std::string server;
+    if (config_.flag("TranslateLocal")) {
+        model = config_.value("TranslateLocalModel");
+        if (model.empty()) {
+            model = narrow(dataDir() + L"\\models\\HY-MT1.5-1.8B-Q4_K_M.gguf");
+        }
+        server = config_.value("TranslateLlamaServer");
+    }
+    // 没选本地模型时传空串：不起进程、不占端口（已经起了的马上停掉）
+    wowtype_translate_configure_local(translator_, model.c_str(), server.c_str(),
+                                      static_cast<unsigned>(config_.number("TranslateIdleMinutes") * 60));
+}
+
+WowtypeEngineHandle *EngineHost::makeEngine() {
+    const std::wstring lexicon = lexiconPath();
+    if (lexicon.empty()) {
+        log(L"安装目录里没有 data\\lexicon.tsv");
+        return nullptr;
+    }
+    CreateDirectoryW(dataDir().c_str(), nullptr);
+    const std::wstring lm = resource(L"words.lm");
+    WowtypeEngineHandle *engine =
+        wowtype_engine_new(narrow(lexicon).c_str(), lm.empty() ? nullptr : narrow(lm).c_str());
+    if (!engine && !lm.empty()) {
+        engine = wowtype_engine_new(narrow(lexicon).c_str(), nullptr);
+    }
+    if (!engine) {
+        const char *error = wowtype_last_error();
+        log(L"载入词库失败 " + lexicon + L"：" + widen(error ? error : ""));
+        return nullptr;
+    }
+    wowtype_engine_set_max_candidates(engine, kMaxCandidates);
+    if (const std::wstring english = resource(L"english.txt"); !english.empty()) {
+        wowtype_engine_load_english(engine, narrow(english).c_str());
+    }
+    // 用户自己训的领域词级模型（可选），和 words.lm 混着用
+    if (const std::wstring domain = dataDir() + L"\\words.domain.lm"; fileExists(domain)) {
+        if (wowtype_engine_set_domain_lm(engine, narrow(domain).c_str()) != 0) {
+            log(L"领域词级模型载入失败 " + domain);
+        }
+    }
+    // 整句增强模型：用户导入的微信输入法模型优先，再是安装包里 WowType 自己的
+    std::wstring nnlm = dataDir() + L"\\wetype\\nlrgpt2_nnlm.bin";
+    if (!fileExists(nnlm)) {
+        nnlm = resource(L"nnlm.bin");
+    }
+    if (!nnlm.empty() && wowtype_engine_load_nnlm(engine, narrow(nnlm).c_str()) < 0) {
+        log(L"整句增强模型载入失败 " + nnlm);
+    }
+    wowtype_engine_load_user_dict(engine, narrow(dataDir() + L"\\user.tsv").c_str());
+    wowtype_engine_load_history(engine, narrow(dataDir() + L"\\history.tsv").c_str());
+    return engine;
+}
+
+void EngineHost::ensureLoading() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (loading_) {
+        return;
+    }
+    loading_ = true;
+    // 核心起了线程以后 DLL 就不能卸载了（线程的代码在 DLL 里）：钉住，DllCanUnloadNow 怎么答都不卸
+    HMODULE pinned = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                       reinterpret_cast<LPCWSTR>(&fileStamp), &pinned);
+    if (configGeneration_ == 0) {
+        loadConfig();
+    }
+    wowtype_recent_emoji_path(narrow(dataDir() + L"\\emoji-recent.txt").c_str());
+    // 词库有几十 MB，放后台读，读完再交给文本服务（按键时看 engine() 有没有了）
+    std::thread([this] {
+        WowtypeEngineHandle *engine = makeEngine();
+        std::lock_guard<std::recursive_mutex> inner(mutex_);
+        if (!engine) {
+            return;
+        }
+        applyEngineSettings(engine);
+        customStamp_ = FILETIME{};
+        engine_.store(engine);
+        log(L"词库载入好了");
+    }).detach();
+}
+
+void EngineHost::didCommit() {
+    if (++commitsSinceSave_ >= kSaveEvery) {
+        save();
+    }
+}
+
+void EngineHost::didForget() {
+    ++commitsSinceSave_;
+    save();
+}
+
+void EngineHost::save(bool wait) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    WowtypeEngineHandle *engine = engine_.load();
+    if (!engine) {
+        return;
+    }
+    // 上次后台写失败了现在才知道：记下来，这次接着存
+    if (wowtype_engine_save_wait(engine, 0) < 0) {
+        const char *error = wowtype_last_error();
+        log(L"保存用户词库或输入习惯失败：" + widen(error ? error : ""));
+        commitsSinceSave_ = std::max(commitsSinceSave_, 1);
+    }
+    if (commitsSinceSave_ > 0) {
+        CreateDirectoryW(dataDir().c_str(), nullptr);
+        const bool dict = wowtype_engine_save_user_dict_async(engine, narrow(dataDir() + L"\\user.tsv").c_str()) == 0;
+        const bool history =
+            wowtype_engine_save_history_async(engine, narrow(dataDir() + L"\\history.tsv").c_str()) == 0;
+        if (dict && history) {
+            commitsSinceSave_ = 0;
+        }
+    }
+    if (wait && wowtype_engine_save_wait(engine, -1) < 0) {
+        const char *error = wowtype_last_error();
+        log(L"保存用户词库或输入习惯失败：" + widen(error ? error : ""));
+    }
+}
+
+void EngineHost::sampleClipboard() {
+    if (!config_.flag("ClipboardHistory")) {
+        return;
+    }
+    // 序号没变就是没复制过新东西，不去开剪贴板
+    const DWORD sequence = GetClipboardSequenceNumber();
+    if (sequence == clipboardSequence_) {
+        return;
+    }
+    clipboardSequence_ = sequence;
+    if (!IsClipboardFormatAvailable(CF_UNICODETEXT) || !OpenClipboard(nullptr)) {
+        return;
+    }
+    std::string text;
+    if (HANDLE data = GetClipboardData(CF_UNICODETEXT)) {
+        if (const auto *chars = static_cast<const wchar_t *>(GlobalLock(data))) {
+            text = narrow(chars);
+            GlobalUnlock(data);
+        }
+    }
+    CloseClipboard();
+    if (!text.empty() && text != lastClipboard_) {
+        lastClipboard_ = text;
+        wowtype_clipboard_remember(text.c_str());
+    }
+}
+
+} // namespace wowtype::tsf

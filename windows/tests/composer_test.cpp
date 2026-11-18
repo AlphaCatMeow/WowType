@@ -1,0 +1,561 @@
+// Windows 外壳的按键测试：用假的输入框把按键喂给 Composer，看上屏、编辑区、候选框。
+// 不依赖 windows.h，Linux 和 Windows 都跑（windows/test.sh、CI 的 Windows 任务）。
+//
+//   wowtype-windows-harness [lexicon.tsv]
+//
+// 用例照 macos/Tests/main.swift、fcitx5-addon/test/key_harness.cpp 的同名用例抄：三端同一个会话，结果要一样。
+// 没给词库时自己写一份小词库（shi 有 3 页候选，测翻页）。
+
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "composer.h"
+#include "config.h"
+#include "keys.h"
+#include "utf.h"
+
+using namespace wowtype;
+
+namespace {
+
+int failures = 0;
+
+void check(bool ok, const std::string &name, const std::string &detail = "") {
+    if (ok) {
+        std::printf("ok   %s\n", name.c_str());
+    } else {
+        ++failures;
+        std::printf("FAIL %s %s\n", name.c_str(), detail.c_str());
+    }
+}
+
+std::string join(const std::vector<std::string> &v) {
+    std::string out;
+    for (const auto &s : v) {
+        out += (out.empty() ? "" : " ") + s;
+    }
+    return out;
+}
+
+/// 假的输入框：上屏的字攒在 committed 里。
+class FakeClient : public TextClient {
+public:
+    std::string committed;
+    std::string marked;
+    int markedCursor = 0;
+    std::optional<CandidatePage> page;
+    bool translationAllowed = true;
+
+    void insertText(const std::string &text) override {
+        committed += text;
+        marked.clear();
+    }
+    void setMarkedText(const std::string &text, int cursorBytes) override {
+        marked = text;
+        markedCursor = cursorBytes;
+    }
+    void showCandidates(const CandidatePage *p) override {
+        if (p) {
+            page = *p;
+        } else {
+            page.reset();
+        }
+    }
+    uint32_t previousCharacter() override { return lastCodepoint(committed); }
+    bool allowsTranslation() override { return translationAllowed; }
+
+    std::vector<std::string> texts() const { return page ? page->texts : std::vector<std::string>{}; }
+};
+
+/// 有光标的假输入框（自动配对）：text 是应用里的字（UTF-16），caret 是光标。
+class CaretClient : public TextClient {
+public:
+    std::u16string text;
+    std::size_t caret = 0;
+    std::string marked;
+    bool editable = true;
+
+    std::string shown() const {
+        return utf16To8(text.substr(0, caret)) + "|" + utf16To8(text.substr(caret));
+    }
+    void set(const std::string &s, std::size_t at) {
+        text = utf8To16(s);
+        caret = at;
+    }
+    void insertText(const std::string &s) override {
+        const auto u = utf8To16(s);
+        text.insert(caret, u);
+        caret += u.size();
+        marked.clear();
+    }
+    void setMarkedText(const std::string &s, int) override { marked = s; }
+    void showCandidates(const CandidatePage *) override {}
+    uint32_t previousCharacter() override { return caret > 0 ? text[caret - 1] : 0; }
+    bool previousCharacterIsReliable() override { return editable; }
+    bool canEditAroundCaret() override { return editable; }
+    std::optional<uint32_t> nextCharacter() override {
+        if (editable && caret < text.size()) {
+            return text[caret];
+        }
+        return std::nullopt;
+    }
+    bool moveCaret(int delta) override {
+        const long target = static_cast<long>(caret) + delta;
+        if (!editable || target < 0 || target > static_cast<long>(text.size())) {
+            return false;
+        }
+        caret = static_cast<std::size_t>(target);
+        return true;
+    }
+    bool deletePair() override {
+        if (!editable || caret == 0 || caret >= text.size()) {
+            return false;
+        }
+        text.erase(caret - 1, 2);
+        caret -= 1;
+        return true;
+    }
+    /// 输入法交给应用的键：字插在光标处，退格删光标前一个，左右键挪光标
+    void appKey(const KeyInput &key) {
+        switch (key.keysym) {
+        case keysym::backspace:
+            if (caret > 0) {
+                text.erase(caret - 1, 1);
+                --caret;
+            }
+            break;
+        case keysym::left:
+            caret = caret > 0 ? caret - 1 : 0;
+            break;
+        case keysym::right:
+            caret = std::min(caret + 1, text.size());
+            break;
+        default:
+            if (const auto a = key.ascii()) {
+                insertText(std::string(1, static_cast<char>(*a)));
+            }
+        }
+    }
+};
+
+void type(Composer &c, const std::string &keys) {
+    for (const char ch : keys) {
+        c.handle(KeyInput::character(static_cast<unsigned char>(ch)));
+    }
+}
+
+/// 打一串键（< 退格、{ 左键），输入法不要的交给假应用。
+void pairType(Composer &c, CaretClient &client, const std::string &keys) {
+    for (const char ch : keys) {
+        KeyInput key = ch == '<'   ? KeyInput::key(keysym::backspace)
+                       : ch == '{' ? KeyInput::key(keysym::left)
+                                   : KeyInput::character(static_cast<unsigned char>(ch));
+        if (!c.handle(key)) {
+            client.appKey(key);
+        }
+    }
+}
+
+uint64_t shiftClock = 100000;
+void tapShift(Composer &c) {
+    shiftClock += 1000;
+    c.shiftChanged(true, false, shiftClock, false);
+    c.shiftChanged(false, false, shiftClock + 50, false);
+}
+
+std::string writeTestLexicon(const std::filesystem::path &dir) {
+    std::vector<std::string> lines = {"nihao\t你好\t50000", "ni\t你\t40000",    "ni\t尼\t3000",
+                                      "hao\t好\t40000",     "hao\t号\t5000",    "shishi\t事实\t8000",
+                                      "lve\t略\t30000",      "kai xin\t开心\t30000"};
+    const std::string shi = "是十时事市使实式试世师史石示视适识施室势诗释湿";
+    std::size_t i = 0;
+    int n = 0;
+    while (i < shi.size()) {
+        const std::size_t start = i;
+        nextCodepoint(shi, i);
+        lines.push_back("shi\t" + shi.substr(start, i - start) + "\t" + std::to_string(60000 - n * 1000));
+        ++n;
+    }
+    const auto path = dir / "lexicon.tsv";
+    std::ofstream out(path, std::ios::binary);
+    for (const auto &line : lines) {
+        out << line << "\n";
+    }
+    return path.string();
+}
+
+} // namespace
+
+int main(int argc, char **argv) {
+    const auto dir = std::filesystem::temp_directory_path() / ("wowtype-windows-harness-" + std::to_string(std::rand()));
+    std::filesystem::create_directories(dir);
+    const bool ownLexicon = argc <= 1;
+    const std::string lexicon = ownLexicon ? writeTestLexicon(dir) : argv[1];
+    WowtypeEngineHandle *engine = wowtype_engine_new(lexicon.c_str(), nullptr);
+    if (!engine) {
+        std::printf("FAIL 载入词库 %s\n", lexicon.c_str());
+        return 1;
+    }
+    wowtype_engine_set_max_candidates(engine, 1000);
+    {
+        const auto english = dir / "english.txt";
+        std::ofstream(english, std::ios::binary) << "hello\niPhone\n";
+        wowtype_engine_load_english(engine, english.string().c_str());
+    }
+    // 最近用过的 emoji 只记在内存里
+    wowtype_recent_emoji_path("");
+    check(wowtype_abi_version() / 1000 == WOWTYPE_ABI_VERSION_MAJOR, "ABI 主版本对得上");
+
+    // ---------------------------------------------------------------- 按键翻译（VK → keysym）
+    {
+        check(translateVirtualKey('A', U'a', 0, false)->keysym == 'a', "A 键打出 a");
+        const auto bang = translateVirtualKey('1', U'!', mod::shift, false);
+        check(bang && bang->keysym == '!' && bang->modifiers == mod::shift, "Shift+1 是 !");
+        check(translateVirtualKey(vk::returnKey, 0, 0, false)->keysym == keysym::returnKey, "回车");
+        check(translateVirtualKey(vk::returnKey, 0, 0, true)->keysym == keysym::keypadEnter, "小键盘回车");
+        check(translateVirtualKey(vk::back, 8, 0, false)->keysym == keysym::backspace, "退格");
+        check(translateVirtualKey(vk::numpad0 + 3, U'3', mod::numlock, false)->keysym == '3', "小键盘 3");
+        check(translateVirtualKey(vk::next, 0, 0, true)->keysym == keysym::pageDown, "Page Down");
+        check(!translateVirtualKey(0x70 /* F1 */, 0, 0, false), "F1 翻不出来");
+        check(!translateVirtualKey('E', U'é', 0, false), "非 ASCII 的字符翻不出来");
+        check(isModifierKey(vk::shift) && isModifierKey(vk::lwin) && !isModifierKey('A'), "修饰键");
+        check(utf16Offset("你好a", 6) == 2 && utf16Offset("😀a", 4) == 2, "UTF-8 偏移转 UTF-16");
+        check(utf16To8(utf8To16("你好😀")) == "你好😀", "UTF-8 ⇄ UTF-16");
+    }
+
+    // ---------------------------------------------------------------- 快捷键、设置
+    {
+        const Config d;
+        check(d.emojiKey() && d.emojiKey()->name() == "Control+period", "表情面板默认 Control+period",
+              d.value("EmojiKey"));
+        check(Shortcut::parse("Super+period")->name() == "Control+period", "Super 当 Control");
+        check(Shortcut::parse("Control+Shift+E")->name() == "Control+Shift+E", "Control+Shift+E");
+        check(Shortcut::parse("Control+Shift+e")->matches(KeyInput::character('E', mod::shift | mod::control)),
+              "字母不分大小写");
+        check(!Shortcut::parse("Hyper+x"), "不认识的修饰键");
+        const Config c = Config::parse("PageSize = 5\nTraditional=true\r\nFuzzy=True\n"
+                                       "EmojiKey=\nTranslateBaseUrl=\"a b\"\nShuangpin=True\n[Hotkey]\nPageSize=7\n");
+        check(c.pageSize() == 5, "PageSize 两边空格、[分组] 下的不认", c.value("PageSize"));
+        check(!c.flag("Traditional") && c.flag("Fuzzy"), "开关只认 True / False");
+        check(!c.emojiKey(), "EmojiKey 留空是不用");
+        check(c.value("TranslateBaseUrl") == "a b" && !c.flag("TranslateLocal"), "引号、TranslateLocal 跟着接口");
+        check(c.shuangpin(), "旧的 Shuangpin=True 是双拼");
+    }
+
+    const auto fresh = [&](Config config = Config{}) {
+        auto client = std::make_unique<FakeClient>();
+        auto c = std::make_unique<Composer>(engine, client.get());
+        c->apply(config);
+        return std::make_pair(std::move(c), std::move(client));
+    };
+
+    // ---------------------------------------------------------------- 打字
+    {
+        auto [c, client] = fresh();
+        type(*c, "nihao");
+        check(c->isComposing(), "打 nihao 进编辑区");
+        check(client->marked == "ni'hao", "编辑区分音节", client->marked);
+        check(client->markedCursor == static_cast<int>(client->marked.size()), "光标在编辑区末尾");
+        check(!client->texts().empty() && client->texts()[0] == "你好", "第一个候选是你好", join(client->texts()));
+        c->handle(KeyInput::character(' '));
+        check(client->committed == "你好", "空格上屏第一个", client->committed);
+        check(!c->isComposing() && client->marked.empty() && !client->page, "上屏后清空编辑区和候选框");
+    }
+    {
+        auto [c, client] = fresh();
+        type(*c, "shi");
+        const auto texts = client->texts();
+        c->handle(KeyInput::character('2'));
+        check(texts.size() > 1 && client->committed == texts[1], "数字 2 选第二个", client->committed);
+    }
+    {
+        auto [c, client] = fresh();
+        type(*c, "shi");
+        const auto all = c->allCandidates();
+        const std::size_t pageSize = 9;
+        check(all.size() > pageSize, "shi 不止一页", std::to_string(all.size()));
+        check(client->page && client->page->texts.size() == pageSize && client->page->hasNext && !client->page->hasPrev,
+              "第一页 9 个，后面还有");
+        if (all.size() > pageSize) {
+            c->handle(KeyInput::character('='));
+            check(client->page->hasPrev && client->page->texts[0] == all[pageSize], "= 翻到第二页");
+            c->handle(KeyInput::character('-'));
+            check(client->page->texts[0] == all[0] && client->committed.empty(), "- 翻回第一页，不当标点上屏");
+            c->handle(KeyInput::character('-'));
+            check(client->committed.empty() && c->isComposing(), "第一页再按 - 吃掉");
+            c->handle(KeyInput::key(keysym::pageDown));
+            c->handle(KeyInput::character('1'));
+            check(client->committed == all[pageSize], "第二页按 1 选第二页的第一个", client->committed);
+            client->committed.clear();
+            type(*c, "shi");
+            const auto firstPage = client->texts();
+            c->handle(KeyInput::key(keysym::pageDown));
+            const auto byKey = client->texts();
+            c->handle(KeyInput::key(keysym::pageUp));
+            c->turnPage(true);
+            check(client->page->hasPrev && client->texts() == byKey, "点下一页箭头");
+            c->turnPage(false);
+            check(client->texts() == firstPage, "点上一页箭头");
+            c->select(1);
+            check(firstPage.size() > 1 && client->committed == firstPage[1], "点第二个候选", client->committed);
+            c->turnPage(true);
+            check(!c->isComposing() && client->committed == firstPage[1], "没在打字时点翻页什么都不做");
+        }
+    }
+    {
+        // 横排时下键展开面板：一行 6 个，下键走一行，上键在第一行收起
+        auto [c, client] = fresh();
+        type(*c, "shi");
+        const auto all = c->allCandidates();
+        c->handle(KeyInput::key(keysym::down));
+        check(client->page && client->page->expanded, "下键展开面板");
+        c->handle(KeyInput::key(keysym::down));
+        check(client->page->cursor == CandidatePage::columns, "面板里下键走一行");
+        c->handle(KeyInput::character('2'));
+        check(client->committed == all[CandidatePage::columns + 1], "面板里数字选光标所在行的第几个",
+              client->committed);
+        type(*c, "shi");
+        c->handle(KeyInput::key(keysym::down));
+        c->handle(KeyInput::key(keysym::up));
+        check(!client->page->expanded && c->isComposing(), "第一行再按上键收起面板");
+    }
+    {
+        auto [c, client] = fresh();
+        type(*c, "lue");
+        check(!client->texts().empty() && client->texts()[0] == "略", "lue 出略");
+    }
+    {
+        // 没在打字时：^ 省略号、_ 破折号、引号左右交替
+        auto [c, client] = fresh();
+        c->handle(KeyInput::character('^', mod::shift));
+        c->handle(KeyInput::character('_', mod::shift));
+        check(client->committed == "……——", "^ _", client->committed);
+        c->handle(KeyInput::character('"', mod::shift));
+        type(*c, "nihao");
+        c->handle(KeyInput::character('"', mod::shift));
+        check(client->committed == "……——“你好”", "双引号左右交替", client->committed);
+    }
+    {
+        auto [c, client] = fresh();
+        type(*c, "nih");
+        c->handle(KeyInput::key(keysym::backspace));
+        check(c->input() == "ni", "退格删一个字母", c->input());
+        c->handle(KeyInput::key(keysym::escape));
+        check(!c->isComposing() && client->committed.empty(), "Esc 清空不上屏");
+        type(*c, "nihao");
+        c->handle(KeyInput::key(keysym::returnKey));
+        check(client->committed == "nihao", "回车上屏原始字母", client->committed);
+    }
+    {
+        auto [c, client] = fresh();
+        type(*c, "nihao");
+        c->handle(KeyInput::character(','));
+        check(client->committed == "你好，", "打字途中按逗号：先上屏候选再上屏中文逗号", client->committed);
+        c->handle(KeyInput::character('.'));
+        check(client->committed == "你好，。", "没在打字时句号是中文句号", client->committed);
+    }
+    {
+        auto [c, client] = fresh();
+        type(*c, "nihao");
+        c->handle(KeyInput::character('['));
+        check(client->committed == "你", "以词定字 [ 取第一个字", client->committed);
+        type(*c, "nihao");
+        c->handle(KeyInput::character(']'));
+        check(client->committed == "你好", "以词定字 ] 取最后一个字", client->committed);
+    }
+    {
+        auto [c, client] = fresh();
+        check(!c->handle(KeyInput::character('@', mod::shift)), "@ 交给应用");
+        c->handle(KeyInput::character('{', mod::shift));
+        type(*c, "nihao");
+        c->handle(KeyInput::character('}', mod::shift));
+        check(client->committed == "「你好」", "{ } 是直角引号", client->committed);
+    }
+    {
+        // 数字交给了应用，光标前是数字：后面的符号也交给应用原样上屏（20:22）
+        auto [c, client] = fresh();
+        client->committed = "20";
+        check(!c->handle(KeyInput::character(':')), "数字后的冒号交给应用");
+        client->committed += ":22";
+        type(*c, "nihao");
+        c->handle(KeyInput::character(':'));
+        check(client->committed == "20:22你好：", "汉字后面的冒号还是中文冒号", client->committed);
+    }
+    {
+        auto [c, client] = fresh();
+        check(!c->handle(KeyInput::character('1')), "没在打字时数字交给应用");
+        check(!c->handle(KeyInput::character('c', mod::control)), "Ctrl+C 交给应用");
+        check(c->handle(KeyInput::character('H', mod::shift)) && c->input() == "H", "大写字母开始编辑区");
+        type(*c, "ello");
+        c->handle(KeyInput::key(keysym::returnKey));
+        check(client->committed == "Hello", "回车上屏 Hello", client->committed);
+    }
+    {
+        // 单按 Shift：打到一半切英文，字母原样上屏
+        auto [c, client] = fresh();
+        type(*c, "ni");
+        check(!c->shiftChanged(true, false, 1000, false), "按下 Shift 不切");
+        check(c->shiftChanged(false, false, 1200, false), "0.2 秒内松开算单按");
+        check(c->mode() == Composer::Mode::English && client->committed == "ni", "切英文并上屏 ni",
+              client->committed);
+        check(!c->handle(KeyInput::character('a')), "英文模式字母交给应用");
+        c->shiftChanged(true, false, 2000, false);
+        c->handle(KeyInput::character('A', mod::shift));
+        check(!c->shiftChanged(false, false, 2100, false), "Shift+A 不算单按");
+        c->shiftChanged(true, false, 3000, false);
+        check(!c->shiftChanged(false, false, 3800, false), "按太久不算单按");
+        c->shiftChanged(true, false, 4000, true);
+        check(c->shiftChanged(false, false, 4100, true) && c->mode() == Composer::Mode::Chinese,
+              "右 Shift 单按切回中文");
+        Config left;
+        left.setValue("ShiftToggle", "Left");
+        c->apply(left);
+        c->shiftChanged(true, false, 5000, true);
+        check(!c->shiftChanged(false, false, 5100, true), "ShiftToggle=Left 时右 Shift 不切");
+    }
+    {
+        // 系统要结束组字：打的字母原样上屏，不带分音节的隔音符
+        auto [c, client] = fresh();
+        type(*c, "nihao");
+        c->commitComposition();
+        check(client->committed == "nihao" && client->marked.empty() && !client->page, "结束组字时原样上屏字母",
+              client->committed);
+        client->committed.clear();
+        type(*c, "nihaoshi");
+        const auto texts = client->texts();
+        for (std::size_t i = 0; i < texts.size(); ++i) {
+            if (texts[i] == "你好") {
+                c->select(static_cast<int>(i));
+                break;
+            }
+        }
+        check(client->marked == "你好shi" && client->committed.empty(), "选了句首的词", client->marked);
+        c->commitComposition();
+        check(client->committed == "你好shi", "选了一半：已选的词 + 剩下的字母", client->committed);
+    }
+    {
+        // 词库还没载入：字母交给应用，载入以后照常打字
+        FakeClient client;
+        Composer c(nullptr, &client);
+        check(!c.handle(KeyInput::character('n')) && !c.isComposing(), "没有词库时字母交给应用");
+        c.setEngine(engine);
+        type(c, "nihao ");
+        check(client.committed == "你好", "载入词库后照常打字", client.committed);
+    }
+    {
+        // v + 空格的工具栏、Control+. 的表情面板
+        auto [c, client] = fresh();
+        type(*c, "v");
+        check(c->handle(KeyInput::character(' ')) && c->openPanel() == Composer::Panel::Menu, "v + 空格打开工具栏");
+        check(client->marked.empty() && client->committed.empty() && !c->isComposing(), "打开工具栏时 v 不上屏");
+        check(client->page && client->page->vertical && client->texts().size() == 4, "工具栏竖排四项",
+              join(client->texts()));
+        tapShift(*c);
+        check(c->mode() == Composer::Mode::Chinese, "工具栏开着时单按 Shift 不切");
+        check(!c->handle(KeyInput::character('c', mod::control)) && c->openPanel() == Composer::Panel::None &&
+                  !client->page,
+              "Ctrl+C 收起工具栏、交给应用");
+        check(c->handle(KeyInput::character('.', mod::control)) && c->openPanel() == Composer::Panel::Emoji,
+              "Control+. 打开表情面板");
+        check(client->page && client->page->expanded && !client->texts().empty(), "表情面板是网格");
+        c->handle(KeyInput::character('1'));
+        check(!client->committed.empty() && c->openPanel() == Composer::Panel::None, "数字选表情上屏",
+              client->committed);
+    }
+    {
+        // 联想（Association）：上屏以后出一页，没进联想行时不画序号；按字母先关掉联想再照常打
+        Config config;
+        config.setValue("Association", "True");
+        auto [c, client] = fresh(config);
+        type(*c, "nihao ");
+        check(client->committed == "你好", "联想开着照常上屏");
+        if (client->page) {
+            check(!client->page->labels, "联想没进联想行时不画序号");
+        }
+        type(*c, "ni");
+        check(c->isComposing() && client->page && client->page->labels, "打字母关掉联想、照常打");
+    }
+    {
+        // 互译没配好：单按 Shift 只在中英之间切
+        Config config;
+        config.setValue("Translate", "True");
+        auto [c, client] = fresh(config);
+        check(!c->translateAvailable(), "没有翻译器时「译」不可用");
+        tapShift(*c);
+        tapShift(*c);
+        check(c->mode() == Composer::Mode::Chinese, "中 → 英 → 中");
+        check(!c->setModeNamed("translate") && c->setModeNamed("en") && c->modeName() == "en", "外部命令切模式");
+        Config english;
+        english.setValue("InitialMode", "English");
+        c->apply(english);
+        c->setModeNamed("zh");
+        c->applyInitialMode();
+        check(c->mode() == Composer::Mode::English, "InitialMode=English");
+    }
+
+    // ---------------------------------------------------------------- 自动配对（和 macOS、fcitx5 的一样）
+    const auto withPairing = [&](auto body) {
+        Config config;
+        config.setValue("AutoPairPunct", "True");
+        config.setValue("EmojiSuggest", "False");
+        CaretClient client;
+        Composer c(engine, &client);
+        c.apply(config);
+        body(c, client);
+    };
+    withPairing([&](Composer &c, CaretClient &client) {
+        pairType(c, client, "(");
+        check(client.shown() == "（|）", "( 上屏（），光标在中间", client.shown());
+        pairType(c, client, "3)");
+        check(client.shown() == "（3）|", "( 3 ) 是（3）：) 跳过补好的右括号", client.shown());
+    });
+    withPairing([&](Composer &c, CaretClient &client) {
+        pairType(c, client, "(nihao)");
+        check(client.shown() == "（你好）|", "( nihao ) 上屏你好再跳过右括号", client.shown());
+    });
+    withPairing([&](Composer &c, CaretClient &client) {
+        pairType(c, client, "nihao(");
+        check(client.shown() == "你好（|）", "打拼音途中按 (：先上屏候选，再上屏（）", client.shown());
+    });
+    withPairing([&](Composer &c, CaretClient &client) {
+        pairType(c, client, "((");
+        pairType(c, client, "))");
+        check(client.shown() == "（（））|", "套着的两层都跳过", client.shown());
+    });
+    withPairing([&](Composer &c, CaretClient &client) {
+        pairType(c, client, "(");
+        check(c.handle(KeyInput::key(keysym::backspace)) && client.shown() == "|", "空的一对退格：两个一起删",
+              client.shown());
+    });
+    withPairing([&](Composer &c, CaretClient &client) {
+        pairType(c, client, "(1<");
+        check(client.shown() == "（|）", "里面有字时退格照常交给应用", client.shown());
+        pairType(c, client, "<");
+        check(client.shown() == "|", "删空了再退格：两个一起删", client.shown());
+    });
+    withPairing([&](Composer &c, CaretClient &client) {
+        pairType(c, client, "({)");
+        check(client.shown() == "）|（）", "按了方向键以后 ) 照常上屏", client.shown());
+    });
+    withPairing([&](Composer &c, CaretClient &client) {
+        client.editable = false;
+        pairType(c, client, "(");
+        check(client.shown() == "（|", "说不清光标在哪的输入框里不配对", client.shown());
+    });
+
+    wowtype_engine_free(engine);
+    std::error_code ignored;
+    std::filesystem::remove_all(dir, ignored);
+    if (failures) {
+        std::printf("\n%d 项没过\n", failures);
+        return 1;
+    }
+    std::printf("\nwindows composer ok\n");
+    return 0;
+}

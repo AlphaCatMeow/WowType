@@ -234,7 +234,7 @@ Lexicon=
 
 文件不存在、或者少写了哪一项，就用默认值（就是上面这些）。注释要单独写一行（`#` 开头），不能写在值后面。
 
-三端（Linux 插件、设置界面、macOS）读这个文件的规矩一样：
+各端（Linux 插件、设置界面、macOS、Windows）读这个文件的规矩一样：
 
 - 开关只认 `True` / `False`，选项区分大小写（`Horizontal`，不是 `horizontal`）；写错了、认不出的用默认值。
 - 数字超出范围夹到边上（`PageSize=12` 读成 9），认不出的数字用默认值。
@@ -243,8 +243,8 @@ Lexicon=
 - 两边带双引号的值去掉引号，`\\`、`\"`、`\n` 还原成反斜杠、引号、换行。
 
 **改设置项（加键、改名、改默认值、范围、可选值）要先改规格 [`spec/config.json`](../spec/config.json)**（可选词库包的规矩在
-[`spec/lexicon-pack.json`](../spec/lexicon-pack.json)），Linux 插件、设置界面、macOS 三端的测试都拿它对照，哪一端没跟上 CI 就挂：
-插件在 `scripts/addon-test.sh`、设置界面在 `scripts/test-config-contract.py`、macOS 在 `macos/test.sh`。
+[`spec/lexicon-pack.json`](../spec/lexicon-pack.json)），Linux 插件、设置界面、macOS、Windows 各端的测试都拿它对照，哪一端没跟上 CI 就挂：
+插件在 `scripts/addon-test.sh`、设置界面在 `scripts/test-config-contract.py`、macOS 在 `macos/test.sh`、Windows 在 `windows/test.sh`（CI 的 Windows 任务）。
 两端故意不一样的（比如 `EmojiKey` 的默认值）、只有一端有的项，规格里都写了原因。
 
 下面这些环境变量主要是**调试和测试用**，设了的话**优先于**配置文件（在设置界面里改了也不起作用），平时用不着：
@@ -273,6 +273,12 @@ Lexicon=
 | `WOWTYPE_TRANSLATE_KEY_FILE` | 互译 Key 文件，默认 `~/.config/wowtype/translate.key` |
 
 临时试一下：`WOWTYPE_FUZZY=1 fcitx5 -r -d`。长期用写进 `~/.config/environment.d/wowtype.conf`，注销重新登录后生效。
+
+### Windows
+
+Windows 版还在第一阶段（[WINDOWS.md](WINDOWS.md)）：设置在 `%LOCALAPPDATA%\WowType\wowtype.conf`，**键名、取值、默认值和上面一样**，
+`EmojiKey` 的默认值和 macOS 一样是 `Control+period`，也认 `CandidateFontSize`。还没有设置界面，任务栏上「中」按钮右键 →「打开设置文件」用记事本改，
+存了以后下一次按键生效。语音（`Voice*`）、检查更新（`CheckUpdate`、`BetaUpdates`）、打字统计（`TypingStats`）这一阶段还没有，读到了也不管。
 
 ### macOS
 
