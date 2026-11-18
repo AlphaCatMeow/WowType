@@ -316,8 +316,9 @@ LRESULT CALLBACK chartProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
     // 最近 30 天：每天一根柱子，最高的那天顶满
     RECT title{0, 0, width, px(18)};
     DrawTextW(dc, L"最近 30 天上屏的字数", -1, &title, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    const int height = client.bottom - client.top;
     const int chartTop = px(20);
-    const int chartHeight = px(70);
+    const int chartHeight = std::max(px(36), std::min(px(70), height / 4));
     long long most = 1;
     for (const auto &day : g_chart.days) {
         most = std::max(most, day.second);
@@ -356,7 +357,8 @@ LRESULT CALLBACK chartProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
     const COLORREF levels[] = {RGB(0xEE, 0xEE, 0xEE), RGB(0xC6, 0xE2, 0xFF), RGB(0x8C, 0xC4, 0xFF),
                                RGB(0x4A, 0x9B, 0xF5), RGB(0x1F, 0x6F, 0xD6)};
     const double unit = width / 15.25;
-    const int keyHeight = std::max(px(18), static_cast<int>(unit * 0.8));
+    // 键的高度照剩下的地方算（6 排），最多是宽的 0.8 倍
+    const int keyHeight = std::max(px(14), std::min(static_cast<int>(unit * 0.8), (height - mapTop - px(20)) / 6));
     int y = mapTop + px(18);
     for (const auto &row : stats::keyboardRows()) {
         double x = 0;
@@ -678,7 +680,8 @@ void SettingsWindow::layout() {
     MoveWindow(apiKey_, margin * 2 + scale(260), y[translatePage], width - margin * 4 - scale(260), scale(24), FALSE);
     bottom = std::max(bottom, y[translatePage] + rowHeight);
     // 自定义词页：上面是列表，下面是加词的两个框和按钮
-    bottom = std::max(bottom, top + scale(500));
+    // 1366×768 的屏幕上也要放得下（CI 的截图里 500 太高，下面的按钮被任务栏挡住）
+    bottom = std::max(bottom, top + scale(420));
     const int inner = width - margin * 4;
     const int formTop = bottom - rowHeight * 3;
     MoveWindow(wordList_, margin * 2, top, inner, formTop - top - scale(8), FALSE);
@@ -693,7 +696,7 @@ void SettingsWindow::layout() {
     MoveWindow(custom_, margin * 2 + scale(284), buttonRow, scale(110), scale(26), FALSE);
     // 统计页：一段摘要，下面两个按钮
     // 上面一段文字摘要，下面画图
-    const int textHeight = scale(110);
+    const int textHeight = scale(96);
     MoveWindow(statsText_, margin * 2, top, inner, textHeight, FALSE);
     MoveWindow(statsChart_, margin * 2, top + textHeight + scale(8), inner, buttonRow - top - textHeight - scale(16), FALSE);
     MoveWindow(statsRefresh_, margin * 2, buttonRow, scale(80), scale(26), FALSE);
@@ -707,7 +710,16 @@ void SettingsWindow::layout() {
     MoveWindow(close_, width - margin - scale(80), buttons, scale(80), scale(28), FALSE);
     RECT r{0, 0, width, buttons + scale(28) + margin};
     AdjustWindowRectExForDpi(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE, 0, dpi_);
-    SetWindowPos(hwnd_, nullptr, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER);
+    // 放在屏幕（去掉任务栏）中间，整个窗口都在屏幕里
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof monitor;
+    GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTOPRIMARY), &monitor);
+    const RECT work = monitor.rcWork;
+    const int w = r.right - r.left;
+    const int h = r.bottom - r.top;
+    const int x = std::max(static_cast<int>(work.left), static_cast<int>(work.left + (work.right - work.left - w) / 2));
+    const int y = std::max(static_cast<int>(work.top), static_cast<int>(work.top + (work.bottom - work.top - h) / 2));
+    SetWindowPos(hwnd_, nullptr, x, y, w, h, SWP_NOZORDER);
 }
 
 void SettingsWindow::showPage(int page) {
@@ -1476,6 +1488,14 @@ LRESULT CALLBACK SettingsWindow::proc(HWND hwnd, UINT message, WPARAM wParam, LP
 
 LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORBTN: {
+        // 标签页是白底：说明文字、勾选框也用白底（不然是一条条灰的）
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetBkColor(dc, GetSysColor(COLOR_WINDOW));
+        SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
+        return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+    }
     case WM_NOTIFY: {
         const auto *header = reinterpret_cast<NMHDR *>(lParam);
         if (header->hwndFrom == tabs_ && header->code == TCN_SELCHANGE) {
