@@ -140,7 +140,10 @@ DLL 装进每个应用的进程里，载入以后不会卸载：换 DLL 前先�
   Windows 程序（`b12110` 的 CPU 包，钉死 SHA256，解到 `llama\`；PATH 里、设置里有 llama-server 就不下）。
   还没有的：下载断了接着下（现在断了要重下）
 - 检查更新的提醒只在任务栏菜单里，不弹系统通知（和 macOS 一样）
-- 代码签名（安装程序和 DLL 都没签，SmartScreen 会拦一下）
+- 代码签名：现在安装程序和 DLL 都没签，SmartScreen 会拦一下。CI 已经准备好了：在仓库的「Settings → Secrets and variables → Actions」
+  里加 `WINDOWS_SIGNING_PFX`（代码签名证书 .pfx 文件的 base64，`base64 -w0 cert.pfx`）和 `WINDOWS_SIGNING_PASSWORD`，
+  之后每次 CI 都用 `signtool` 签 `wowtype.dll`、`wowtype-settings.exe` 和 x64 安装程序（带时间戳）。卸载程序 `unins000.exe` 还不签。
+  证书要自己买（OV 证书要攒下载量 SmartScreen 才不拦，EV 证书一上来就不拦）
 - 打字统计（`TypingStats`）记是记了（`stats.json`，按键按扫描码记，ABI 1.13 起核心认 Windows 的键码），但还没有看统计的界面
 - 本地翻译模型、整句增强模型的一键下载、导入（文件自己放进数据目录就能用）
 - ARM64 只编不跑：CI 编出 `WowType-<版本>-windows-arm64.zip`（`windows-arm64` artifact），但没有 ARM64 的机器试过；

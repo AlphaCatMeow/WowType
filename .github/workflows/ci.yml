@@ -104,6 +104,23 @@ jobs:
         with:
           name: data
           path: dist/data
+      - name: 代码签名（仓库配了证书才签）
+        # 仓库的 Secrets 里放 WINDOWS_SIGNING_PFX（.pfx 的 base64）和 WINDOWS_SIGNING_PASSWORD 就会签 DLL、设置窗口，
+        # 后面编完安装程序也签；没配就跳过（安装程序没签名，SmartScreen 会拦一下，见 docs/WINDOWS.md）
+        shell: pwsh
+        env:
+          SIGN_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+          SIGN_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: |
+          if (-not $env:SIGN_PFX) { Write-Host '没配签名证书，跳过'; exit 0 }
+          $pfx = Join-Path $env:RUNNER_TEMP 'sign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX))
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          "SIGNTOOL=$signtool" >> $env:GITHUB_ENV
+          "SIGN_PFX_PATH=$pfx" >> $env:GITHUB_ENV
+          & $signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $pfx /p $env:SIGN_PASSWORD `
+            build/windows/Release/wowtype.dll build/windows/Release/wowtype-settings.exe
+          if ($LASTEXITCODE -ne 0) { throw "签名失败：$LASTEXITCODE" }
       - name: 按键测试（和 macOS、fcitx5 的同名用例一样；小词库 + 真实词库）
         run: |
           build/windows/Release/wowtype-windows-harness.exe
@@ -144,6 +161,8 @@ jobs:
           if (Test-Path "$tip\LanguageProfile\0x00000804\{8106DB80-2DC6-4558-B368-86D26F78EC68}") { throw '卸载以后 TSF 里还有这个输入法' }
       - name: 编安装程序（Inno Setup）
         shell: pwsh
+        env:
+          SIGN_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
         run: |
           choco install innosetup -y --no-progress
           $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
@@ -151,6 +170,10 @@ jobs:
           $version = $pkg -replace '.*WowType-(.+)-windows-x64$', '$1'
           & $iscc /Q "/DAppVersion=$version" /DArch=x64 "/DSourceDir=$pkg" "/DOutputDir=$((Resolve-Path dist/windows).Path)" windows/installer/wowtype.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC 失败：$LASTEXITCODE" }
+          if ($env:SIGN_PFX_PATH) {
+            & $env:SIGNTOOL sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $env:SIGN_PFX_PATH /p $env:SIGN_PASSWORD (Get-ChildItem dist/windows/*-x64-setup.exe).FullName
+            if ($LASTEXITCODE -ne 0) { throw "签名失败：$LASTEXITCODE" }
+          }
           Get-ChildItem dist/windows/*-setup.exe
       - name: 用安装程序装一遍、建一个文本服务对象、升级一遍、卸载
         shell: pwsh
