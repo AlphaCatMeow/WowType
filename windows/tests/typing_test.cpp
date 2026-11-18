@@ -14,6 +14,7 @@
 #include <richedit.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -135,6 +136,50 @@ void focus() {
 
 HWND candidateWindow() { return FindWindowW(L"WowTypeCandidateWindow", nullptr); }
 
+/// 截一张屏幕上 rect 那一块存成 BMP（WOWTYPE_SCREENSHOT_DIR 设了才截，CI 把它们传上去看候选框画得对不对）。
+void screenshot(RECT rect, const wchar_t *name) {
+    wchar_t dir[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"WOWTYPE_SCREENSHOT_DIR", dir, MAX_PATH) == 0) {
+        return;
+    }
+    const int w = rect.right - rect.left;
+    const int h = rect.bottom - rect.top;
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    HDC screen = GetDC(nullptr);
+    HDC memory = CreateCompatibleDC(screen);
+    HBITMAP bitmap = CreateCompatibleBitmap(screen, w, h);
+    HGDIOBJ old = SelectObject(memory, bitmap);
+    BitBlt(memory, 0, 0, w, h, screen, rect.left, rect.top, SRCCOPY | CAPTUREBLT);
+    SelectObject(memory, old);
+    BITMAPINFOHEADER info{};
+    info.biSize = sizeof info;
+    info.biWidth = w;
+    info.biHeight = h;
+    info.biPlanes = 1;
+    info.biBitCount = 24;
+    info.biCompression = BI_RGB;
+    const DWORD stride = ((static_cast<DWORD>(w) * 3 + 3) / 4) * 4;
+    std::vector<unsigned char> pixels(static_cast<std::size_t>(stride) * h);
+    GetDIBits(memory, bitmap, 0, static_cast<UINT>(h), pixels.data(), reinterpret_cast<BITMAPINFO *>(&info), DIB_RGB_COLORS);
+    BITMAPFILEHEADER file{};
+    file.bfType = 0x4D42;
+    file.bfOffBits = sizeof file + sizeof info;
+    file.bfSize = file.bfOffBits + static_cast<DWORD>(pixels.size());
+    const std::wstring path = std::wstring(dir) + L"\\" + name + L".bmp";
+    FILE *f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"wb") == 0 && f) {
+        std::fwrite(&file, sizeof file, 1, f);
+        std::fwrite(&info, sizeof info, 1, f);
+        std::fwrite(pixels.data(), 1, pixels.size(), f);
+        std::fclose(f);
+    }
+    DeleteObject(bitmap);
+    DeleteDC(memory);
+    ReleaseDC(nullptr, screen);
+}
+
 bool candidatesShown() {
     const HWND h = candidateWindow();
     return h && IsWindowVisible(h);
@@ -160,6 +205,29 @@ std::wstring langBarText() {
     std::wstring out(text);
     SysFreeString(text);
     return out;
+}
+
+/// 截任务栏右边那一段（输入指示器在那里）
+void shootTaskbar(const wchar_t *name) {
+    if (const HWND tray = FindWindowW(L"Shell_TrayWnd", nullptr)) {
+        RECT r{};
+        GetWindowRect(tray, &r);
+        r.left = std::max(r.left, r.right - 500);
+        screenshot(r, name);
+    }
+}
+
+/// 截 owner 窗口和候选框一起的那一块（候选框在屏幕上的样子）
+void shootWithCandidates(HWND owner, const wchar_t *name) {
+    RECT a{};
+    GetWindowRect(owner, &a);
+    RECT b{};
+    if (const HWND c = candidateWindow(); c && IsWindowVisible(c)) {
+        GetWindowRect(c, &b);
+        UnionRect(&a, &a, &b);
+    }
+    InflateRect(&a, 20, 20);
+    screenshot(a, name);
 }
 
 /// 让另一个进程的窗口到前台（AttachThreadInput 借一下前台线程的输入状态）。
@@ -325,6 +393,7 @@ void edgeTest() {
         RECT box{};
         const bool shown = candidatesShown() && GetWindowRect(candidateWindow(), &box);
         check(shown && box.top >= r.top && box.top <= r.bottom + 200, "Edge 里候选框在输入框附近");
+        shootWithCandidates(g_edge, L"edge-shi");
         tap('2');
         pump(400);
         check(edgeText().size() == 1, "Edge 里数字选候选", edgeText());
@@ -477,6 +546,12 @@ int main() {
               std::to_wstring(box.left) + L"," + std::to_wstring(box.top) + L" / " + std::to_wstring(edit.left) + L"," +
                   std::to_wstring(edit.top));
     }
+    shootWithCandidates(g_window, L"edit-shi");
+    tap(VK_DOWN);
+    pump(300);
+    shootWithCandidates(g_window, L"edit-shi-expanded");
+    tap(VK_UP);
+    pump(200);
     tap('2');
     pump(300);
     check(text().size() == 1 && text() != L"s", "数字 2 选第二个候选", text());
@@ -517,9 +592,12 @@ int main() {
     clear();
     focus();
     check(langBarText() == L"中", "任务栏的输入指示器：中", langBarText());
+    shootTaskbar(L"taskbar-zh");
     tap(VK_LSHIFT);
     pump(300);
+    shootWithCandidates(g_window, L"edit-mode-hint");
     check(langBarText() == L"英", "单按 Shift 以后任务栏的输入指示器：英", langBarText());
+    shootTaskbar(L"taskbar-en");
     typeKeys("abc ");
     pump(200);
     check(text() == L"abc ", "单按 Shift 切英文，字母原样上屏", text());
@@ -557,6 +635,7 @@ int main() {
         typeKeys("shi");
         pump(300);
         check(candidatesShown(), "RichEdit 里打字途中候选框出来了");
+        shootWithCandidates(g_window, L"richedit-shi");
         tap(VK_RETURN);
         pump(300);
         check(text() == L"你好shi", "RichEdit 里回车上屏原始字母", text());

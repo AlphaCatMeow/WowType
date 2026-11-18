@@ -175,10 +175,40 @@ jobs:
           (Get-ItemProperty $uninstallKey).DisplayName
           # 端到端打字：开一个输入框，切到 WowType，用 SendInput 按真的键，看输入框里的字和候选框
           $typing = (Resolve-Path build/windows/Release/wowtype-windows-typing-test.exe).Path
+          # 候选框、任务栏的截图（下面的 artifact 里看画得对不对）
+          $env:WOWTYPE_SCREENSHOT_DIR = Join-Path $env:RUNNER_TEMP 'screenshots'
+          New-Item -ItemType Directory -Force -Path $env:WOWTYPE_SCREENSHOT_DIR | Out-Null
           $p = Start-Process $typing -Wait -PassThru -NoNewWindow
           if ($p.ExitCode -ne 0) {
             Get-Content (Join-Path $env:LOCALAPPDATA 'WowType\wowtype.log') -Tail 200 -ErrorAction SilentlyContinue
             throw "打字测试有 $($p.ExitCode) 项没过"
+          }
+          # 设置窗口几页的截图：先放一份假的打字统计，统计页的柱状图、热力图才有东西
+          $days = [ordered]@{}
+          for ($i = 29; $i -ge 0; $i--) {
+            $d = (Get-Date).AddDays(-$i).ToString('yyyy-MM-dd')
+            $n = 200 + (($i * 37) % 900)
+            $days[$d] = @{ chars = $n; kinds = @{ han = [int]($n * 0.8); latin = [int]($n * 0.1) }; activeMs = 600000
+                           keys = @{ KeyA = 40 + $i; KeyN = 90; KeyI = 70; KeyH = 60; KeyO = 50; Space = 120; Backspace = 30; KeyS = 20 } }
+          }
+          $statsDir = Join-Path $env:LOCALAPPDATA 'WowType'
+          @{ version = 1; cleared = 0; days = $days } | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 (Join-Path $statsDir 'stats.json')
+          Add-Type -AssemblyName System.Drawing
+          Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool GetWindowRect(System.IntPtr h, out RECT r); public struct RECT { public int Left, Top, Right, Bottom; }'
+          foreach ($page in '常规', '候选', '翻译', '自定义词', '统计') {
+            $s = Start-Process (Join-Path $app 'wowtype-settings.exe') -ArgumentList '--page', $page -PassThru
+            for ($i = 0; $i -lt 40 -and $s.MainWindowHandle -eq 0; $i++) { Start-Sleep -Milliseconds 250; $s.Refresh() }
+            Start-Sleep 1
+            $r = New-Object W.U+RECT
+            [void][W.U]::GetWindowRect($s.MainWindowHandle, [ref]$r)
+            if ($r.Right -gt $r.Left) {
+              $bmp = New-Object System.Drawing.Bitmap ($r.Right - $r.Left), ($r.Bottom - $r.Top)
+              $g = [System.Drawing.Graphics]::FromImage($bmp)
+              $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size)
+              $bmp.Save((Join-Path $env:WOWTYPE_SCREENSHOT_DIR "settings-$page.png"))
+              $g.Dispose(); $bmp.Dispose()
+            }
+            Stop-Process -Id $s.Id -Force
           }
           # 建一个文本服务对象：这个进程载入了 DLL，接着升级要能换掉它
           $service = [Activator]::CreateInstance([type]::GetTypeFromCLSID([guid]'A895B83F-8F60-4990-A48F-17821E3BC14A'))
@@ -194,6 +224,14 @@ jobs:
           if (Test-Path $clsid) { throw '卸载以后 CLSID 还在' }
           if (Test-Path $tipProfile) { throw '卸载以后 TSF 里还有这个输入法' }
           if (Test-Path -LiteralPath $link) { throw '卸载以后开始菜单里还有快捷方式' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          # 候选框、任务栏输入指示器、设置窗口的截图（真打字的时候截的）
+          name: windows-screenshots
+          path: ${{ runner.temp }}/screenshots
+          retention-days: 7
+          if-no-files-found: ignore
       - name: ARM64：编核心和 DLL、打 zip（没有 ARM64 的 runner，只编不跑）
         env:
           RUSTFLAGS: -C target-feature=+crt-static

@@ -395,6 +395,19 @@ public:
     bool create(HINSTANCE instance);
     /// 输入法菜单里点了「有新版本…」：打开「常规」页，查一下、下载、装
     void startUpdate() { checkUpdate(true); }
+    /// 打开某一页（--page 统计）：页名是标签上的字
+    void openPage(const std::wstring &title) {
+        int page = pageNamed(title.c_str());
+        if (title == L"自定义词") {
+            page = customPage();
+        } else if (title == L"统计") {
+            page = statsPage();
+        }
+        if (page >= 0) {
+            TabCtrl_SetCurSel(tabs_, page);
+            showPage(page);
+        }
+    }
 
 private:
     static LRESULT CALLBACK proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -1666,6 +1679,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
     if (wcsstr(GetCommandLineW(), L"--update")) {
         window.startUpdate();
+    }
+    // --page <页名>：打开就在那一页（菜单、CI 截图用）
+    {
+        int argc = 0;
+        LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        for (int i = 1; argv && i + 1 < argc; ++i) {
+            if (std::wstring(argv[i]) == L"--page") {
+                window.openPage(argv[i + 1]);
+            }
+        }
+        LocalFree(argv);
     }
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
