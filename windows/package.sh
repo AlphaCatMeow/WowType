@@ -41,7 +41,7 @@ cp "$DATA/WUBI-AUTHORS" "$pkg/data/DATA-WUBI-AUTHORS"
 cp "$DATA/WUBI-SOURCE.txt" "$pkg/data/DATA-WUBI-SOURCE.txt"
 # 说明用 CRLF，记事本老版本也能看
 { printf '\xef\xbb\xbf'; sed 's/$/\r/'; } > "$pkg/README.txt" <<EOF
-WowType $VERSION（Windows x64，开发中的第一阶段，没有在很多机器上试过）
+WowType ${VERSION}（Windows x64，开发中的第一阶段，没有在很多机器上试过）
 
 安装：以管理员身份打开 PowerShell，进到这个目录，运行
     powershell -ExecutionPolicy Bypass -File .\install.ps1
