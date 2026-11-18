@@ -715,11 +715,13 @@ void SettingsWindow::layout() {
     monitor.cbSize = sizeof monitor;
     GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTOPRIMARY), &monitor);
     const RECT work = monitor.rcWork;
-    const int w = r.right - r.left;
-    const int h = r.bottom - r.top;
-    const int x = std::max(static_cast<int>(work.left), static_cast<int>(work.left + (work.right - work.left - w) / 2));
-    const int y = std::max(static_cast<int>(work.top), static_cast<int>(work.top + (work.bottom - work.top - h) / 2));
-    SetWindowPos(hwnd_, nullptr, x, y, w, h, SWP_NOZORDER);
+    const int windowWidth = r.right - r.left;
+    const int windowHeight = r.bottom - r.top;
+    const int windowX =
+        std::max(static_cast<int>(work.left), static_cast<int>(work.left + (work.right - work.left - windowWidth) / 2));
+    const int windowY =
+        std::max(static_cast<int>(work.top), static_cast<int>(work.top + (work.bottom - work.top - windowHeight) / 2));
+    SetWindowPos(hwnd_, nullptr, windowX, windowY, windowWidth, windowHeight, SWP_NOZORDER);
 }
 
 void SettingsWindow::showPage(int page) {
