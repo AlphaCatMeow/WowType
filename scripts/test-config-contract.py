@@ -551,6 +551,9 @@ def check_windows(spec, exe):
 
 
 def main(argv):
+    # Windows 的控制台默认不是 UTF-8（cp1252 / cp936），中文的结果行会写不出来
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     fcitx5 = windows = None
     if argv[:1] == ["--fcitx5"] and len(argv) == 2:
         fcitx5 = argv[1]
