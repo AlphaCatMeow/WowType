@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "../common/composer.h"
+#include "../common/voice.h"
 #include "candidate_window.h"
 
 namespace wowtype::tsf {
@@ -31,7 +32,8 @@ class TextService final : public ITfTextInputProcessorEx,
                           public ITfCompositionSink,
                           public ITfThreadFocusSink,
                           public ITfDisplayAttributeProvider,
-                          public TextClient {
+                          public TextClient,
+                          public VoiceHost {
 public:
     TextService();
 
@@ -87,6 +89,10 @@ public:
     bool moveCaret(int delta) override;
     bool deletePair() override;
 
+    // VoiceHost（语音输入，engine_host 里的 VoiceInput 回调）
+    void voiceShow(const std::optional<std::string> &status, const std::string &partial) override;
+    void voiceCommit(const std::string &text) override;
+
     // 任务栏按钮（langbar.cpp）
     std::wstring modeLabel();
     std::wstring modeTooltip();
@@ -120,11 +126,14 @@ private:
     struct PendingKey {
         WPARAM wParam;
         LPARAM lParam;
+        bool eaten = false;
     };
 
     void sync();
     bool processKeyDown(ITfContext *context, WPARAM wParam, LPARAM lParam);
-    void processKeyUp(ITfContext *context, WPARAM wParam, LPARAM lParam);
+    bool processKeyUp(ITfContext *context, WPARAM wParam, LPARAM lParam);
+    /// 语音键：是就交给 VoiceInput（返回吃没吃），不是返回 nullopt。
+    std::optional<bool> voiceKey(ITfContext *context, WPARAM wParam, LPARAM lParam, bool down);
     void readSurroundings(ITfContext *context);
     /// 把排着的 ops_ 和候选框交给一个编辑会话做掉（能同步就同步）。
     void flush(ITfContext *context);

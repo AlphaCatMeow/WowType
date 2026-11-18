@@ -15,7 +15,7 @@
     "fcitx5": "Linux 的 fcitx5 插件（C++）",
     "settings": "Linux 的设置界面 wowtype-config（Python）",
     "macos": "macOS 输入法外壳（Swift），设置窗口和输入法共用 Shared/Config.swift",
-    "windows": "Windows 输入法外壳（TSF，C++），见 docs/WINDOWS.md；第一阶段还没有设置界面、语音、检查更新"
+    "windows": "Windows 输入法外壳（TSF，C++），见 docs/WINDOWS.md；第一阶段还没有设置界面、检查更新"
   },
   "readRules": {
     "outOfRange": {
@@ -183,14 +183,14 @@
      "platforms": ["fcitx5", "settings", "macos", "windows"],
      "note": "中文标点自动配对：中文标点下打 ( [ < { \" ' 上屏成对的（）【】《》「」“”‘’，光标放到中间；在里面打完再按右半边跳过补好的那个（数字后面也跳），里面空着时退格两个一起删。默认关（会改打出来的标点）。macOS 靠应用按位置换字来挪光标、删右半边：应用说不清光标在哪、读不到光标旁边的字（比如终端）时这一下不配对，照常一个一个上屏"},
     {"key": "Voice", "type": "bool", "default": true,
-     "platforms": ["fcitx5", "settings", "macos"], "note": "语音输入"},
+     "platforms": ["fcitx5", "settings", "macos", "windows"], "note": "语音输入"},
     {"key": "VoiceKey", "type": "key", "default": "Alt_R",
      "presets": {"settings": ["Alt_R", "Control_R", "Menu", "F8", "F9", "F10"],
                  "macos": ["Alt_R", "Control_R", "F8", "F9", "F10"]},
-     "platforms": ["fcitx5", "settings", "macos"],
+     "platforms": ["fcitx5", "settings", "macos", "windows"],
      "note": "语音键（fcitx5 键名）。presets 是设置界面里能选的键；macOS 上 Alt_R 是右 Option，Mac 键盘没有菜单键"},
     {"key": "VoiceCopy", "type": "bool", "default": false,
-     "platforms": ["fcitx5", "settings", "macos"], "note": "语音识别的结果同时复制到剪贴板"},
+     "platforms": ["fcitx5", "settings", "macos", "windows"], "note": "语音识别的结果同时复制到剪贴板"},
     {"key": "EmojiSuggest", "type": "bool", "default": true,
      "platforms": ["fcitx5", "settings", "macos", "windows"], "note": "打字时推荐 emoji"},
     {"key": "EmojiKey", "type": "key", "default": "Super+period",

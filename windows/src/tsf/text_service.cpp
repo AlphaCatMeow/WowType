@@ -5,6 +5,7 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <new>
 
@@ -24,6 +25,7 @@ namespace {
 
 constexpr UINT_PTR kTranslateTimer = 1;
 constexpr UINT_PTR kModeHintTimer = 2;
+constexpr UINT_PTR kVoiceTimer = 3;
 /// 互译时每 50 毫秒取一次结果（和 macOS 一样）
 constexpr UINT kTranslatePollMs = 50;
 /// 切到中 / 英 / 译以后在光标下面亮一下的提示
@@ -80,6 +82,28 @@ char32_t typedCharacter(UINT virtualKey, LPARAM lParam, uint32_t modifiers) {
 }
 
 bool isShift(WPARAM vk) { return vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT; }
+
+/// 放进系统剪贴板（语音结果，VoiceCopy）。
+void copyToClipboard(const std::string &utf8) {
+    const std::wstring text = widen(utf8);
+    if (!OpenClipboard(nullptr)) {
+        return;
+    }
+    EmptyClipboard();
+    const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
+    if (HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes)) {
+        if (void *p = GlobalLock(memory)) {
+            memcpy(p, text.c_str(), bytes);
+            GlobalUnlock(memory);
+            if (!SetClipboardData(CF_UNICODETEXT, memory)) {
+                GlobalFree(memory);
+            }
+        } else {
+            GlobalFree(memory);
+        }
+    }
+    CloseClipboard();
+}
 
 bool isRightShift(WPARAM vk, LPARAM lParam) {
     return vk == VK_RSHIFT || ((static_cast<UINT>(lParam) >> 16) & 0xFF) == vk::rightShiftScan;
@@ -252,8 +276,10 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr *threadMgr, TfClientId clientI
 STDMETHODIMP TextService::Deactivate() {
     auto &host = EngineHost::instance();
     std::lock_guard<std::recursive_mutex> lock(host.mutex());
+    host.voice().cancel(this);
     endComposition();
     if (window_) {
+        window_->killTimer(kVoiceTimer);
         window_->killTimer(kTranslateTimer);
         window_->killTimer(kModeHintTimer);
         window_->hide();
@@ -406,11 +432,13 @@ STDMETHODIMP TextService::OnTestKeyUp(ITfContext *context, WPARAM wParam, LPARAM
     if (!eaten) {
         return E_INVALIDARG;
     }
-    *eaten = FALSE;
-    if (!(handledUp_ && handledUp_->wParam == wParam && handledUp_->lParam == lParam)) {
-        processKeyUp(context, wParam, lParam);
-        handledUp_ = PendingKey{wParam, lParam};
+    if (handledUp_ && handledUp_->wParam == wParam && handledUp_->lParam == lParam) {
+        *eaten = handledUp_->eaten ? TRUE : FALSE;
+        return S_OK;
     }
+    const bool up = processKeyUp(context, wParam, lParam);
+    handledUp_ = PendingKey{wParam, lParam, up};
+    *eaten = up ? TRUE : FALSE;
     return S_OK;
 }
 
@@ -441,6 +469,9 @@ bool TextService::processKeyDown(ITfContext *context, WPARAM wParam, LPARAM lPar
         host.recordKey(code, around_.password);
     }
     const Composer::Mode modeBefore = composer_->mode();
+    if (const auto voice = voiceKey(context, wParam, lParam, true)) {
+        return *voice;
+    }
     if (isShift(wParam)) {
         // Shift 的按下交给会话判断单按；按住不放的自动重复不算（会话不重新计时）。修饰键永远交给应用
         if (!repeat) {
@@ -455,6 +486,11 @@ bool TextService::processKeyDown(ITfContext *context, WPARAM wParam, LPARAM lPar
             composer_->otherModifierChanged();
         }
         return false;
+    }
+    // 说话途中按了别的键：Esc 取消这次语音（吃掉），别的键也不要这次的语音，键照常处理
+    if (host.voice().otherKey(virtualKey == VK_ESCAPE, this)) {
+        flush(context);
+        return true;
     }
     readSurroundings(context);
     const uint32_t modifiers = currentModifiers();
@@ -481,23 +517,78 @@ bool TextService::processKeyDown(ITfContext *context, WPARAM wParam, LPARAM lPar
     return eaten;
 }
 
-void TextService::processKeyUp(ITfContext *context, WPARAM wParam, LPARAM lParam) {
+bool TextService::processKeyUp(ITfContext *context, WPARAM wParam, LPARAM lParam) {
     auto &host = EngineHost::instance();
     std::lock_guard<std::recursive_mutex> lock(host.mutex());
-    if (!composer_ || !isShift(wParam)) {
-        return;
+    if (!composer_) {
+        return false;
     }
     if (context) {
         focusContext_ = context;
     }
     if (keyboardDisabled(context) || !keyboardOpen()) {
-        return;
+        return false;
+    }
+    if (const auto voice = voiceKey(context, wParam, lParam, false)) {
+        return *voice;
+    }
+    if (!isShift(wParam)) {
+        return false;
     }
     // 单按 Shift 在松开时才算：打到一半切英文时会话把打的字母放进 commit
     if (composer_->shiftChanged(false, otherModifiersHeld(), monotonicMs(), isRightShift(wParam, lParam))) {
         modeChanged();
     }
     flush(context);
+    return false;
+}
+
+std::optional<bool> TextService::voiceKey(ITfContext *context, WPARAM wParam, LPARAM lParam, bool down) {
+    auto &voice = EngineHost::instance().voice();
+    const auto &key = voice.key();
+    const bool right = (lParam & (1 << 24)) != 0;
+    if (!key || !key->matches(static_cast<uint32_t>(wParam), right)) {
+        return std::nullopt;
+    }
+    voice.onStartPolling = [this] {
+        if (window_) {
+            window_->setTimer(kVoiceTimer, VoiceInput::kPollMs);
+        }
+    };
+    voice.copyToClipboard = [this](const std::string &text) {
+        // 密码框里说的话不进剪贴板
+        if (!around_.password) {
+            copyToClipboard(text);
+        }
+    };
+    if (down && key->modifier) {
+        // 和别的修饰键一样：按住 Shift 时按了它，这次 Shift 不算单按
+        composer_->otherModifierChanged();
+    }
+    const bool repeat = (lParam & (1 << 30)) != 0;
+    const bool eaten = voice.press(down, down && repeat, composer_->isComposing(), this);
+    flush(context);
+    return eaten;
+}
+
+void TextService::voiceShow(const std::optional<std::string> &status, const std::string &partial) {
+    setMarkedText(partial, static_cast<int>(partial.size()));
+    if (status) {
+        CandidatePage page;
+        page.aux = *status;
+        showCandidates(&page);
+    } else {
+        showCandidates(nullptr);
+    }
+}
+
+void TextService::voiceCommit(const std::string &text) {
+    setMarkedText("", 0);
+    showCandidates(nullptr);
+    if (!text.empty() && composer_) {
+        // 和打字上屏一样走 Composer：自动加空格、记上文；互译时进原文
+        composer_->insert(text);
+    }
 }
 
 void TextService::readSurroundings(ITfContext *context) {
@@ -918,7 +1009,8 @@ void TextService::endComposition() {
 
 STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr *focus, ITfDocumentMgr *) {
     std::lock_guard<std::recursive_mutex> lock(EngineHost::instance().mutex());
-    // 换了输入框：上一个里打到一半的原样上屏，会话记的上文作废
+    // 换了输入框：这次说的话不要了；上一个里打到一半的原样上屏，会话记的上文作废
+    EngineHost::instance().voice().cancel(this);
     endComposition();
     focusContext_.Reset();
     if (focus) {
@@ -1004,6 +1096,13 @@ void TextService::onTimer(UINT_PTR id) {
             page_.reset();
             window_->hide();
         }
+        return;
+    }
+    if (id == kVoiceTimer) {
+        if (!EngineHost::instance().voice().poll()) {
+            window_->killTimer(kVoiceTimer);
+        }
+        flush(currentContext());
         return;
     }
     if (id == kTranslateTimer) {

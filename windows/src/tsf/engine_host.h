@@ -21,6 +21,7 @@
 #include <thread>
 
 #include "../common/config.h"
+#include "../common/voice.h"
 #include "wowtype_core.h"
 
 namespace wowtype::tsf {
@@ -40,6 +41,10 @@ public:
     void checkForChanges();
     const Config &config() const { return config_; }
     uint64_t configGeneration() const { return configGeneration_; }
+
+    /// 语音输入（一个进程一个，麦克风也只开一个）：模型放在数据目录的 wtlocal\。
+    VoiceInput &voice() { return voice_; }
+    std::wstring voiceModelDir() const { return dataDir() + L"\\wtlocal"; }
 
     /// 互译的翻译器（设置里第一次打开 Translate 时建，之后一直留着，所有输入框共用）。
     WowtypeTranslator *translator() const { return translator_; }
@@ -85,6 +90,7 @@ private:
     bool wubiLoaded_ = false;
     WowtypeTranslator *translator_ = nullptr;
     WowtypeStats *stats_ = nullptr;
+    VoiceInput voice_;
     int commitsSinceSave_ = 0;
     DWORD clipboardSequence_ = 0;
     std::string lastClipboard_;

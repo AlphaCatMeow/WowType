@@ -19,6 +19,7 @@
 #include "config.h"
 #include "keys.h"
 #include "utf.h"
+#include "voice.h"
 
 using namespace wowtype;
 
@@ -227,6 +228,22 @@ int main(int argc, char **argv) {
         check(isModifierKey(vk::shift) && isModifierKey(vk::lwin) && !isModifierKey('A'), "修饰键");
         check(utf16Offset("你好a", 6) == 2 && utf16Offset("😀a", 4) == 2, "UTF-8 偏移转 UTF-16");
         check(utf16To8(utf8To16("你好😀")) == "你好😀", "UTF-8 ⇄ UTF-16");
+    }
+
+    // ---------------------------------------------------------------- 语音键（和 macOS 的 VoiceKey、Linux 的键名一样）
+    {
+        const auto altR = VoiceKey::parse("Alt_R");
+        check(altR && altR->modifier && altR->matches(vk::menu, true) && !altR->matches(vk::menu, false) &&
+                  altR->matches(vk::rmenu, false),
+              "Alt_R 是右 Alt（扩展键位或 VK_RMENU）");
+        const auto f8 = VoiceKey::parse("F8");
+        check(f8 && !f8->modifier && f8->matches(0x77, false), "F8");
+        check(VoiceKey::parse("Super_L")->matches(0x5B, false), "Super_L 是左 Win");
+        check(!VoiceKey::parse("") && !VoiceKey::parse("Menu"), "留空、认不出的不用热键");
+        check(voiceWave({}) == "▁▁▁▁▁▁" && voiceWave({100, 0, 50}) == "▁▁▁█▁▄", "音量波形", voiceWave({100, 0, 50}));
+        VoiceInput voice;
+        voice.configure(false, "Alt_R", false, "");
+        check(!voice.key() && !voice.press(true, false, false, nullptr), "关掉语音时语音键交给应用");
     }
 
     // ---------------------------------------------------------------- 快捷键、设置

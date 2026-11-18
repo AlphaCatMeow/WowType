@@ -126,6 +126,10 @@ const std::vector<SettingDef> &settingDefs() {
         {"AutoSpaceLetters", T::Bool, "True"},
         {"AutoSpaceDigits", T::Bool, "True"},
         {"AutoPairPunct", T::Bool, "False"},
+        {"Voice", T::Bool, "True"},
+        // 语音键用 fcitx5 的键名（Alt_R、F8），原样存（和 macOS 一样），用的时候 VoiceKey::parse 认，认不出就不用热键
+        {"VoiceKey", T::Key, "Alt_R"},
+        {"VoiceCopy", T::Bool, "False"},
         {"EmojiSuggest", T::Bool, "True"},
         // Win+. 是系统的表情面板，到不了输入法：和 macOS 一样默认 Control+.（Super 当 Control）
         {"EmojiKey", T::Key, "Control+period"},
@@ -234,6 +238,10 @@ void Config::setValue(const std::string &key, std::string_view value) {
         values_[key] = std::string(value);
         break;
     case T::Key:
+        if (key == "VoiceKey") {
+            values_[key] = std::string(value);
+            break;
+        }
         // 留空是不用；写错了保持原样
         if (value.empty()) {
             values_[key].clear();

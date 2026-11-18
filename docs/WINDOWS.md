@@ -1,8 +1,8 @@
 # Windows 版（第一阶段：能打字的 TSF 输入法）
 
 > 状态（2026-11）：**开发中，还没有在真机上用过**。CI 的「Windows 输入法（x64）」任务在 `windows-latest` 上编核心和输入法 DLL、
-> 跑核心测试、按键测试和设置契约，并真的用 `regsvr32` 注册、注销一遍；打字本身还没人在 Windows 上试过，见下面
-> [没在真机上验证的](#没在真机上验证的)。没有安装包、没有设置界面，只适合开发者手动装上试。
+> 跑核心测试、按键测试和设置契约、打 zip，并用安装脚本真装、卸载一遍；打字本身还没人在 Windows 上试过，见下面
+> [没在真机上验证的](#没在真机上验证的)。安装包还不进 Release、没有设置界面，只适合想先试的人。
 
 ## 和另两端的关系
 
@@ -34,54 +34,53 @@ CI 上的核心测试会真的起 `curl.exe` 对着本机的假服务跑一遍�
 
 ```bat
 set RUSTFLAGS=-C target-feature=+crt-static
-cargo build --release -p wowtype-core --no-default-features --target-dir target\windows
+cargo build --release -p wowtype-core --target-dir target\windows
 cmake -S windows -B build\windows -A x64 -DWOWTYPE_CORE_LIB=%CD%\target\windows\release\wowtype_core.lib
 cmake --build build\windows --config Release
 ```
 
 产物在 `build\windows\Release\`：`wowtype.dll`（输入法）、`wowtype-windows-harness.exe`（按键测试）、
 `wowtype-windows-config-dump.exe`（设置契约：`python scripts\test-config-contract.py --windows build\windows\Release\wowtype-windows-config-dump.exe`）。
-核心和 DLL 都静态链 C 运行库，DLL 不依赖 VC++ 运行库。不想自己编的话，CI 每次跑完都有一个 `windows-x64` 的 artifact，里面是 `wowtype.dll`。
+核心和 DLL 都静态链 C 运行库，DLL 不依赖 VC++ 运行库。不想自己编的话，用 CI 的 `windows-x64` artifact 里的安装包（见下面）。
 
 和平台无关的部分（组字、设置、按键翻译）在 Linux 上也能测：`windows/test.sh`（要 `c++` 和 Python 3）。
 
 ## 装上试试
 
-1. **放好文件**。找一个普通用户、沉浸式应用都读得到的目录，比如 `C:\Program Files\WowType\`（Program Files 默认允许 UWP 应用读，
-   放在自己的用户目录下的话，开始菜单的搜索框、商店应用里不会载入），放：
+**用安装包**（推荐）：CI 每次跑完都有一个 `windows-x64` 的 artifact，里面是 `WowType-<版本>-windows-x64.zip`
+（`windows/package.sh` 打的：`wowtype.dll`、`data\` 下的词库和许可证、`install.ps1`）。解开以后，以管理员身份打开 PowerShell，进到解开的目录：
 
-   ```
-   C:\Program Files\WowType\wowtype.dll
-   C:\Program Files\WowType\data\lexicon.tsv      词库（必须有）
-   C:\Program Files\WowType\data\english.txt      英文词表
-   C:\Program Files\WowType\data\words.lm         词级语言模型（可选，没有也能打，候选差一些）
-   C:\Program Files\WowType\data\nnlm.bin         整句增强模型（可选）
-   C:\Program Files\WowType\data\s2t.tsv          简繁表（繁体输出要，仓库里的 core\data\s2t.tsv）
-   C:\Program Files\WowType\data\wubi86.tsv       五笔码表（选五笔才要）
-   ```
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1             # 装到 %ProgramFiles%\WowType 并注册
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall  # 卸载（用户数据留着）
+```
 
-   数据文件和 Linux、macOS 安装包里的是同一份，拿法（任选一种）：CI 任一次运行的 `data` artifact（`scripts/make-data.sh` 和
-   `scripts/make-wubi.sh` 的输出，解开就是这些文件）；或者用 7-Zip 打开 [Releases](https://github.com/Gloridust/WowType/releases)
-   里的 `wowtype-data_*.deb`，取出 `usr/share/wowtype/` 下的文件；或者在 WSL / Git Bash 里跑 `scripts/make-data.sh "" data-out`。
+装好以后在「设置 → 时间和语言 → 语言和区域 → 中文（简体，中国）→ 语言选项 → 键盘」里能看到 **WowType**（注册时默认启用），
+用 `Win + 空格` 切过去。重装、升级直接再跑一遍 `install.ps1`：正在用着输入法的应用锁着旧的 `wowtype.dll`，
+脚本把它改名留着、照样装上新的，这些应用重开以后用新的。装到 `%ProgramFiles%` 是因为商店应用、开始菜单的搜索框
+只能载入这种位置的输入法。CI 每次都用这个脚本在 runner 上真装、建一个文本服务对象、再卸载一遍。
 
-2. **注册**（管理员的命令提示符）：
+**手动装**（自己编的 DLL）：照 `install.ps1` 的样子放文件，再注册：
 
-   ```bat
-   regsvr32 "C:\Program Files\WowType\wowtype.dll"
-   ```
+```
+C:\Program Files\WowType\wowtype.dll
+C:\Program Files\WowType\data\lexicon.tsv      词库（必须有）
+C:\Program Files\WowType\data\english.txt      英文词表
+C:\Program Files\WowType\data\words.lm         词级语言模型（可选，没有也能打，候选差一些）
+C:\Program Files\WowType\data\nnlm.bin         整句增强模型（可选）
+C:\Program Files\WowType\data\s2t.tsv          简繁表（繁体输出要，仓库里的 core\data\s2t.tsv）
+C:\Program Files\WowType\data\wubi86.tsv       五笔码表（选五笔才要）
+```
 
-   然后在「设置 → 时间和语言 → 语言和区域 → 中文（简体，中国）→ 语言选项 → 键盘 → 添加键盘」里加上 **WowType**
-   （注册时已经默认启用的话，这里已经有了）。用 `Win + 空格` 切过去。
+数据文件和 Linux、macOS 安装包里的是同一份：CI 的 `data` artifact（`scripts/make-data.sh`、`scripts/make-wubi.sh` 的输出），
+或者用 7-Zip 打开 [Releases](https://github.com/Gloridust/WowType/releases) 里的 `wowtype-data_*.deb`，取出 `usr/share/wowtype/` 下的文件。
 
-3. **卸载**：先在键盘列表里删掉 WowType，再
+```bat
+regsvr32 "C:\Program Files\WowType\wowtype.dll"
+regsvr32 /u "C:\Program Files\WowType\wowtype.dll"
+```
 
-   ```bat
-   regsvr32 /u "C:\Program Files\WowType\wowtype.dll"
-   ```
-
-   DLL 被正在运行的应用载入着时删不掉，注销以后注销一次（或重启）再删。
-
-换 DLL（重新编译以后）也要先关掉用着输入法的应用：DLL 装进每个应用的进程里，载入以后不会卸载。
+DLL 装进每个应用的进程里，载入以后不会卸载：换 DLL 前先关掉用着输入法的应用（或者像 `install.ps1` 那样先改名）。
 
 ## 设置和数据
 
@@ -96,6 +95,7 @@ cmake --build build\windows --config Release
 | `translate.key` | 互译的 API Key（一行） |
 | `wetype\nlrgpt2_nnlm.bin` | 导入的微信输入法整句增强模型（有就先用它） |
 | `models\HY-MT1.5-1.8B-Q4_K_M.gguf`、`llama\llama-server.exe` | 本地翻译模型和 llama.cpp（`TranslateLlamaServer` 留空时先在 PATH 里找） |
+| `wtlocal\` | 语音识别模型（微信输入法的离线模型，不随安装包分发，自己放进来） |
 | `stats.json` | 打字统计（`TypingStats=True` 才记，默认关），格式同另两端 |
 | `wowtype.log` | 日志（载入词库、设置、出错），超过 1 MB 从头写 |
 
@@ -108,8 +108,10 @@ cmake --build build\windows --config Release
 
 这些在 Linux、macOS 上有，Windows 上还没做（`spec/config.json` 里对应的项 `platforms` 没写 `windows`，读到了也不管）：
 
-- 设置界面（先直接改 `wowtype.conf`）、安装包和自动更新（`CheckUpdate`、`BetaUpdates`）
-- 语音输入（`Voice`、`VoiceKey`、`VoiceCopy`）：核心编的时候不带语音
+- 设置界面（先直接改 `wowtype.conf`）、图形安装程序（现在是 zip + `install.ps1`，还不进 Release）和自动更新（`CheckUpdate`、`BetaUpdates`）
+- 语音模型的一键下载：语音输入本身有（按住 `VoiceKey`，默认右 Alt，和另两端一样），但模型要自己放进数据目录的 `wtlocal\`
+  （从 Linux 的 `~/.local/share/wowtype/wtlocal`、macOS 的 `~/Library/Application Support/WowType/wtlocal` 拷过来，
+  或者在 Linux 上用设置界面下载）。没放时按语音键会提示去设置里下载，Windows 上就是这样放
 - 打字统计（`TypingStats`）记是记了（`stats.json`，按键按扫描码记，ABI 1.13 起核心认 Windows 的键码），但还没有看统计的界面
 - 本地翻译模型、整句增强模型的一键下载、导入（文件自己放进数据目录就能用）
 - ARM64、32 位、代码签名
@@ -128,6 +130,8 @@ CI 只能证明编得过、注册得上、和平台无关的部分（组字、�
 - 自动配对（`AutoPairPunct`）挪光标、成对删：用 `ITfContext::SetSelection` 和删字实现，各应用支不支持不知道
 - 读光标前后的字（自动加空格、数字后的标点、自动配对的核对）、密码框 / 网址框的识别（InputScope）
 - 应用结束组字（`OnCompositionTerminated`）时把打的字母原样上屏
+- 语音输入：TSF 的按键回调收不收得到右 Alt（`WM_SYSKEYDOWN`），吃掉右 Alt 以后应用的菜单栏还会不会被激活；
+  麦克风（「设置 → 隐私 → 麦克风 → 允许桌面应用访问」）；商店应用里没有麦克风权限，用不了
 - 互译：`curl.exe` 在各种应用进程里能不能起（沙盒里的 UWP 应用起不了子进程，这时会报翻译失败）、本地模型的 `llama-server` 跟着应用退出
 - 沉浸式 / UWP 应用里：数据目录会被重定向到应用自己的容器，读不到 `%LOCALAPPDATA%\WowType` 的设置和学到的词（只用自带的词库、默认设置）
 - 同一个进程几个界面线程（资源管理器）共用一个引擎（用锁串起来）

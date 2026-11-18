@@ -74,10 +74,12 @@ jobs:
         run: ./scripts/abi-smoke.sh
 
   windows:
-    # Windows 输入法（windows/，TSF 文本服务，第一阶段，见 docs/WINDOWS.md）：核心在 Windows 上的测试、
-    # 编 x64 的核心静态库和输入法 DLL、按键测试、设置契约、真用 regsvr32 注册再注销一遍。
-    # 还不发 Windows 安装包，不在 release 的 needs 里。
+    # Windows 输入法（windows/，TSF 文本服务，见 docs/WINDOWS.md）：核心在 Windows 上的测试、
+    # 编 x64 的核心静态库和输入法 DLL、按键测试（小词库 + 真实词库）、设置契约、打 zip、
+    # 用安装脚本真装一遍（regsvr32 注册、建一个文本服务对象）再卸载。
+    # 还没在真机上验证过，不在 release 的 needs 里，不进 Release。
     name: Windows 输入法（x64）
+    needs: data
     runs-on: windows-latest
     defaults:
       run:
@@ -88,37 +90,58 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: 核心测试
         run: cargo test -p wowtype-core --locked
-      - name: 编核心静态库（不带语音，静态 C 运行库）
+      - name: 编核心静态库（带语音，静态 C 运行库）
         env:
           RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo build --release --locked -p wowtype-core --no-default-features --target-dir target/windows
+        run: cargo build --release --locked -p wowtype-core --target-dir target/windows
       - name: 编输入法 DLL、按键测试、设置导出
         run: |
           cmake -S windows -B build/windows -A x64 -DWOWTYPE_CORE_LIB="$(pwd -W)/target/windows/release/wowtype_core.lib"
           cmake --build build/windows --config Release
-      - name: 按键测试（和 macOS、fcitx5 的同名用例一样）
-        run: build/windows/Release/wowtype-windows-harness.exe
+      - uses: actions/download-artifact@v4
+        with:
+          name: data
+          path: dist/data
+      - name: 按键测试（和 macOS、fcitx5 的同名用例一样；小词库 + 真实词库）
+        run: |
+          build/windows/Release/wowtype-windows-harness.exe
+          build/windows/Release/wowtype-windows-harness.exe dist/data/lexicon.tsv
       - name: 设置契约（spec/config.json）
         run: python scripts/test-config-contract.py --windows build/windows/Release/wowtype-windows-config-dump.exe
-      - name: 注册、注销一遍（regsvr32）
+      - name: 打 zip
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then export WOWTYPE_VERSION=${GITHUB_REF_NAME#v}; fi
+          windows/package.sh dist/data build/windows/Release/wowtype.dll dist/windows
+      - name: 用安装脚本装一遍、建一个文本服务对象、再卸载
         shell: pwsh
         run: |
-          $dll = (Resolve-Path build/windows/Release/wowtype.dll).Path
+          $pkg = (Get-ChildItem dist/windows -Directory | Select-Object -First 1).FullName
+          $target = Join-Path $env:RUNNER_TEMP 'WowType'
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$pkg\install.ps1" -Target $target
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 失败：$LASTEXITCODE" }
+          $dll = Join-Path $target 'wowtype.dll'
           $clsid = 'HKLM:\SOFTWARE\Classes\CLSID\{A895B83F-8F60-4990-A48F-17821E3BC14A}'
-          $p = Start-Process regsvr32 -ArgumentList '/s', "`"$dll`"" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "regsvr32 失败：$($p.ExitCode)" }
           $server = (Get-ItemProperty "$clsid\InprocServer32").'(default)'
           if ($server -ne $dll) { throw "InprocServer32 不对：$server" }
-          if (-not (Test-Path 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{A895B83F-8F60-4990-A48F-17821E3BC14A}')) { throw '没注册到 TSF' }
-          Get-ChildItem -Recurse 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{A895B83F-8F60-4990-A48F-17821E3BC14A}' | Select-Object -ExpandProperty Name
-          $p = Start-Process regsvr32 -ArgumentList '/u', '/s', "`"$dll`"" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "regsvr32 /u 失败：$($p.ExitCode)" }
-          if (Test-Path $clsid) { throw '注销以后 CLSID 还在' }
+          $tip = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{A895B83F-8F60-4990-A48F-17821E3BC14A}'
+          if (-not (Test-Path $tip)) { throw '没注册到 TSF' }
+          Get-ChildItem -Recurse $tip | Select-Object -ExpandProperty Name
+          # 类工厂和 QueryInterface：建一个文本服务对象（不激活）
+          $service = [Activator]::CreateInstance([type]::GetTypeFromCLSID([guid]'A895B83F-8F60-4990-A48F-17821E3BC14A'))
+          if ($null -eq $service) { throw '建不了文本服务对象' }
+          [void][Runtime.InteropServices.Marshal]::ReleaseComObject($service)
+          # 再装一遍（DLL 被这个进程载入着：旧的改名，新的照样装上）
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$pkg\install.ps1" -Target $target
+          if ($LASTEXITCODE -ne 0) { throw "第二次 install.ps1 失败：$LASTEXITCODE" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$pkg\install.ps1" -Uninstall -Target $target
+          if ($LASTEXITCODE -ne 0) { throw "卸载失败：$LASTEXITCODE" }
+          if (Test-Path $clsid) { throw '卸载以后 CLSID 还在' }
+          if (Test-Path "$tip\LanguageProfile\0x00000804\{8106DB80-2DC6-4558-B368-86D26F78EC68}") { throw '卸载以后 TSF 里还有这个输入法' }
       - uses: actions/upload-artifact@v4
         with:
-          # 开发、试用：没有安装包，照 docs/WINDOWS.md 手动放数据、注册
+          # 开发、试用：解开以后以管理员身份运行 install.ps1（docs/WINDOWS.md）
           name: windows-x64
-          path: build/windows/Release/wowtype.dll
+          path: dist/windows/*.zip
           retention-days: 7
 
   macos-app:

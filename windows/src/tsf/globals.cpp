@@ -65,8 +65,8 @@ void log(const std::wstring &line) {
     path += L"\\wowtype.log";
     WIN32_FILE_ATTRIBUTE_DATA info{};
     const bool big = GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info) && info.nFileSizeLow > (1u << 20);
-    FILE *f = _wfopen(path.c_str(), big ? L"wb" : L"ab");
-    if (!f) {
+    FILE *f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), big ? L"wb" : L"ab") != 0 || !f) {
         return;
     }
     SYSTEMTIME t;

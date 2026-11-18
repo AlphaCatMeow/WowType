@@ -7,7 +7,7 @@
 // platforms 带 windows 的项一一对上，scripts/test-config-contract.py --windows 对照（windows/tests/config_dump.cpp）。
 // 文件不存在、少写了哪一项就用默认值；不认识的键不管。只有 EmojiKey 的默认值不一样（Control+period，见 Shortcut）。
 //
-// 这一阶段 Windows 还没有的设置项（语音、检查更新）不在表里：读到了也不管。
+// 这一阶段 Windows 还没有的设置项（检查更新）不在表里：读到了也不管。
 
 #include <cstdint>
 #include <map>
