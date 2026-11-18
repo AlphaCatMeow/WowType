@@ -68,11 +68,17 @@ Invoke-Regsvr32 @('/s', "`"$dll`"")
 # 开始菜单里放一个「WowType 设置」
 $settings = Join-Path $Target 'wowtype-settings.exe'
 if (Test-Path $settings) {
-    $shell = New-Object -ComObject WScript.Shell
-    $link = $shell.CreateShortcut($startMenuLink)
-    $link.TargetPath = $settings
-    $link.Description = 'WowType 设置'
-    $link.Save()
+    # 放不上快捷方式（精简过的系统没有开始菜单目录）不算装失败
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path $startMenuLink) | Out-Null
+        $shell = New-Object -ComObject WScript.Shell
+        $link = $shell.CreateShortcut($startMenuLink)
+        $link.TargetPath = $settings
+        $link.Description = 'WowType 设置'
+        $link.Save()
+    } catch {
+        Write-Warning "开始菜单的快捷方式没放上：$($_.Exception.Message)。设置窗口在 $settings"
+    }
 }
 Write-Host "装好了：$Target"
 Write-Host '在「设置 → 时间和语言 → 语言和区域」的中文（简体）键盘里能看到 WowType，用 Win + 空格切过去。'
