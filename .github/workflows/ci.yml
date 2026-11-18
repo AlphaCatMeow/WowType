@@ -206,6 +206,17 @@ jobs:
             Get-Content (Join-Path $env:LOCALAPPDATA 'WowType\wowtype.log') -Tail 200 -ErrorAction SilentlyContinue
             throw "打字测试有 $($p.ExitCode) 项没过"
           }
+          # 两个进程（两个应用）之间的学习：B 开着，A 学到 shi 的第三个候选；B 不用重开，再打一次就是 A 学到的
+          $peer = Join-Path $env:RUNNER_TEMP 'peer'
+          New-Item -ItemType Directory -Force -Path $peer | Out-Null
+          $b = Start-Process $typing -ArgumentList '--peer-wait', "`"$peer`"" -PassThru -NoNewWindow
+          for ($i = 0; $i -lt 240 -and -not (Test-Path (Join-Path $peer 'ready')); $i++) { Start-Sleep -Milliseconds 500 }
+          $a = Start-Process $typing -ArgumentList '--peer-learn', "`"$peer`"" -PassThru -NoNewWindow
+          $a.WaitForExit(); $b.WaitForExit()
+          if ($a.ExitCode -ne 0 -or $b.ExitCode -ne 0) {
+            Get-Content (Join-Path $env:LOCALAPPDATA 'WowType\wowtype.log') -Tail 60 -ErrorAction SilentlyContinue
+            throw "两个进程之间的学习没过（A $($a.ExitCode)，B $($b.ExitCode)）"
+          }
           # 设置窗口几页的截图：先放一份假的打字统计，统计页的柱状图、热力图才有东西
           $days = [ordered]@{}
           for ($i = 29; $i -ge 0; $i--) {

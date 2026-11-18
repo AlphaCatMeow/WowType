@@ -420,7 +420,98 @@ LRESULT CALLBACK proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
 
 } // namespace
 
-int main() {
+// ---------------------------------------------------------------- 两个进程之间的学习（Windows 上每个应用各有一个引擎）
+//
+//   wowtype-windows-typing-test.exe --peer-wait <目录>   B：先开着，记下 shi 空格出的字，等 A 学完再打一次
+//   wowtype-windows-typing-test.exe --peer-learn <目录>  A：等 B 准备好，连着选 shi 的第三个候选几次（学到它），等存盘
+// 两个进程在 <目录> 里用小文件打招呼。B 第二次出的字应该是 A 学到的（各个应用学到的词几秒内都有，docs/WINDOWS.md）。
+
+bool waitForFile(const std::wstring &path, DWORD ms) {
+    const ULONGLONG until = GetTickCount64() + ms;
+    while (GetTickCount64() < until) {
+        if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            return true;
+        }
+        pump(200);
+    }
+    return false;
+}
+
+void writeFile(const std::wstring &path, const std::wstring &text) {
+    FILE *f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"wb") == 0 && f) {
+        const std::string utf8 = narrow(text);
+        std::fwrite(utf8.data(), 1, utf8.size(), f);
+        std::fclose(f);
+    }
+}
+
+std::wstring readFile(const std::wstring &path) {
+    FILE *f = nullptr;
+    std::string utf8;
+    if (_wfopen_s(&f, path.c_str(), L"rb") == 0 && f) {
+        char buffer[256];
+        std::size_t n;
+        while ((n = std::fread(buffer, 1, sizeof buffer, f)) > 0) {
+            utf8.append(buffer, n);
+        }
+        std::fclose(f);
+    }
+    const int n = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    std::wstring out(static_cast<std::size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), out.data(), n);
+    return out;
+}
+
+/// 打 shi 空格，返回上屏的那个字（输入框清空后打）。
+std::wstring commitShi() {
+    clear();
+    focus();
+    typeKeys("shi ");
+    pump(400);
+    return text();
+}
+
+int peerWait(const std::wstring &dir) {
+    const std::wstring before = commitShi();
+    check(before.size() == 1, "B：shi 空格出一个字", before);
+    writeFile(dir + L"\\ready", before);
+    const bool learned = waitForFile(dir + L"\\learned", 120000);
+    check(learned, "B：等到 A 学完");
+    pump(1000); // 下一次按键时合并 A 存的
+    const std::wstring wanted = readFile(dir + L"\\learned");
+    const std::wstring after = commitShi();
+    check(after == wanted, "B：A 在另一个进程里学到的字，B 不用重开就排到了第一（几秒内各个应用都有）",
+          L"之前 " + before + L"，A 学的 " + wanted + L"，现在 " + after);
+    return g_failures;
+}
+
+int peerLearn(const std::wstring &dir) {
+    check(waitForFile(dir + L"\\ready", 120000), "A：等到 B 准备好");
+    const std::wstring before = readFile(dir + L"\\ready");
+    // 连着选 shi 的第三个候选：学到它，排到前面
+    std::wstring picked;
+    for (int i = 0; i < 6; ++i) {
+        clear();
+        focus();
+        typeKeys("shi");
+        tap('3');
+        pump(300);
+        picked = text();
+    }
+    const std::wstring top = commitShi();
+    check(picked.size() == 1 && picked != before, "A：选了 shi 的第三个候选", picked);
+    check(top == picked, "A：选了几次以后它排到了第一", L"选的 " + picked + L"，现在第一 " + top);
+    // 等存盘（学到了词最多隔 2 秒存一次，存盘在核心的线程上）
+    pump(4000);
+    typeKeys("a");
+    tap(VK_ESCAPE);
+    pump(2000);
+    writeFile(dir + L"\\learned", top);
+    return g_failures;
+}
+
+int main(int argc, char **argv) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     // 输入法把每个按键回调记进日志：没过的时候 CI 打出来看
     SetEnvironmentVariableW(L"WOWTYPE_DEBUG_KEYS", L"1");
@@ -526,6 +617,17 @@ int main() {
         }
     }
     check(loaded, "nihao 空格 → 你好（词库载好、按键经过 TSF、上屏到输入框）", text());
+    if (argc == 3 && (std::string(argv[1]) == "--peer-wait" || std::string(argv[1]) == "--peer-learn")) {
+        const int n = MultiByteToWideChar(CP_ACP, 0, argv[2], -1, nullptr, 0);
+        std::wstring dir(static_cast<std::size_t>(n), L'\0');
+        MultiByteToWideChar(CP_ACP, 0, argv[2], -1, dir.data(), n);
+        dir.resize(wcslen(dir.c_str()));
+        const int failures = std::string(argv[1]) == "--peer-wait" ? peerWait(dir) : peerLearn(dir);
+        DestroyWindow(g_window);
+        pump(200);
+        std::printf(failures ? "\n%d 项没过\n" : "\nwindows peer ok\n", failures);
+        return failures;
+    }
 
     // 打字途中有编辑区、有候选框，候选框在输入框附近
     clear();
