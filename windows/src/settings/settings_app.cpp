@@ -11,6 +11,8 @@
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <shobjidl.h>
+#include <wrl/client.h>
 
 #include <algorithm>
 #include <fstream>
@@ -23,6 +25,7 @@
 #include "config.h"
 #include "custom_words.h"
 #include "utf.h"
+#include "wowtype_core.h"
 
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
@@ -43,6 +46,8 @@ constexpr int kIdCode = 108;
 constexpr int kIdWordAdd = 109;
 constexpr int kIdWordRemove = 110;
 constexpr int kIdWordImport = 111;
+constexpr int kIdNnlm = 112;
+constexpr int kIdVoiceModel = 113;
 constexpr int kIdFirstSetting = 1000;
 
 std::wstring widen(const std::string &s) {
@@ -257,6 +262,9 @@ private:
     void removeWord();
     void importWords();
     void wordChanged();
+    void importNnlm();
+    void importVoiceModel();
+    int pageNamed(const wchar_t *title) const;
     HWND child(const wchar_t *cls, const wchar_t *text, DWORD style, int id);
 
     HINSTANCE instance_ = nullptr;
@@ -277,6 +285,8 @@ private:
     HWND addWord_ = nullptr;
     HWND removeWord_ = nullptr;
     HWND importWords_ = nullptr;
+    HWND nnlm_ = nullptr;
+    HWND voiceModel_ = nullptr;
     CustomWords words_{std::nullopt};
     std::optional<std::string> lexicon_;
     bool codeTouched_ = false;
@@ -393,6 +403,9 @@ void SettingsWindow::build() {
     removeWord_ = child(L"BUTTON", L"删除选中的", BS_PUSHBUTTON | WS_TABSTOP, kIdWordRemove);
     importWords_ = child(L"BUTTON", L"导入…", BS_PUSHBUTTON | WS_TABSTOP, kIdWordImport);
     custom_ = child(L"BUTTON", L"用记事本编辑", BS_PUSHBUTTON | WS_TABSTOP, kIdCustom);
+    nnlm_ = child(L"BUTTON", L"导入整句增强模型（微信输入法的 nlrgpt2_nnlm.bin）…", BS_PUSHBUTTON | WS_TABSTOP, kIdNnlm);
+    voiceModel_ = child(L"BUTTON", L"导入语音模型（含 .xnet 和 dict.decoder.utf8.txt 的文件夹）…",
+                        BS_PUSHBUTTON | WS_TABSTOP, kIdVoiceModel);
     dataDirButton_ = child(L"BUTTON", L"打开数据目录", BS_PUSHBUTTON | WS_VISIBLE | WS_TABSTOP, kIdDataDir);
     status_ = child(L"STATIC", L"", SS_LEFT | WS_VISIBLE, 0);
     save_ = child(L"BUTTON", L"保存", BS_DEFPUSHBUTTON | WS_VISIBLE | WS_TABSTOP, kIdSave);
@@ -434,6 +447,14 @@ void SettingsWindow::layout() {
         }
         at += rowHeight;
         bottom = std::max(bottom, at);
+    }
+    // 输入页、语音页最后各有一个导入模型的按钮
+    using ButtonOnPage = std::pair<HWND, const wchar_t *>;
+    for (const auto &[button, title] : {ButtonOnPage{nnlm_, L"输入"}, ButtonOnPage{voiceModel_, L"语音"}}) {
+        const auto page = static_cast<std::size_t>(pageNamed(title));
+        MoveWindow(button, margin * 2, y[page] + scale(6), width - margin * 4, scale(28), FALSE);
+        y[page] += rowHeight + scale(6);
+        bottom = std::max(bottom, y[page]);
     }
     // 翻译页最后加 API Key
     const std::size_t translatePage = pages().size() - 1;
@@ -478,6 +499,8 @@ void SettingsWindow::showPage(int page) {
     const int translate = static_cast<int>(pages().size()) - 1;
     ShowWindow(apiKeyLabel_, page == translate ? SW_SHOW : SW_HIDE);
     ShowWindow(apiKey_, page == translate ? SW_SHOW : SW_HIDE);
+    ShowWindow(nnlm_, page == pageNamed(L"输入") ? SW_SHOW : SW_HIDE);
+    ShowWindow(voiceModel_, page == pageNamed(L"语音") ? SW_SHOW : SW_HIDE);
     for (HWND h : {wordList_, wordLabel_, word_, codeLabel_, code_, addWord_, removeWord_, importWords_, custom_}) {
         ShowWindow(h, page == customPage() ? SW_SHOW : SW_HIDE);
     }
@@ -673,6 +696,90 @@ void SettingsWindow::importWords() {
     }
 }
 
+int SettingsWindow::pageNamed(const wchar_t *title) const {
+    for (std::size_t i = 0; i < pages().size(); ++i) {
+        if (std::wstring(pages()[i].title) == title) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+void SettingsWindow::importNnlm() {
+    // 和 Linux、macOS 一样：核心解析得了就能用，不核对版本号；放到数据目录的 wetype\，输入法下次载入词库时用它
+    wchar_t file[MAX_PATH * 2] = {};
+    OPENFILENAMEW open{};
+    open.lStructSize = sizeof open;
+    open.hwndOwner = hwnd_;
+    open.lpstrFilter = L"整句增强模型（*.bin）\0*.bin\0所有文件\0*.*\0";
+    open.lpstrFile = file;
+    open.nMaxFile = static_cast<DWORD>(std::size(file));
+    open.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if (!GetOpenFileNameW(&open)) {
+        return;
+    }
+    if (wowtype_nnlm_check(narrow(file).c_str()) < 0) {
+        const char *error = wowtype_last_error();
+        SetWindowTextW(status_, (L"读不出来：" + widen(error ? error : "")).c_str());
+        return;
+    }
+    const std::wstring dir = dataDir() + L"\\wetype";
+    CreateDirectoryW(dataDir().c_str(), nullptr);
+    CreateDirectoryW(dir.c_str(), nullptr);
+    if (!CopyFileW(file, (dir + L"\\nlrgpt2_nnlm.bin").c_str(), FALSE)) {
+        SetWindowTextW(status_, L"复制失败");
+        return;
+    }
+    SetWindowTextW(status_, L"导入好了：重新打开应用（输入法重新载入词库）以后用它");
+}
+
+void SettingsWindow::importVoiceModel() {
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IFileOpenDialog> dialog;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
+        return;
+    }
+    DWORD options = 0;
+    dialog->GetOptions(&options);
+    dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST);
+    dialog->SetTitle(L"选语音模型所在的文件夹（Linux 的 ~/.local/share/wowtype/wtlocal 拷过来的）");
+    ComPtr<IShellItem> item;
+    PWSTR picked = nullptr;
+    if (FAILED(dialog->Show(hwnd_)) || FAILED(dialog->GetResult(&item)) ||
+        FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &picked))) {
+        return;
+    }
+    const std::wstring source = picked;
+    CoTaskMemFree(picked);
+    // 要有模型（.xnet）和词表，和核心的 wtlocal::is_ready 一样
+    const bool hasDict = GetFileAttributesW((source + L"\\dict.decoder.utf8.txt").c_str()) != INVALID_FILE_ATTRIBUTES;
+    WIN32_FIND_DATAW found{};
+    HANDLE find = FindFirstFileW((source + L"\\*.xnet").c_str(), &found);
+    const bool hasModel = find != INVALID_HANDLE_VALUE;
+    if (find != INVALID_HANDLE_VALUE) {
+        FindClose(find);
+    }
+    if (!hasDict || !hasModel) {
+        SetWindowTextW(status_, L"这个文件夹里没有 .xnet 模型和 dict.decoder.utf8.txt");
+        return;
+    }
+    const std::wstring target = dataDir() + L"\\wtlocal";
+    CreateDirectoryW(dataDir().c_str(), nullptr);
+    CreateDirectoryW(target.c_str(), nullptr);
+    int copied = 0;
+    find = FindFirstFileW((source + L"\\*").c_str(), &found);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                CopyFileW((source + L"\\" + found.cFileName).c_str(), (target + L"\\" + found.cFileName).c_str(), FALSE)) {
+                ++copied;
+            }
+        } while (FindNextFileW(find, &found));
+        FindClose(find);
+    }
+    SetWindowTextW(status_, (L"导入了 " + std::to_wstring(copied) + L" 个文件，按语音键就能说话").c_str());
+}
+
 LRESULT CALLBACK SettingsWindow::proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_NCCREATE) {
         auto *create = reinterpret_cast<CREATESTRUCTW *>(lParam);
@@ -710,6 +817,12 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
             ShellExecuteW(hwnd_, L"open", L"notepad.exe", path.c_str(), nullptr, SW_SHOWNORMAL);
             return 0;
         }
+        case kIdNnlm:
+            importNnlm();
+            return 0;
+        case kIdVoiceModel:
+            importVoiceModel();
+            return 0;
         case kIdWordAdd:
             addWord();
             return 0;
@@ -762,7 +875,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         SetForegroundWindow(existing);
         return 0;
     }
-    INITCOMMONCONTROLSEX controls{sizeof controls, ICC_TAB_CLASSES | ICC_STANDARD_CLASSES};
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    INITCOMMONCONTROLSEX controls{sizeof controls, ICC_TAB_CLASSES | ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES};
     InitCommonControlsEx(&controls);
     SettingsWindow window;
     if (!window.create(instance)) {
