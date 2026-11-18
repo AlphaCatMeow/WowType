@@ -28,14 +28,14 @@ for c in URL SIZE MD5; do
   rust=$(sed -n "s/^pub const $c: [^=]*= \(.*\);/\1/p" voice/src/wtlocal/pack.rs | tr -d '"')
   if [[ $c == SIZE ]]; then rust=${rust//_/}; fi
   grep -q -- "$rust" <(tr -d "'" < windows/src/settings/settings_app.cpp) \
-    || { echo "FAIL 语音包的 $c 和 voice/src/wtlocal/pack.rs 对不上（$rust）"; exit 1; }
+    || { echo "FAIL 语音包的 $c 和 voice/src/wtlocal/pack.rs 对不上（${rust}）"; exit 1; }
 done
 
 # 本地翻译模型、llama.cpp 构建号和 Linux 设置界面的一样
 for c in LOCAL_MODEL_SHA256 LLAMA_BUILD; do
   py=$(grep -A1 "^$c = " settings/wowtype-config | grep -o '"[0-9a-fb]\{6,\}"' | head -1 | tr -d '"')
   grep -q -- "$py" windows/src/settings/settings_app.cpp \
-    || { echo "FAIL 设置窗口的 $c 和 settings/wowtype-config 对不上（$py）"; exit 1; }
+    || { echo "FAIL 设置窗口的 $c 和 settings/wowtype-config 对不上（${py}）"; exit 1; }
 done
 
 "$OUT/wowtype-windows-harness" "$@"
