@@ -133,7 +133,8 @@ Filename: "{app}\wowtype-settings.exe"; Parameters: "--enable-input"; StatusMsg:
 Filename: "{app}\wowtype-settings.exe"; Description: "打开 WowType 设置"; Flags: postinstall nowait skipifsilent unchecked
 
 [UninstallRun]
-Filename: "{app}\wowtype-settings.exe"; Parameters: "--disable-input"; RunOnceId: "DisableInput"; Flags: runasoriginaluser waituntilterminated
+; 卸载程序总是以管理员身份跑（不能换回原来的用户）：一般就是同一个账户，从它的键盘列表里去掉
+Filename: "{app}\wowtype-settings.exe"; Parameters: "--disable-input"; RunOnceId: "DisableInput"; Flags: waituntilterminated
 
 [UninstallDelete]
 Type: files; Name: "{app}\wowtype.dll.old-*"
