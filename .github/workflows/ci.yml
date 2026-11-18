@@ -79,7 +79,7 @@ jobs:
     # Windows 输入法（windows/，TSF 文本服务，见 docs/WINDOWS.md）：核心在 Windows 上的测试、
     # 编 x64 的核心静态库和输入法 DLL、按键测试（小词库 + 真实词库）、设置契约、打 zip、
     # 用安装脚本真装一遍（regsvr32 注册、建一个文本服务对象）再卸载。
-    # 还没在真机上验证过，不在 release 的 needs 里，不进 Release。
+    # x64 的安装程序（WowType-<版本>-windows-x64-setup.exe）随发版进 Release（artifact 叫 pkg-windows-x64）。
     name: Windows 输入法（x64）
     needs: data
     runs-on: windows-latest
@@ -142,6 +142,51 @@ jobs:
           if (Test-Path $clsid) { throw '卸载以后 CLSID 还在' }
           if (Test-Path -LiteralPath $link) { throw '卸载以后开始菜单里还有快捷方式' }
           if (Test-Path "$tip\LanguageProfile\0x00000804\{8106DB80-2DC6-4558-B368-86D26F78EC68}") { throw '卸载以后 TSF 里还有这个输入法' }
+      - name: 编安装程序（Inno Setup）
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          $pkg = (Get-ChildItem dist/windows -Directory -Filter '*-windows-x64').FullName
+          $version = $pkg -replace '.*WowType-(.+)-windows-x64$', '$1'
+          & $iscc /Q "/DAppVersion=$version" /DArch=x64 "/DSourceDir=$pkg" "/DOutputDir=$((Resolve-Path dist/windows).Path)" windows/installer/wowtype.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC 失败：$LASTEXITCODE" }
+          Get-ChildItem dist/windows/*-setup.exe
+      - name: 用安装程序装一遍、建一个文本服务对象、升级一遍、卸载
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist/windows/*-x64-setup.exe).FullName
+          $app = Join-Path $env:ProgramFiles 'WowType'
+          $dll = Join-Path $app 'wowtype.dll'
+          $clsid = 'HKLM:\SOFTWARE\Classes\CLSID\{A895B83F-8F60-4990-A48F-17821E3BC14A}'
+          $tipProfile = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{A895B83F-8F60-4990-A48F-17821E3BC14A}\LanguageProfile\0x00000804\{8106DB80-2DC6-4558-B368-86D26F78EC68}'
+          $uninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8AF92801-E722-42A0-A358-07EFD5436DF4}_is1'
+          $link = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\WowType 设置.lnk'
+          function Invoke-Setup([string]$log) {
+            $p = Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$log" -Wait -PassThru
+            if ($p.ExitCode -ne 0) { Get-Content $log -ErrorAction SilentlyContinue; throw "安装程序失败：$($p.ExitCode)" }
+          }
+          Invoke-Setup "$env:RUNNER_TEMP\setup1.log"
+          if ((Get-ItemProperty "$clsid\InprocServer32").'(default)' -ne $dll) { throw 'InprocServer32 不对' }
+          if (-not (Test-Path $tipProfile)) { throw '没注册到 TSF' }
+          if (-not (Test-Path -LiteralPath $link)) { throw '开始菜单里没有「WowType 设置」' }
+          if (-not (Test-Path $uninstallKey)) { throw '「设置 → 应用」里没有卸载项' }
+          if (-not (Test-Path (Join-Path $app 'data\lexicon.tsv'))) { throw '没装词库' }
+          (Get-ItemProperty $uninstallKey).DisplayName
+          # 建一个文本服务对象：这个进程载入了 DLL，接着升级要能换掉它
+          $service = [Activator]::CreateInstance([type]::GetTypeFromCLSID([guid]'A895B83F-8F60-4990-A48F-17821E3BC14A'))
+          if ($null -eq $service) { throw '建不了文本服务对象' }
+          Invoke-Setup "$env:RUNNER_TEMP\setup2.log"
+          if (-not (Get-ChildItem $app -Filter 'wowtype.dll.old-*')) { throw '升级时被用着的旧 DLL 没改名换下来' }
+          if ((Get-ItemProperty "$clsid\InprocServer32").'(default)' -ne $dll) { throw '升级以后 InprocServer32 不对' }
+          [void][Runtime.InteropServices.Marshal]::ReleaseComObject($service)
+          # 卸载程序会把自己拷到临时目录再跑：等卸载项没了
+          Start-Process (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          for ($i = 0; $i -lt 60 -and (Test-Path $uninstallKey); $i++) { Start-Sleep 1 }
+          if (Test-Path $uninstallKey) { throw '卸载以后卸载项还在' }
+          if (Test-Path $clsid) { throw '卸载以后 CLSID 还在' }
+          if (Test-Path $tipProfile) { throw '卸载以后 TSF 里还有这个输入法' }
+          if (Test-Path -LiteralPath $link) { throw '卸载以后开始菜单里还有快捷方式' }
       - name: ARM64：编核心和 DLL、打 zip（没有 ARM64 的 runner，只编不跑）
         env:
           RUSTFLAGS: -C target-feature=+crt-static
@@ -152,16 +197,31 @@ jobs:
             -DWOWTYPE_CORE_LIB="$(pwd -W)/target/windows/aarch64-pc-windows-msvc/release/wowtype_core.lib"
           cmake --build build/windows-arm64 --config Release
           WOWTYPE_WINDOWS_ARCH=arm64 windows/package.sh dist/data build/windows-arm64/Release/wowtype.dll dist/windows
+      - name: ARM64：编安装程序（只编不装）
+        shell: pwsh
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          $pkg = (Get-ChildItem dist/windows -Directory -Filter '*-windows-arm64').FullName
+          $version = $pkg -replace '.*WowType-(.+)-windows-arm64$', '$1'
+          & $iscc /Q "/DAppVersion=$version" /DArch=arm64 "/DSourceDir=$pkg" "/DOutputDir=$((Resolve-Path dist/windows).Path)" windows/installer/wowtype.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC 失败：$LASTEXITCODE" }
       - uses: actions/upload-artifact@v4
         with:
-          # 开发、试用：解开以后以管理员身份运行 install.ps1（docs/WINDOWS.md）
+          # 叫 pkg-*：发版任务按 pkg-* 收安装包（x64 的安装程序进 Release）
+          name: pkg-windows-x64
+          path: dist/windows/*-x64-setup.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          # 开发、试用：zip 解开以后以管理员身份运行 install.ps1（docs/WINDOWS.md）；ARM64 没有在真机上试过，不进 Release
           name: windows-x64
           path: dist/windows/*-x64.zip
           retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: windows-arm64
-          path: dist/windows/*-arm64.zip
+          path: |
+            dist/windows/*-arm64.zip
+            dist/windows/*-arm64-setup.exe
           retention-days: 7
 
   macos-app:
@@ -659,7 +719,7 @@ jobs:
   release:
     name: 发布
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [installer, core, data, data-wanxiang, addon, arch, fedora, nix, macos-app]
+    needs: [installer, core, data, data-wanxiang, addon, arch, fedora, nix, macos-app, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -701,6 +761,7 @@ jobs:
           - 新功能默认都关着，要用到设置里打开：打字统计（只记总数，不记打的内容）、中文标点自动配对（打 ( 出（），光标在中间）。
           - 双拼 lo / luo 同键的读法合在一起排（loji 出「逻辑」），选过的单字会排到第一个候选后面，lia 直接出「俩」。
           - GNOME 45、46 上的语音浮条修好了，更新后注销重新登录一次 GNOME 才会载入新扩展。
+          - 新增 Windows 版（预览）：Releases 里的 \`WowType-<版本>-windows-x64-setup.exe\`，输入行为和 Linux、macOS 一样，见下面「安装（Windows）」。
           - macOS 补齐了 Linux 有的功能：切到 WowType 时的中英文、标点配对、鼠标点候选和翻页、翻译测试连接、更新内容；候选框不会再往左挤出屏幕。
 
           ## 安装（Ubuntu / Debian、deepin、Arch Linux、Fedora、NixOS）
@@ -728,6 +789,13 @@ jobs:
           \`\`\`
 
           或者下载 \`WowType-${GITHUB_REF_NAME#v}-macos.pkg\` 双击安装。安装包没有 Apple 开发者签名：第一次打开时系统会说无法验证，点「完成」，再到「系统设置 → 隐私与安全性」往下找到 WowType，点「仍要打开」。
+
+          ## 安装（Windows 10 1803 以上 / Windows 11，x64，预览版）
+
+          下载 \`WowType-${GITHUB_REF_NAME#v}-windows-x64-setup.exe\` 双击安装（会问一次管理员权限），装好后按 \`Win + 空格\` 切到 WowType。
+          安装程序没有代码签名：Windows 提示「Windows 已保护你的电脑」时点「更多信息」→「仍要运行」。
+          输入行为和 Linux、macOS 是同一份，但 Windows 版还没在很多电脑、很多应用上试过；设置窗口「常规」页的「复制诊断信息」贴进 issue 就好。
+          还没有的（检查更新、代码签名等）见 [docs/WINDOWS.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/docs/WINDOWS.md)。
 
           安装包里的词库来自 [rime-ice](https://github.com/iDvel/rime-ice)（GPL-3.0），词频另用了 [Tatoeba](https://tatoeba.org) 的中文句子（CC BY 2.0 FR）统计，词级语言模型 words.lm 和整句增强模型 nnlm.bin 是 CC BY-SA 4.0；详见安装包里的 DATA-SOURCE.txt。
           五笔 86 码表 wubi86.tsv 来自 [rime-wubi](https://github.com/rime/rime-wubi)（LGPL-3.0），作者和钉死的提交见随包的 WUBI-AUTHORS、WUBI-SOURCE.txt。

@@ -1,8 +1,8 @@
 # Windows 版（第一阶段：能打字的 TSF 输入法）
 
-> 状态（2026-11）：**开发中，还没有在真机上用过**。CI 的「Windows 输入法（x64）」任务在 `windows-latest` 上编核心和输入法 DLL、
-> 跑核心测试、按键测试和设置契约、打 zip，并用安装脚本真装、卸载一遍；打字本身还没人在 Windows 上试过，见下面
-> [没在真机上验证的](#没在真机上验证的)。安装包还不进 Release、没有设置界面，只适合想先试的人。
+> 状态（2026-11）：**预览版，还没在很多真机上用过**。CI 的「Windows 输入法（x64）」任务在 `windows-latest` 上编核心、输入法 DLL
+> 和设置窗口，跑核心测试、按键测试和设置契约，打 zip 和安装程序，并真装、升级、卸载一遍；x64 的安装程序随发版进 Release。
+> 打字本身还要在真的 Windows 上多试，见下面[没在真机上验证的](#没在真机上验证的)。
 
 ## 和另两端的关系
 
@@ -48,7 +48,15 @@ cmake --build build\windows --config Release
 
 ## 装上试试
 
-**用安装包**（推荐）：CI 每次跑完都有一个 `windows-x64` 的 artifact，里面是 `WowType-<版本>-windows-x64.zip`
+**用安装程序**（推荐）：[Releases](https://github.com/Gloridust/WowType/releases) 里的 `WowType-<版本>-windows-x64-setup.exe`
+（Inno Setup，`windows/installer/wowtype.iss`），双击装，会问一次管理员权限。装到 `%ProgramFiles%\WowType`、用 `DllRegisterServer`
+注册、开始菜单放「WowType 设置」，「设置 → 应用」里能卸载（学到的词、设置留着）。升级直接装新版：正在用着输入法的应用锁着旧的
+`wowtype.dll`，安装程序把它改名换下来、装上新的，这些应用重开以后用新版；下次安装时删掉换下来的。没有代码签名：第一次运行时
+SmartScreen 会提示「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」。静默安装：`setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART`。
+CI 每次都在 runner 上静默装一遍、建一个文本服务对象、在 DLL 被用着时升级一遍、再卸载，检查注册表、开始菜单和卸载项；
+发版时 x64 的安装程序进 Release（ARM64 的在 `windows-arm64` artifact 里，没有在真机上试过，不进 Release）。
+
+**用 zip**（开发、试用）：CI 每次跑完都有一个 `windows-x64` 的 artifact，里面是 `WowType-<版本>-windows-x64.zip`
 （`windows/package.sh` 打的：`wowtype.dll`、`data\` 下的词库和许可证、`install.ps1`）。解开以后，以管理员身份打开 PowerShell，进到解开的目录：
 
 ```powershell
@@ -119,7 +127,8 @@ DLL 装进每个应用的进程里，载入以后不会卸载：换 DLL 前先�
   「翻译」页能一键下载本地翻译模型（HY-MT 1.5 1.8B，和另两端同一个文件、同一个 SHA256，先给许可说明）和 llama.cpp 官方的
   Windows 程序（`b12110` 的 CPU 包，钉死 SHA256，解到 `llama\`；PATH 里、设置里有 llama-server 就不下）。
   还没有的：统计的图表和键盘热力图（只有文字摘要）、下载断了接着下（现在断了要重下）
-- 图形安装程序（现在是 zip + `install.ps1`，还不进 Release）和自动更新（`CheckUpdate`、`BetaUpdates`）
+- 自动更新（`CheckUpdate`、`BetaUpdates`）：安装程序已经进 Release，检查更新还没做（先手动下载新版装）
+- 代码签名（安装程序和 DLL 都没签，SmartScreen 会拦一下）
 - 打字统计（`TypingStats`）记是记了（`stats.json`，按键按扫描码记，ABI 1.13 起核心认 Windows 的键码），但还没有看统计的界面
 - 本地翻译模型、整句增强模型的一键下载、导入（文件自己放进数据目录就能用）
 - ARM64 只编不跑：CI 编出 `WowType-<版本>-windows-arm64.zip`（`windows-arm64` artifact），但没有 ARM64 的机器试过；

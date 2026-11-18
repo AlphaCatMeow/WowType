@@ -101,7 +101,7 @@
 - Ubuntu 22.04 的 GNOME 是 42：绿色候选框主题和语音浮条（GNOME 扩展，要 GNOME 45+）用不了，见[安装说明](docs/INSTALL.md#ubuntu-2204fcitx5-50)
 - deepin 的安装包只有 x86_64
 - **macOS 12 或更新**（Apple 芯片和 Intel 都行），见下面的 [macOS](#macos)
-- Windows 10 / 11：开发中，还没有安装包，开发者可以先手动装上试，见 [docs/WINDOWS.md](docs/WINDOWS.md)
+- **Windows 10（1803 起）/ 11**，x64：预览版，见下面的 [Windows](#windows)
 
 ### 一行命令安装（推荐）
 
@@ -161,6 +161,21 @@ curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/main/install.sh |
 - 卸载：设置窗口「常规」页最下面的「卸载 WowType」（或者终端里
   `"$HOME/Library/Input Methods/WowType.app/Contents/MacOS/WowType" --uninstall`）。自定义词、学到的词和设置留在
   `~/Library/Application Support/WowType`，不要了自己删掉
+
+### Windows
+
+Windows 10 1803 或更新、Windows 11，x64。**预览版**：输入行为和 Linux、macOS 是同一份代码，但还没在很多电脑、很多应用上试过，
+遇到问题请[提 issue](https://github.com/Gloridust/WowType/issues)（设置窗口「常规」页的「复制诊断信息」贴进去）。
+
+到 [Releases](https://github.com/Gloridust/WowType/releases) 下载 `WowType-<版本>-windows-x64-setup.exe`，双击安装（会问一次管理员权限）。
+安装程序**没有代码签名**，第一次运行时 Windows 可能提示「Windows 已保护你的电脑」：点「更多信息」→「仍要运行」。
+装好以后按 `Win + 空格` 切到 WowType，打 `nihao` 试试。
+
+- 设置：开始菜单里的「WowType 设置」，或任务栏上「中」按钮右键 →「WowType 设置…」。设置文件是
+  `%LOCALAPPDATA%\WowType\wowtype.conf`，键名和 Linux、macOS 一样
+- 升级：下载新版的安装程序再装一次；正在用着输入法的应用重新打开以后用新版
+- 卸载：「设置 → 应用 → 已安装的应用」里找到「WowType 输入法」。学到的词和设置留在 `%LOCALAPPDATA%\WowType`
+- 还没有的、和另两端不一样的地方见 [docs/WINDOWS.md](docs/WINDOWS.md)
 
 ### 手动安装
 
