@@ -9,7 +9,9 @@
 
 #include <windows.h>
 
+#include <ctfutb.h>
 #include <msctf.h>
+#include <richedit.h>
 #include <wrl/client.h>
 
 #include <cstdio>
@@ -28,6 +30,9 @@ constexpr LANGID kLangId = MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED);
 HWND g_window = nullptr;
 HWND g_edit = nullptr;
 int g_failures = 0;
+ComPtr<ITfThreadMgr> g_threadMgr;
+// GUID_LBI_INPUTMODE：任务栏输入指示器上的按钮（和 windows/src/tsf/globals.cpp 一样）
+const GUID kLbiInputMode = {0x2c77a81e, 0x41cc, 0x4178, {0xa3, 0xa7, 0x5f, 0x8a, 0x98, 0x75, 0x68, 0xe6}};
 
 std::string narrow(const std::wstring &w) {
     if (w.empty()) {
@@ -130,6 +135,212 @@ void focus() {
 
 HWND candidateWindow() { return FindWindowW(L"WowTypeCandidateWindow", nullptr); }
 
+bool candidatesShown() {
+    const HWND h = candidateWindow();
+    return h && IsWindowVisible(h);
+}
+
+/// 任务栏输入指示器上 WowType 那个按钮现在写的字（中 / 英 / 译）；没有这个按钮是空串。
+std::wstring langBarText() {
+    ComPtr<ITfLangBarItemMgr> items;
+    ComPtr<ITfLangBarItem> item;
+    ComPtr<ITfLangBarItemButton> button;
+    if (!g_threadMgr || FAILED(g_threadMgr.As(&items)) || FAILED(items->GetItem(kLbiInputMode, &item)) ||
+        FAILED(item.As(&button))) {
+        return L"";
+    }
+    TF_LANGBARITEMINFO info{};
+    if (FAILED(item->GetInfo(&info)) || !IsEqualCLSID(info.clsidService, kClsid)) {
+        return L"（不是 WowType 的）";
+    }
+    BSTR text = nullptr;
+    if (FAILED(button->GetText(&text)) || !text) {
+        return L"";
+    }
+    std::wstring out(text);
+    SysFreeString(text);
+    return out;
+}
+
+/// 让另一个进程的窗口到前台（AttachThreadInput 借一下前台线程的输入状态）。
+void bringToFront(HWND hwnd) {
+    const DWORD fg = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
+    const DWORD me = GetCurrentThreadId();
+    if (fg != me) {
+        AttachThreadInput(fg, me, TRUE);
+    }
+    ShowWindow(hwnd, SW_RESTORE);
+    BringWindowToTop(hwnd);
+    SetForegroundWindow(hwnd);
+    if (fg != me) {
+        AttachThreadInput(fg, me, FALSE);
+    }
+}
+
+void clickAt(int x, int y) {
+    SetCursorPos(x, y);
+    INPUT inputs[2] = {};
+    inputs[0].type = INPUT_MOUSE;
+    inputs[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    inputs[1].type = INPUT_MOUSE;
+    inputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    SendInput(2, inputs, sizeof(INPUT));
+    pump(200);
+}
+
+/// Win + 空格：用户切输入法的办法（在键盘列表里往下切一个）。
+void winSpace() {
+    sendKey(VK_LWIN, false);
+    pump(50);
+    tap(VK_SPACE);
+    sendKey(VK_LWIN, true);
+    pump(800);
+}
+
+// ---------------------------------------------------------------- Edge（Chromium 的 TSF，Chrome、VS Code 这些 Electron 应用一样）
+
+HWND g_edge = nullptr;
+
+BOOL CALLBACK findEdge(HWND hwnd, LPARAM) {
+    wchar_t title[256] = {};
+    GetWindowTextW(hwnd, title, 256);
+    if (IsWindowVisible(hwnd) && wcsncmp(title, L"wt", 2) == 0) {
+        g_edge = hwnd;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/// 网页把输入框里的字写进标题：wt[字]
+std::wstring edgeText() {
+    wchar_t title[512] = {};
+    GetWindowTextW(g_edge, title, 512);
+    std::wstring t(title);
+    const auto open = t.find(L"wt[");
+    const auto close = t.rfind(L']');
+    if (open == std::wstring::npos || close == std::wstring::npos || close < open + 3) {
+        return L"";
+    }
+    return t.substr(open + 3, close - open - 3);
+}
+
+void edgeClear() {
+    sendKey(VK_CONTROL, false);
+    tap('A');
+    sendKey(VK_CONTROL, true);
+    tap(VK_BACK);
+    pump(300);
+}
+
+void edgeTest() {
+    wchar_t programFiles[MAX_PATH] = {};
+    std::wstring edge;
+    for (const wchar_t *var : {L"ProgramFiles(x86)", L"ProgramFiles"}) {
+        if (GetEnvironmentVariableW(var, programFiles, MAX_PATH) > 0) {
+            const std::wstring path = std::wstring(programFiles) + L"\\Microsoft\\Edge\\Application\\msedge.exe";
+            if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                edge = path;
+                break;
+            }
+        }
+    }
+    if (edge.empty()) {
+        std::printf("skip Edge（没装）\n");
+        return;
+    }
+    wchar_t temp[MAX_PATH] = {};
+    GetTempPathW(MAX_PATH, temp);
+    const std::wstring page = std::wstring(temp) + L"wowtype-edge-test.html";
+    {
+        const char *html =
+            "<!doctype html><meta charset=utf-8><title>wt-ready</title>"
+            "<textarea id=t autofocus style='width:90%;height:200px;font-size:24px'></textarea>"
+            "<script>const t=document.getElementById('t');t.focus();"
+            "t.addEventListener('input',()=>{document.title='wt['+t.value+']'});</script>";
+        FILE *f = _wfopen(page.c_str(), L"wb");
+        if (f) {
+            std::fputs(html, f);
+            std::fclose(f);
+        }
+    }
+    std::wstring url = L"file:///" + page;
+    for (auto &c : url) {
+        if (c == L'\\') {
+            c = L'/';
+        }
+    }
+    std::wstring command = L"\"" + edge + L"\" --app=\"" + url + L"\" --user-data-dir=\"" + temp +
+                           L"wowtype-edge-profile\" --no-first-run --no-default-browser-check --disable-sync "
+                           L"--window-size=800,400 --window-position=100,380";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof startup;
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &process)) {
+        check(false, "起 Edge");
+        return;
+    }
+    for (int i = 0; i < 60 && !g_edge; ++i) {
+        EnumWindows(findEdge, 0);
+        pump(500);
+    }
+    check(g_edge != nullptr, "Edge 的窗口出来了");
+    if (!g_edge) {
+        return;
+    }
+    pump(2000);
+    RECT r{};
+    GetWindowRect(g_edge, &r);
+    bringToFront(g_edge);
+    clickAt((r.left + r.right) / 2, r.top + 120);
+    // 用户的切法：Win + 空格在键盘列表里往下切，直到打字时出来的是 WowType 的候选框（不是系统自带的微软拼音）
+    bool wowtype = false;
+    for (int attempt = 0; attempt < 5 && !wowtype; ++attempt) {
+        bringToFront(g_edge);
+        typeKeys("ni");
+        pump(600);
+        wowtype = candidatesShown();
+        tap(VK_ESCAPE);
+        edgeClear();
+        if (!wowtype) {
+            winSpace();
+        }
+    }
+    check(wowtype, "Edge 里用 Win + 空格切到了 WowType（打字时出来的是 WowType 的候选框）");
+    if (wowtype) {
+        // 词库在 Edge 的进程里另载一份：等一会儿
+        bool typed = false;
+        for (int attempt = 0; attempt < 20 && !typed; ++attempt) {
+            edgeClear();
+            typeKeys("nihao ");
+            pump(500);
+            typed = edgeText() == L"你好";
+            if (!typed) {
+                pump(1500);
+            }
+        }
+        check(typed, "Edge（Chromium）里 nihao 空格 → 你好", edgeText());
+        edgeClear();
+        typeKeys("shi");
+        pump(500);
+        RECT box{};
+        const bool shown = candidatesShown() && GetWindowRect(candidateWindow(), &box);
+        check(shown && box.top >= r.top && box.top <= r.bottom + 200, "Edge 里候选框在输入框附近");
+        tap('2');
+        pump(400);
+        check(edgeText().size() == 1, "Edge 里数字选候选", edgeText());
+        edgeClear();
+        typeKeys("nihao,");
+        pump(500);
+        check(edgeText() == L"你好，", "Edge 里打字途中按逗号", edgeText());
+    }
+    PostMessageW(g_edge, WM_CLOSE, 0, 0);
+    if (WaitForSingleObject(process.hProcess, 5000) == WAIT_TIMEOUT) {
+        TerminateProcess(process.hProcess, 0);
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+}
+
 LRESULT CALLBACK proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_DESTROY) {
         PostQuitMessage(0);
@@ -170,10 +381,9 @@ int main() {
         }
     }
     // 这个线程上先起 TSF（输入框会用同一个线程管理器），再把这个进程的输入法切到 WowType
-    ComPtr<ITfThreadMgr> threadMgr;
     TfClientId client = TF_CLIENTID_NULL;
-    if (SUCCEEDED(CoCreateInstance(CLSID_TF_ThreadMgr, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&threadMgr)))) {
-        threadMgr->Activate(&client);
+    if (SUCCEEDED(CoCreateInstance(CLSID_TF_ThreadMgr, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&g_threadMgr)))) {
+        g_threadMgr->Activate(&client);
     }
     ComPtr<ITfInputProcessorProfileMgr> profiles;
     HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles));
@@ -306,8 +516,10 @@ int main() {
     // 单按 Shift 切英文：字母原样进输入框；再按一下切回中文
     clear();
     focus();
+    check(langBarText() == L"中", "任务栏的输入指示器：中", langBarText());
     tap(VK_LSHIFT);
     pump(300);
+    check(langBarText() == L"英", "单按 Shift 以后任务栏的输入指示器：英", langBarText());
     typeKeys("abc ");
     pump(200);
     check(text() == L"abc ", "单按 Shift 切英文，字母原样上屏", text());
@@ -316,6 +528,7 @@ int main() {
     typeKeys("nihao ");
     pump(300);
     check(text() == L"abc 你好", "再单按 Shift 切回中文", text());
+    check(langBarText() == L"中", "切回来以后任务栏的输入指示器：中", langBarText());
 
     // 打到一半点了别处（失去焦点）：打的字母原样上屏（和 macOS 一样）
     clear();
@@ -328,8 +541,35 @@ int main() {
     pump(200);
     check(text() == L"ceshi" || text() == L"测试", "打到一半失去焦点：不会留下编辑区", text());
 
+    // RichEdit（TSF 原生的输入框，写字板、很多应用的富文本框用它）
+    if (LoadLibraryW(L"msftedit.dll")) {
+        HWND plain = g_edit;
+        ShowWindow(plain, SW_HIDE);
+        g_edit = CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE, 10, 10, 600, 160,
+                                 g_window, nullptr, GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(g_edit, EM_SETEDITSTYLE, SES_USECTF, SES_USECTF);
+        focus();
+        clear();
+        focus();
+        typeKeys("nihao ");
+        pump(400);
+        check(text() == L"你好", "RichEdit 里 nihao 空格 → 你好", text());
+        typeKeys("shi");
+        pump(300);
+        check(candidatesShown(), "RichEdit 里打字途中候选框出来了");
+        tap(VK_RETURN);
+        pump(300);
+        check(text() == L"你好shi", "RichEdit 里回车上屏原始字母", text());
+        DestroyWindow(g_edit);
+        g_edit = plain;
+    }
+
     DestroyWindow(g_window);
-    pump(200);
+    pump(500);
+
+    // Edge：另一个进程，用户的切法（Win + 空格）
+    edgeTest();
+
     std::printf(g_failures ? "\n%d 项没过\n" : "\nwindows typing ok\n", g_failures);
     CoUninitialize();
     return g_failures;
