@@ -167,20 +167,69 @@ int main() {
             }
         }
     }
-    // 把这个进程的输入法切到 WowType（简体中文下的 WowType 配置）
+    // 这个线程上先起 TSF（输入框会用同一个线程管理器），再把这个进程的输入法切到 WowType
+    ComPtr<ITfThreadMgr> threadMgr;
+    TfClientId client = TF_CLIENTID_NULL;
+    if (SUCCEEDED(CoCreateInstance(CLSID_TF_ThreadMgr, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&threadMgr)))) {
+        threadMgr->Activate(&client);
+    }
     ComPtr<ITfInputProcessorProfileMgr> profiles;
     HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles));
     check(SUCCEEDED(hr), "建 ITfInputProcessorProfileMgr");
     if (FAILED(hr)) {
         return 1;
     }
-    hr = profiles->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR, kLangId, kClsid, kProfile, nullptr,
-                                   TF_IPPMF_FORPROCESS | TF_IPPMF_ENABLEPROFILE | TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE);
-    check(SUCCEEDED(hr), "切到 WowType", std::to_wstring(static_cast<unsigned long>(hr)));
-    pump(500);
-    TF_INPUTPROCESSORPROFILE active{};
-    const bool gotActive = SUCCEEDED(profiles->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &active));
-    check(gotActive && IsEqualCLSID(active.clsid, kClsid), "现在用的是 WowType");
+    ComPtr<ITfInputProcessorProfiles> legacy;
+    profiles.As(&legacy);
+
+    // 诊断：装了哪些键盘布局、WowType 的配置在不在、开没开
+    {
+        HKL layouts[32] = {};
+        const int n = GetKeyboardLayoutList(32, layouts);
+        std::printf("键盘布局：");
+        for (int i = 0; i < n; ++i) {
+            std::printf(" %08llx", static_cast<unsigned long long>(reinterpret_cast<UINT_PTR>(layouts[i])));
+        }
+        std::printf("\n");
+        TF_INPUTPROCESSORPROFILE info{};
+        if (SUCCEEDED(profiles->GetProfile(TF_PROFILETYPE_INPUTPROCESSOR, kLangId, kClsid, kProfile, nullptr, &info))) {
+            std::printf("WowType 配置：flags=%lx（1 是开着）\n", static_cast<unsigned long>(info.dwFlags));
+        } else {
+            std::printf("WowType 配置：取不到\n");
+        }
+        std::fflush(stdout);
+    }
+
+    const auto isActive = [&] {
+        TF_INPUTPROCESSORPROFILE active{};
+        return SUCCEEDED(profiles->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &active)) &&
+               IsEqualCLSID(active.clsid, kClsid);
+    };
+    // 一个一个试系统给的几种切法，切上了就停
+    const auto attempt = [&](const char *how, HRESULT result) {
+        pump(300);
+        std::printf("  %s：hr=%08lx，现在%s WowType\n", how, static_cast<unsigned long>(result), isActive() ? "是" : "不是");
+        std::fflush(stdout);
+        return isActive();
+    };
+    bool switched = attempt("ActivateProfile", profiles->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR, kLangId, kClsid,
+                                                                          kProfile, nullptr,
+                                                                          TF_IPPMF_FORPROCESS | TF_IPPMF_ENABLEPROFILE |
+                                                                              TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE));
+    if (!switched && legacy) {
+        legacy->EnableLanguageProfile(kClsid, kLangId, kProfile, TRUE);
+        legacy->ChangeCurrentLanguage(kLangId);
+        switched = attempt("ActivateLanguageProfile", legacy->ActivateLanguageProfile(kClsid, kLangId, kProfile));
+    }
+    if (!switched) {
+        // 先把这个进程的键盘布局换成简体中文，再切
+        const HKL chinese = LoadKeyboardLayoutW(L"00000804", KLF_ACTIVATE | KLF_SETFORPROCESS);
+        std::printf("  LoadKeyboardLayout(00000804)：%p\n", static_cast<void *>(chinese));
+        switched = attempt("换了布局以后 ActivateProfile",
+                           profiles->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR, kLangId, kClsid, kProfile, nullptr,
+                                                     TF_IPPMF_FORPROCESS | TF_IPPMF_ENABLEPROFILE));
+    }
+    check(switched, "切到 WowType");
     focus();
 
     // 词库在后台载入：先按一个拼音试试，出来的还是字母就是还没载好，等一会儿再试（最多 60 秒）
