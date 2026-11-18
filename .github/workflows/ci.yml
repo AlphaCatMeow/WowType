@@ -140,11 +140,26 @@ jobs:
           if (Test-Path $clsid) { throw '卸载以后 CLSID 还在' }
           if (Test-Path -LiteralPath $link) { throw '卸载以后开始菜单里还有快捷方式' }
           if (Test-Path "$tip\LanguageProfile\0x00000804\{8106DB80-2DC6-4558-B368-86D26F78EC68}") { throw '卸载以后 TSF 里还有这个输入法' }
+      - name: ARM64：编核心和 DLL、打 zip（没有 ARM64 的 runner，只编不跑）
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          rustup target add aarch64-pc-windows-msvc
+          cargo build --release --locked -p wowtype-core --target aarch64-pc-windows-msvc --target-dir target/windows
+          cmake -S windows -B build/windows-arm64 -A ARM64 -DWOWTYPE_WINDOWS_TESTS=OFF \
+            -DWOWTYPE_CORE_LIB="$(pwd -W)/target/windows/aarch64-pc-windows-msvc/release/wowtype_core.lib"
+          cmake --build build/windows-arm64 --config Release
+          WOWTYPE_WINDOWS_ARCH=arm64 windows/package.sh dist/data build/windows-arm64/Release/wowtype.dll dist/windows
       - uses: actions/upload-artifact@v4
         with:
           # 开发、试用：解开以后以管理员身份运行 install.ps1（docs/WINDOWS.md）
           name: windows-x64
-          path: dist/windows/*.zip
+          path: dist/windows/*-x64.zip
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-arm64
+          path: dist/windows/*-arm64.zip
           retention-days: 7
 
   macos-app:

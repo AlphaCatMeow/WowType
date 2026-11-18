@@ -119,7 +119,9 @@ DLL 装进每个应用的进程里，载入以后不会卸载：换 DLL 前先�
   或者在 Linux 上用设置界面下载）。没放时按语音键会提示去设置里下载，Windows 上就是这样放
 - 打字统计（`TypingStats`）记是记了（`stats.json`，按键按扫描码记，ABI 1.13 起核心认 Windows 的键码），但还没有看统计的界面
 - 本地翻译模型、整句增强模型的一键下载、导入（文件自己放进数据目录就能用）
-- ARM64、32 位、代码签名
+- ARM64 只编不跑：CI 编出 `WowType-<版本>-windows-arm64.zip`（`windows-arm64` artifact），但没有 ARM64 的机器试过；
+  ARM64 的 Windows 上，原生 ARM64 的应用载入 ARM64 的 DLL，模拟运行的 x64 应用要 x64 的 DLL，两个怎么一起装还没做
+- 32 位、代码签名
 - 全屏游戏里的候选框（`ITfUIElement`，让游戏自己画）
 
 ## 没在真机上验证的

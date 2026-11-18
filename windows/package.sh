@@ -15,12 +15,14 @@ DLL=${2:?用法：windows/package.sh <数据目录> <wowtype.dll> [输出目录]
 SETTINGS=$(dirname "$DLL")/wowtype-settings.exe
 OUT=${3:-dist/windows}
 VERSION=${WOWTYPE_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' core/Cargo.toml | head -1)}
+# x64 或 arm64（DLL 要和应用进程一样的架构）
+ARCH=${WOWTYPE_WINDOWS_ARCH:-x64}
 
 for f in lexicon.tsv english.txt wubi86.tsv WUBI-LICENSE WUBI-AUTHORS WUBI-SOURCE.txt; do
   [[ -f "$DATA/$f" ]] || { echo "数据目录里没有 $f" >&2; exit 1; }
 done
 
-name=WowType-$VERSION-windows-x64
+name=WowType-$VERSION-windows-$ARCH
 pkg=$OUT/$name
 rm -rf "$pkg" "$OUT/$name.zip"
 mkdir -p "$pkg/data"
@@ -41,7 +43,7 @@ cp "$DATA/WUBI-AUTHORS" "$pkg/data/DATA-WUBI-AUTHORS"
 cp "$DATA/WUBI-SOURCE.txt" "$pkg/data/DATA-WUBI-SOURCE.txt"
 # 说明用 CRLF，记事本老版本也能看
 { printf '\xef\xbb\xbf'; sed 's/$/\r/'; } > "$pkg/README.txt" <<EOF
-WowType ${VERSION}（Windows x64，开发中的第一阶段，没有在很多机器上试过）
+WowType ${VERSION}（Windows ${ARCH}，开发中的第一阶段，没有在很多机器上试过）
 
 安装：以管理员身份打开 PowerShell，进到这个目录，运行
     powershell -ExecutionPolicy Bypass -File .\install.ps1
