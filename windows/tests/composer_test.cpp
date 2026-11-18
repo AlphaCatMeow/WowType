@@ -17,6 +17,7 @@
 
 #include "composer.h"
 #include "config.h"
+#include "custom_words.h"
 #include "keys.h"
 #include "utf.h"
 #include "voice.h"
@@ -327,6 +328,42 @@ int main(int argc, char **argv) {
         const std::string q = quoted.serialized(nullptr);
         check(Config::parse(q) == quoted && q.find("Lexicon=\"C:\\\\词库 \\\"新\\\".tsv\"") != std::string::npos,
               "带空格、引号的值加引号转义", q);
+    }
+
+    // ---------------------------------------------------------------- custom.tsv（和 macOS 的 CustomWords 同名用例）
+    {
+        using E = CustomWords::Entry;
+        const std::string text = "# 我的常用语\r\nni hao\t你好呀\t100\nmail\thello@example.com\n\n坏行\nzhang san\t \nbjdx\t北京大学\n";
+        CustomWords words{std::optional<std::string>(text)};
+        check(words.entries() == std::vector<E>{{"ni hao", "你好呀"}, {"mail", "hello@example.com"}, {"bjdx", "北京大学"}},
+              "读自定义词");
+        check(words.text() == text, "没改：原样写回去（注释、频次、坏行都在）", words.text());
+        check(CustomWords(std::optional<std::string>("\xEF\xBB\xBFmail\ta@b.c")).text() == "mail\ta@b.c\n",
+              "去掉 BOM，补上末尾换行");
+        check(!words.add("gs", "公司名"), "加新词");
+        check(words.add("ni hao ya", "你好呀"), "加已有的词：换编码");
+        check(words.text() == "# 我的常用语\r\nmail\thello@example.com\n\n坏行\nzhang san\t \nbjdx\t北京大学\ngs\t公司名\nni hao ya\t你好呀\n",
+              "换编码的词挪到最后", words.text());
+        check(words.remove("北京大学") == std::vector<E>{{"bjdx", "北京大学"}} && words.remove("没有").empty(), "删词");
+        const auto incoming = CustomWords::parseImport(
+            "# 注释\nNi Hǎo Ya\t你好呀\nzhang'san\t张三\nMAIL\thello@example.com\n123\t数字\nxyz?\t问号\n");
+        check(incoming == std::vector<E>{{"ni hao ya", "你好呀"}, {"zhang san", "张三"}, {"mail", "hello@example.com"}},
+              "导入时整理编码，不对的不要");
+        CustomWords imported{std::optional<std::string>("mail\thello@example.com\nni hao\t你好呀\n")};
+        const auto counts = imported.merge(incoming);
+        check(counts.first == 1 && counts.second == 1, "导入：新增 1 个，更新 1 个，一样的不算");
+        const CustomWords empty{std::nullopt};
+        check(empty.entries().empty() && empty.text() == std::string(CustomWords::header()) + "\n", "新文件只有说明");
+        CustomWords fresh = empty;
+        fresh.add("gs", "公司");
+        check(CustomWords(std::optional<std::string>(fresh.text())).entries() == std::vector<E>{{"gs", "公司"}},
+              "新文件加词读回来");
+        check(CustomWords::isValidWord("四川省\\n宜宾市") && !CustomWords::isValidWord("a\tb") &&
+                  !CustomWords::isValidWord(""),
+              "词里不能有 TAB、换行");
+        check(CustomWords::shown("四川省\\n宜宾市") == "四川省⏎宜宾市", "界面上 \\n 画成 ⏎");
+        check(CustomWords::guessPinyin("你好", "ni hao\t你好\t100\n") == std::optional<std::string>("ni hao"),
+              "从词库猜拼音");
     }
 
     const auto fresh = [&](Config config = Config{}) {

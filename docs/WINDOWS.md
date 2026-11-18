@@ -109,9 +109,10 @@ DLL 装进每个应用的进程里，载入以后不会卸载：换 DLL 前先�
 
 这些在 Linux、macOS 上有，Windows 上还没做（`spec/config.json` 里对应的项 `platforms` 没写 `windows`，读到了也不管）：
 
-- 设置窗口（`wowtype-settings.exe`，`windows/src/settings/`）有了基本的：常规、候选、输入、模糊音、标点与表情、语音、翻译七页，
+- 设置窗口（`wowtype-settings.exe`，`windows/src/settings/`）有了基本的：常规、候选、输入、模糊音、标点与表情、语音、翻译、自定义词八页，
   按 `spec/config.json` 里 Windows 认的项生成，只写改过的键（和 macOS 一样，别处改的、注释、不认识的键留着），API Key 存 `translate.key`。
-  还没有的：自定义词的编辑页（按钮用记事本打开 `custom.tsv`）、整句增强模型导入、语音模型和本地翻译模型的下载、看统计、诊断信息
+  「自定义词」页能加词（照词库自动猜拼音）、删词、导入，规则和 macOS 的 `CustomWords` 一样（`windows/src/common/custom_words.*`）。
+  还没有的：整句增强模型导入、语音模型和本地翻译模型的下载、看统计、诊断信息
 - 图形安装程序（现在是 zip + `install.ps1`，还不进 Release）和自动更新（`CheckUpdate`、`BetaUpdates`）
 - 语音模型的一键下载：语音输入本身有（按住 `VoiceKey`，默认右 Alt，和另两端一样），但模型要自己放进数据目录的 `wtlocal\`
   （从 Linux 的 `~/.local/share/wowtype/wtlocal`、macOS 的 `~/Library/Application Support/WowType/wtlocal` 拷过来，

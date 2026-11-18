@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <commctrl.h>
+#include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
 
@@ -20,6 +21,7 @@
 #include <vector>
 
 #include "config.h"
+#include "custom_words.h"
 #include "utf.h"
 
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -35,6 +37,12 @@ constexpr int kIdClose = 102;
 constexpr int kIdCustom = 103;
 constexpr int kIdDataDir = 104;
 constexpr int kIdApiKey = 105;
+constexpr int kIdWordList = 106;
+constexpr int kIdWord = 107;
+constexpr int kIdCode = 108;
+constexpr int kIdWordAdd = 109;
+constexpr int kIdWordRemove = 110;
+constexpr int kIdWordImport = 111;
 constexpr int kIdFirstSetting = 1000;
 
 std::wstring widen(const std::string &s) {
@@ -169,6 +177,15 @@ std::wstring valueName(const std::string &key, const std::string &value) {
     return it == names.end() ? widen(value) : it->second;
 }
 
+/// 设置窗口在安装目录里，词库在旁边的 data\（猜拼音用）。
+std::wstring installDir() {
+    wchar_t buffer[MAX_PATH * 2] = {};
+    const DWORD n = GetModuleFileNameW(nullptr, buffer, static_cast<DWORD>(std::size(buffer)));
+    std::wstring path(buffer, n);
+    const auto slash = path.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? std::wstring() : path.substr(0, slash);
+}
+
 std::wstring dataDir() {
     wchar_t buffer[MAX_PATH] = {};
     if (GetEnvironmentVariableW(L"WOWTYPE_DATA_DIR", buffer, MAX_PATH) > 0) {
@@ -232,6 +249,14 @@ private:
     Config fromControls() const;
     bool save();
     int scale(int dip) const { return MulDiv(dip, static_cast<int>(dpi_), 96); }
+    int customPage() const { return static_cast<int>(pages().size()); }
+    // 自定义词页
+    void loadWords();
+    bool saveWords();
+    void addWord();
+    void removeWord();
+    void importWords();
+    void wordChanged();
     HWND child(const wchar_t *cls, const wchar_t *text, DWORD style, int id);
 
     HINSTANCE instance_ = nullptr;
@@ -244,6 +269,18 @@ private:
     HWND custom_ = nullptr;
     HWND dataDirButton_ = nullptr;
     HWND status_ = nullptr;
+    HWND wordList_ = nullptr;
+    HWND wordLabel_ = nullptr;
+    HWND word_ = nullptr;
+    HWND codeLabel_ = nullptr;
+    HWND code_ = nullptr;
+    HWND addWord_ = nullptr;
+    HWND removeWord_ = nullptr;
+    HWND importWords_ = nullptr;
+    CustomWords words_{std::nullopt};
+    std::optional<std::string> lexicon_;
+    bool codeTouched_ = false;
+    bool settingCode_ = false;
     HFONT font_ = nullptr;
     UINT dpi_ = 96;
     std::vector<Row> rows_;
@@ -332,7 +369,30 @@ void SettingsWindow::build() {
     }
     apiKeyLabel_ = child(L"STATIC", L"API Key（存在 translate.key，不写进设置文件）", SS_LEFT, 0);
     apiKey_ = child(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_PASSWORD | WS_TABSTOP, kIdApiKey);
-    custom_ = child(L"BUTTON", L"自定义词…", BS_PUSHBUTTON | WS_VISIBLE | WS_TABSTOP, kIdCustom);
+    {
+        TCITEMW item{};
+        item.mask = TCIF_TEXT;
+        item.pszText = const_cast<wchar_t *>(L"自定义词");
+        SendMessageW(tabs_, TCM_INSERTITEMW, pages().size(), reinterpret_cast<LPARAM>(&item));
+    }
+    wordList_ = child(WC_LISTVIEWW, L"", WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_TABSTOP,
+                      kIdWordList);
+    SendMessageW(wordList_, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, LVS_EX_FULLROWSELECT);
+    for (int i = 0; i < 2; ++i) {
+        LVCOLUMNW column{};
+        column.mask = LVCF_TEXT | LVCF_WIDTH;
+        column.pszText = const_cast<wchar_t *>(i == 0 ? L"编码" : L"词");
+        column.cx = scale(i == 0 ? 160 : 300);
+        SendMessageW(wordList_, LVM_INSERTCOLUMNW, i, reinterpret_cast<LPARAM>(&column));
+    }
+    wordLabel_ = child(L"STATIC", L"词（换行写成 \\n）", SS_LEFT, 0);
+    word_ = child(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, kIdWord);
+    codeLabel_ = child(L"STATIC", L"编码（拼音，自动猜；也可以是 mail 这类字母）", SS_LEFT, 0);
+    code_ = child(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, kIdCode);
+    addWord_ = child(L"BUTTON", L"添加", BS_PUSHBUTTON | WS_TABSTOP, kIdWordAdd);
+    removeWord_ = child(L"BUTTON", L"删除选中的", BS_PUSHBUTTON | WS_TABSTOP, kIdWordRemove);
+    importWords_ = child(L"BUTTON", L"导入…", BS_PUSHBUTTON | WS_TABSTOP, kIdWordImport);
+    custom_ = child(L"BUTTON", L"用记事本编辑", BS_PUSHBUTTON | WS_TABSTOP, kIdCustom);
     dataDirButton_ = child(L"BUTTON", L"打开数据目录", BS_PUSHBUTTON | WS_VISIBLE | WS_TABSTOP, kIdDataDir);
     status_ = child(L"STATIC", L"", SS_LEFT | WS_VISIBLE, 0);
     save_ = child(L"BUTTON", L"保存", BS_DEFPUSHBUTTON | WS_VISIBLE | WS_TABSTOP, kIdSave);
@@ -380,12 +440,25 @@ void SettingsWindow::layout() {
     MoveWindow(apiKeyLabel_, margin * 2, y[translatePage] + scale(4), scale(250), scale(22), FALSE);
     MoveWindow(apiKey_, margin * 2 + scale(260), y[translatePage], width - margin * 4 - scale(260), scale(24), FALSE);
     bottom = std::max(bottom, y[translatePage] + rowHeight);
+    // 自定义词页：上面是列表，下面是加词的两个框和按钮
+    bottom = std::max(bottom, top + scale(360));
+    const int inner = width - margin * 4;
+    const int formTop = bottom - rowHeight * 3;
+    MoveWindow(wordList_, margin * 2, top, inner, formTop - top - scale(8), FALSE);
+    MoveWindow(wordLabel_, margin * 2, formTop + scale(4), scale(250), scale(22), FALSE);
+    MoveWindow(word_, margin * 2 + scale(260), formTop, inner - scale(260), scale(24), FALSE);
+    MoveWindow(codeLabel_, margin * 2, formTop + rowHeight + scale(4), scale(250), scale(22), FALSE);
+    MoveWindow(code_, margin * 2 + scale(260), formTop + rowHeight, inner - scale(260), scale(24), FALSE);
+    const int buttonRow = formTop + rowHeight * 2;
+    MoveWindow(addWord_, margin * 2, buttonRow, scale(80), scale(26), FALSE);
+    MoveWindow(removeWord_, margin * 2 + scale(88), buttonRow, scale(100), scale(26), FALSE);
+    MoveWindow(importWords_, margin * 2 + scale(196), buttonRow, scale(80), scale(26), FALSE);
+    MoveWindow(custom_, margin * 2 + scale(284), buttonRow, scale(110), scale(26), FALSE);
     const int tabHeight = bottom - tabTop + margin;
     MoveWindow(tabs_, margin, tabTop, width - margin * 2, tabHeight, FALSE);
     const int buttons = tabTop + tabHeight + margin;
-    MoveWindow(custom_, margin, buttons, scale(100), scale(28), FALSE);
-    MoveWindow(dataDirButton_, margin + scale(108), buttons, scale(110), scale(28), FALSE);
-    MoveWindow(status_, margin + scale(226), buttons + scale(5), width - scale(226) - margin * 2 - scale(176), scale(22), FALSE);
+    MoveWindow(dataDirButton_, margin, buttons, scale(110), scale(28), FALSE);
+    MoveWindow(status_, margin + scale(118), buttons + scale(5), width - scale(118) - margin * 2 - scale(176), scale(22), FALSE);
     MoveWindow(save_, width - margin - scale(168), buttons, scale(80), scale(28), FALSE);
     MoveWindow(close_, width - margin - scale(80), buttons, scale(80), scale(28), FALSE);
     RECT r{0, 0, width, buttons + scale(28) + margin};
@@ -405,6 +478,12 @@ void SettingsWindow::showPage(int page) {
     const int translate = static_cast<int>(pages().size()) - 1;
     ShowWindow(apiKeyLabel_, page == translate ? SW_SHOW : SW_HIDE);
     ShowWindow(apiKey_, page == translate ? SW_SHOW : SW_HIDE);
+    for (HWND h : {wordList_, wordLabel_, word_, codeLabel_, code_, addWord_, removeWord_, importWords_, custom_}) {
+        ShowWindow(h, page == customPage() ? SW_SHOW : SW_HIDE);
+    }
+    if (page == customPage()) {
+        loadWords();
+    }
 }
 
 void SettingsWindow::load() {
@@ -488,6 +567,112 @@ bool SettingsWindow::save() {
     return true;
 }
 
+void SettingsWindow::loadWords() {
+    words_ = CustomWords(readFile(dataDir() + L"\\custom.tsv"));
+    SendMessageW(wordList_, LVM_DELETEALLITEMS, 0, 0);
+    int i = 0;
+    for (const auto &entry : words_.entries()) {
+        const std::wstring code = widen(entry.code);
+        const std::wstring word = widen(CustomWords::shown(entry.word));
+        LVITEMW item{};
+        item.mask = LVIF_TEXT;
+        item.iItem = i;
+        item.pszText = const_cast<wchar_t *>(code.c_str());
+        SendMessageW(wordList_, LVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&item));
+        item.iSubItem = 1;
+        item.pszText = const_cast<wchar_t *>(word.c_str());
+        SendMessageW(wordList_, LVM_SETITEMTEXTW, i, reinterpret_cast<LPARAM>(&item));
+        ++i;
+    }
+}
+
+bool SettingsWindow::saveWords() {
+    CreateDirectoryW(dataDir().c_str(), nullptr);
+    if (!writeFile(dataDir() + L"\\custom.tsv", words_.text())) {
+        SetWindowTextW(status_, L"保存失败：写不了 custom.tsv");
+        return false;
+    }
+    loadWords();
+    return true;
+}
+
+void SettingsWindow::wordChanged() {
+    // 编码框没自己改过：照词库猜拼音（和 Linux、macOS 设置一样，词库没有的字猜不出就空着）
+    if (codeTouched_) {
+        return;
+    }
+    if (!lexicon_) {
+        lexicon_ = readFile(installDir() + L"\\data\\lexicon.tsv").value_or("");
+    }
+    wchar_t buffer[1024] = {};
+    GetWindowTextW(word_, buffer, 1024);
+    const auto guess = CustomWords::guessPinyin(narrow(buffer), *lexicon_);
+    settingCode_ = true;
+    SetWindowTextW(code_, guess ? widen(*guess).c_str() : L"");
+    settingCode_ = false;
+}
+
+void SettingsWindow::addWord() {
+    wchar_t buffer[1024] = {};
+    GetWindowTextW(word_, buffer, 1024);
+    const std::string word = narrow(buffer);
+    GetWindowTextW(code_, buffer, 1024);
+    const std::string rawCode = narrow(buffer);
+    if (!CustomWords::isValidWord(word)) {
+        SetWindowTextW(status_, L"词不能空，也不能有 TAB（换行写成 \\n）");
+        return;
+    }
+    const auto code = CustomWords::normalizeCode(rawCode);
+    if (!code) {
+        SetWindowTextW(status_, L"编码要是拼音（ni hao）或者字母（mail）");
+        return;
+    }
+    const bool replaced = words_.add(*code, word);
+    if (saveWords()) {
+        SetWindowTextW(word_, L"");
+        settingCode_ = true;
+        SetWindowTextW(code_, L"");
+        settingCode_ = false;
+        codeTouched_ = false;
+        SetWindowTextW(status_, replaced ? L"换了编码，下一次按键时生效" : L"加好了，下一次按键时生效");
+    }
+}
+
+void SettingsWindow::removeWord() {
+    const auto selected = static_cast<int>(SendMessageW(wordList_, LVM_GETNEXTITEM, static_cast<WPARAM>(-1), LVNI_SELECTED));
+    const auto entries = words_.entries();
+    if (selected < 0 || static_cast<std::size_t>(selected) >= entries.size()) {
+        SetWindowTextW(status_, L"先在列表里选一个词");
+        return;
+    }
+    words_.remove(entries[static_cast<std::size_t>(selected)].word);
+    if (saveWords()) {
+        SetWindowTextW(status_, L"删掉了，下一次按键时生效");
+    }
+}
+
+void SettingsWindow::importWords() {
+    wchar_t file[MAX_PATH * 2] = {};
+    OPENFILENAMEW open{};
+    open.lStructSize = sizeof open;
+    open.hwndOwner = hwnd_;
+    open.lpstrFilter = L"自定义词（*.tsv;*.txt）\0*.tsv;*.txt\0所有文件\0*.*\0";
+    open.lpstrFile = file;
+    open.nMaxFile = static_cast<DWORD>(std::size(file));
+    open.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if (!GetOpenFileNameW(&open)) {
+        return;
+    }
+    const auto text = readFile(file);
+    const auto incoming = CustomWords::parseImport(text.value_or(""));
+    const auto counts = words_.merge(incoming);
+    if (saveWords()) {
+        SetWindowTextW(status_, (L"导入：新增 " + std::to_wstring(counts.first) + L" 个，更新 " +
+                                 std::to_wstring(counts.second) + L" 个")
+                                    .c_str());
+    }
+}
+
 LRESULT CALLBACK SettingsWindow::proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_NCCREATE) {
         auto *create = reinterpret_cast<CREATESTRUCTW *>(lParam);
@@ -525,6 +710,25 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
             ShellExecuteW(hwnd_, L"open", L"notepad.exe", path.c_str(), nullptr, SW_SHOWNORMAL);
             return 0;
         }
+        case kIdWordAdd:
+            addWord();
+            return 0;
+        case kIdWordRemove:
+            removeWord();
+            return 0;
+        case kIdWordImport:
+            importWords();
+            return 0;
+        case kIdWord:
+            if (HIWORD(wParam) == EN_CHANGE) {
+                wordChanged();
+            }
+            return 0;
+        case kIdCode:
+            if (HIWORD(wParam) == EN_CHANGE && !settingCode_) {
+                codeTouched_ = GetWindowTextLengthW(code_) > 0;
+            }
+            return 0;
         case kIdDataDir:
             CreateDirectoryW(dataDir().c_str(), nullptr);
             ShellExecuteW(hwnd_, L"open", dataDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
