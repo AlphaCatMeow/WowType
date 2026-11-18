@@ -157,6 +157,16 @@ int main() {
                              600, 160, g_window, nullptr, wc.hInstance, nullptr);
     focus();
 
+    // 安装程序已经把 WowType 加进了当前用户的键盘列表；再加一次也没关系（runner 上可能是别的用户装的）
+    {
+        using InstallLayoutOrTipFn = BOOL(WINAPI *)(LPCWSTR, DWORD);
+        if (HMODULE input = LoadLibraryW(L"input.dll")) {
+            if (const auto install = reinterpret_cast<InstallLayoutOrTipFn>(GetProcAddress(input, "InstallLayoutOrTip"))) {
+                check(install(L"0804:{A895B83F-8F60-4990-A48F-17821E3BC14A}{8106DB80-2DC6-4558-B368-86D26F78EC68}", 0) != FALSE,
+                      "WowType 在键盘列表里");
+            }
+        }
+    }
     // 把这个进程的输入法切到 WowType（简体中文下的 WowType 配置）
     ComPtr<ITfInputProcessorProfileMgr> profiles;
     HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles));
@@ -165,7 +175,7 @@ int main() {
         return 1;
     }
     hr = profiles->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR, kLangId, kClsid, kProfile, nullptr,
-                                   TF_IPPMF_FORPROCESS | TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE);
+                                   TF_IPPMF_FORPROCESS | TF_IPPMF_ENABLEPROFILE | TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE);
     check(SUCCEEDED(hr), "切到 WowType", std::to_wstring(static_cast<unsigned long>(hr)));
     pump(500);
     TF_INPUTPROCESSORPROFILE active{};

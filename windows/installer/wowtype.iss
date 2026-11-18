@@ -87,7 +87,7 @@ WizardInstalling=正在安装
 InstallingLabel=正在把 [name] 装到这台电脑上，请稍等。
 FinishedHeadingLabel=装好了
 FinishedLabelNoIcons=[name] 装好了。%n%n按 Win + 空格 切到 WowType 就能打字；任务栏上的「中」按钮右键能打开设置。
-FinishedLabel=[name] 装好了。%n%n按 Win + 空格 切到 WowType 就能打字；开始菜单里的「WowType 设置」能改设置。正在用着的应用重新打开以后用新装的版本。
+FinishedLabel=[name] 装好了，已经加进键盘列表。%n%n按 Win + 空格 切到 WowType 就能打字；开始菜单里的「WowType 设置」能改设置。正在用着的应用重新打开以后用新装的版本。
 ClickFinish=点「完成」关掉安装程序。
 FinishedRestartLabel=要重启电脑才能装完。现在重启吗？
 FinishedRestartMessage=要重启电脑才能装完。%n%n现在重启吗？
@@ -128,7 +128,12 @@ Source: "{#SourceDir}\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recur
 Name: "{autoprograms}\WowType 设置"; Filename: "{app}\wowtype-settings.exe"
 
 [Run]
+; 加进当前用户的键盘列表（没有中文就连中文一起加），Win + 空格就能切到；以装的人自己的身份，不是管理员的
+Filename: "{app}\wowtype-settings.exe"; Parameters: "--enable-input"; StatusMsg: "正在把 WowType 加进键盘列表……"; Flags: runasoriginaluser waituntilterminated
 Filename: "{app}\wowtype-settings.exe"; Description: "打开 WowType 设置"; Flags: postinstall nowait skipifsilent unchecked
+
+[UninstallRun]
+Filename: "{app}\wowtype-settings.exe"; Parameters: "--disable-input"; RunOnceId: "DisableInput"; Flags: runasoriginaluser waituntilterminated
 
 [UninstallDelete]
 Type: files; Name: "{app}\wowtype.dll.old-*"

@@ -1506,7 +1506,32 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
 
 } // namespace
 
+/// 把 WowType 加进（或移出）当前用户的键盘列表（「设置 → 时间和语言 → 语言」里中文下面的键盘），没有中文就连中文一起加。
+/// 安装程序装完、卸载前以原来的用户身份调（--enable-input / --disable-input），和 macOS 装完加进输入法、Linux 加进 fcitx5 一样。
+/// 用系统 input.dll 的 InstallLayoutOrTip（Windows 文档里给输入法安装程序用的）。
+int changeInputList(bool enable) {
+    using InstallLayoutOrTipFn = BOOL(WINAPI *)(LPCWSTR, DWORD);
+    HMODULE input = LoadLibraryW(L"input.dll");
+    const auto install =
+        input ? reinterpret_cast<InstallLayoutOrTipFn>(GetProcAddress(input, "InstallLayoutOrTip")) : nullptr;
+    if (!install) {
+        return 2;
+    }
+    // 0804:{文本服务 CLSID}{配置 GUID}（和 windows/src/tsf/globals.cpp 一样）
+    const wchar_t *tip = L"0804:{A895B83F-8F60-4990-A48F-17821E3BC14A}{8106DB80-2DC6-4558-B368-86D26F78EC68}";
+    constexpr DWORD kUninstall = 0x00000001; // ILOT_UNINSTALL
+    const BOOL ok = install(tip, enable ? 0 : kUninstall);
+    FreeLibrary(input);
+    return ok ? 0 : 1;
+}
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+    if (wcsstr(GetCommandLineW(), L"--enable-input")) {
+        return changeInputList(true);
+    }
+    if (wcsstr(GetCommandLineW(), L"--disable-input")) {
+        return changeInputList(false);
+    }
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     // 已经开着：切过去
     if (HWND existing = FindWindowW(kClassName, nullptr)) {

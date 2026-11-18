@@ -32,6 +32,10 @@ $dll = Join-Path $Target 'wowtype.dll'
 $startMenuLink = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\WowType 设置.lnk'
 
 if ($Uninstall) {
+    $settings = Join-Path $Target 'wowtype-settings.exe'
+    if (Test-Path $settings) {
+        Start-Process $settings -ArgumentList '--disable-input' -Wait
+    }
     if (Test-Path $dll) {
         Invoke-Regsvr32 @('/u', '/s', "`"$dll`"")
     }
@@ -65,6 +69,11 @@ foreach ($f in @('wowtype-settings.exe', 'install.ps1', 'LICENSE', 'README.txt')
 }
 
 Invoke-Regsvr32 @('/s', "`"$dll`"")
+# 加进当前用户的键盘列表（和安装程序一样）
+$settings = Join-Path $Target 'wowtype-settings.exe'
+if (Test-Path $settings) {
+    Start-Process $settings -ArgumentList '--enable-input' -Wait
+}
 # 开始菜单里放一个「WowType 设置」
 $settings = Join-Path $Target 'wowtype-settings.exe'
 if (Test-Path $settings) {

@@ -50,7 +50,8 @@ cmake --build build\windows --config Release
 
 **用安装程序**（推荐）：[Releases](https://github.com/Gloridust/WowType/releases) 里的 `WowType-<版本>-windows-x64-setup.exe`
 （Inno Setup，`windows/installer/wowtype.iss`），双击装，会问一次管理员权限。装到 `%ProgramFiles%\WowType`、用 `DllRegisterServer`
-注册、开始菜单放「WowType 设置」，「设置 → 应用」里能卸载（学到的词、设置留着）。升级直接装新版：正在用着输入法的应用锁着旧的
+注册、以装的人自己的身份把 WowType 加进键盘列表（系统 `input.dll` 的 `InstallLayoutOrTip`，没有中文就连中文一起加；
+和 macOS 装完加进输入法、Linux 加进 fcitx5 一样）、开始菜单放「WowType 设置」，「设置 → 应用」里能卸载（学到的词、设置留着）。升级直接装新版：正在用着输入法的应用锁着旧的
 `wowtype.dll`，安装程序把它改名换下来、装上新的，这些应用重开以后用新版；下次安装时删掉换下来的。没有代码签名：第一次运行时
 SmartScreen 会提示「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」。静默安装：`setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART`。
 CI 每次都在 runner 上静默装一遍、建一个文本服务对象、在 DLL 被用着时升级一遍、再卸载，检查注册表、开始菜单和卸载项；
