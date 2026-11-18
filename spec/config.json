@@ -15,7 +15,7 @@
     "fcitx5": "Linux 的 fcitx5 插件（C++）",
     "settings": "Linux 的设置界面 wowtype-config（Python）",
     "macos": "macOS 输入法外壳（Swift），设置窗口和输入法共用 Shared/Config.swift",
-    "windows": "Windows 输入法外壳（TSF，C++），见 docs/WINDOWS.md；第一阶段还没有设置界面、语音、检查更新、打字统计"
+    "windows": "Windows 输入法外壳（TSF，C++），见 docs/WINDOWS.md；第一阶段还没有设置界面、语音、检查更新"
   },
   "readRules": {
     "outOfRange": {
@@ -214,7 +214,7 @@
      "platforms": ["settings", "macos"],
      "note": "Beta 计划：检查更新也算 GitHub 上的预发布版（pre-release，v 开头的 tag），新功能先到、可能不稳定。关着时只认最新正式版（releases/latest）。关掉以后已经装上的预发布版不会退回，等正式版追上来再提示"},
     {"key": "TypingStats", "type": "bool", "default": false,
-     "platforms": ["fcitx5", "settings", "macos"],
+     "platforms": ["fcitx5", "settings", "macos", "windows"],
      "note": "打字统计（设置的「统计」页）。默认关：关着时什么都不记、不建 stats.json。打开以后只在本机按天记聚合计数（字数、各类字符数、活跃时长、每个键按了几次、输入模式和双拼方案的字数、候选位置），不记打的内容、拼音、按键顺序和时刻，密码框里的不算。清空：设置里「清除统计」（stats.clear 里的整数加一、删掉 stats.json），见 docs/CONFIG.md「打字统计」"},
     {"key": "Translate", "type": "bool", "default": false,
      "platforms": ["fcitx5", "settings", "macos", "windows"], "note": "互译（单按 Shift 或 TranslateModeKey 切到「译」）"},

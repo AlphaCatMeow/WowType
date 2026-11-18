@@ -213,6 +213,10 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr *threadMgr, TfClientId clientI
     composer_ = std::make_unique<Composer>(host.engine(), this);
     composer_->onCommit = [](const std::string &) { EngineHost::instance().didCommit(); };
     composer_->onForget = [] { EngineHost::instance().didForget(); };
+    composer_->onCommitStats = [this](const std::string &text, const std::string &source, const std::string &scheme,
+                                      int index) {
+        EngineHost::instance().recordCommit(text, source, scheme, index, around_.password);
+    };
     composer_->sampleClipboard = [] { EngineHost::instance().sampleClipboard(); };
     composer_->onTranslatePoll = [this](uint32_t) {
         if (window_) {
@@ -255,6 +259,7 @@ STDMETHODIMP TextService::Deactivate() {
         window_->hide();
     }
     host.save();
+    host.flushStats();
     if (langBar_) {
         ComPtr<ITfLangBarItemMgr> langBarMgr;
         if (threadMgr_ && SUCCEEDED(threadMgr_.As(&langBarMgr))) {
@@ -428,6 +433,13 @@ bool TextService::processKeyDown(ITfContext *context, WPARAM wParam, LPARAM lPar
     }
     const auto virtualKey = static_cast<UINT>(wParam);
     const bool repeat = (lParam & (1 << 30)) != 0;
+    if (!repeat) {
+        // 按键热力图（TypingStats 开着时）：扫描码，扩展键或上 0xE000；自动重复不算，密码框在下面读到以后才知道，
+        // 这里先按上一个键读到的算（和 macOS 看系统的安全输入一样，只是近似）
+        const uint32_t scan = (static_cast<uint32_t>(lParam) >> 16) & 0xFF;
+        const uint32_t code = scan | ((lParam & (1 << 24)) ? 0xE000u : 0u);
+        host.recordKey(code, around_.password);
+    }
     const Composer::Mode modeBefore = composer_->mode();
     if (isShift(wParam)) {
         // Shift 的按下交给会话判断单按；按住不放的自动重复不算（会话不重新计时）。修饰键永远交给应用
@@ -932,6 +944,7 @@ STDMETHODIMP TextService::OnKillThreadFocus() {
     if (window_) {
         window_->hide();
     }
+    EngineHost::instance().flushStats();
     return S_OK;
 }
 

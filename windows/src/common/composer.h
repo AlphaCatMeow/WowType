@@ -99,6 +99,9 @@ public:
     // ---- 回调（外壳挂上）
     /// 上屏里有引擎学到的选词时调用（frame->learned；外壳攒够次数存一次学习数据）。
     std::function<void(const std::string &)> onCommit;
+    /// 每次真正上屏时调用（text, source, scheme, candidateIndex），给打字统计用；只分类计数，不保存文字。
+    /// candidateIndex 是选中的候选位置（1 起），0 表示不是选候选（和 macOS 的 onCommitStats 一样）。
+    std::function<void(const std::string &, const std::string &, const std::string &, int)> onCommitStats;
     /// Ctrl+Delete 忘掉了学错的词以后调用（外壳马上存学习数据）。
     std::function<void()> onForget;
     /// 打开工具栏的剪贴板页时调用：外壳看一眼系统剪贴板，有新的交给 wowtype_clipboard_remember。
@@ -178,6 +181,8 @@ private:
     void refreshTranslate(const WowtypeFrame *frame);
     std::optional<CandidatePage> candidatePage(const WowtypeFrame *frame);
     std::string translateSignature(const WowtypeFrame *frame) const;
+    std::string statsSource() const;
+    std::string statsScheme() const;
     uint32_t previousCharacter();
     uint32_t reliablePreviousCharacter();
     uint64_t now() const;

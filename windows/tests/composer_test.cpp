@@ -440,6 +440,19 @@ int main(int argc, char **argv) {
         check(client->committed == "你好shi", "选了一半：已选的词 + 剩下的字母", client->committed);
     }
     {
+        // 打字统计的回调：上屏的字、来源、候选位置（和 macOS 的 onCommitStats 一样）
+        auto [c, client] = fresh();
+        std::vector<std::string> seen;
+        c->onCommitStats = [&](const std::string &text, const std::string &source, const std::string &scheme, int index) {
+            seen.push_back(text + "|" + source + "|" + scheme + "|" + std::to_string(index));
+        };
+        type(*c, "shi");
+        c->handle(KeyInput::character('2'));
+        c->handle(KeyInput::character(','));
+        check(seen.size() == 2 && seen[0].find("|quanpin||2") != std::string::npos && seen[1] == "，|quanpin||0",
+              "统计：选第二个候选记位置 2，标点记 0", join(seen));
+    }
+    {
         // 词库还没载入：字母交给应用，载入以后照常打字
         FakeClient client;
         Composer c(nullptr, &client);

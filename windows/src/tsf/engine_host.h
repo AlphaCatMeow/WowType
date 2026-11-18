@@ -53,6 +53,14 @@ public:
     /// 剪贴板历史（设置里 ClipboardHistory 开着时）：看一眼系统剪贴板，有新的交给核心。
     void sampleClipboard();
 
+    /// 打字统计（设置里 TypingStats 开着时，默认关）：只在本机按天记计数，不记打的内容。
+    /// code 是扫描码（扩展键或上 0xE000）；密码框里的不算。统计关着时什么都不做。
+    void recordKey(uint32_t code, bool sensitive);
+    void recordCommit(const std::string &text, const std::string &source, const std::string &scheme, int index,
+                      bool sensitive);
+    /// 把攒着的统计交给核心的写文件线程（失焦时），不等它写。
+    void flushStats();
+
     std::wstring dataDir() const;
     std::wstring configPath() const { return dataDir() + L"\\wowtype.conf"; }
     /// 安装包里的数据文件；不在是空串。
@@ -76,6 +84,7 @@ private:
     bool conversionLoaded_ = false;
     bool wubiLoaded_ = false;
     WowtypeTranslator *translator_ = nullptr;
+    WowtypeStats *stats_ = nullptr;
     int commitsSinceSave_ = 0;
     DWORD clipboardSequence_ = 0;
     std::string lastClipboard_;

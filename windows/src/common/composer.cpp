@@ -465,6 +465,11 @@ void Composer::applyFrame(const WowtypeFrame *frame) {
         // 会话已经补好了空格、记了上文；互译时上屏的是译文、原文
         const std::string text = frame->commit;
         client_->insertText(text);
+        if (onCommitStats) {
+            // 打字统计（外壳按 TypingStats 决定记不记）：互译上屏的不是候选，位置记 0
+            const int index = hasFullFrame(frame) && mode() != Mode::Translate ? static_cast<int>(frame->choice_index) : 0;
+            onCommitStats(text, statsSource(), statsScheme(), index);
+        }
         if (frame->learned && onCommit) {
             onCommit(text);
         }
@@ -582,6 +587,33 @@ void Composer::drawTool() {
     page.expanded = emoji;
     page.vertical = !emoji;
     client_->showCandidates(&page);
+}
+
+/// 统计用的输入模式：互译 / 英文 / 五笔 / 双拼 / 全拼（和 macOS 一样）。
+std::string Composer::statsSource() const {
+    switch (mode()) {
+    case Mode::Translate: return "translate";
+    case Mode::English: return "english";
+    default: break;
+    }
+    if (config_.wubi()) {
+        return "wubi";
+    }
+    return config_.shuangpin() ? "shuangpin" : "quanpin";
+}
+
+/// 双拼方案在统计里的名字（小写）；不是双拼时为空。
+std::string Composer::statsScheme() const {
+    if (!config_.shuangpin() || mode() != Mode::Chinese) {
+        return {};
+    }
+    std::string scheme = config_.value("ShuangpinScheme");
+    for (char &c : scheme) {
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+    }
+    return scheme;
 }
 
 // ---------------------------------------------------------------- 互译

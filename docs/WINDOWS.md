@@ -96,6 +96,7 @@ cmake --build build\windows --config Release
 | `translate.key` | 互译的 API Key（一行） |
 | `wetype\nlrgpt2_nnlm.bin` | 导入的微信输入法整句增强模型（有就先用它） |
 | `models\HY-MT1.5-1.8B-Q4_K_M.gguf`、`llama\llama-server.exe` | 本地翻译模型和 llama.cpp（`TranslateLlamaServer` 留空时先在 PATH 里找） |
+| `stats.json` | 打字统计（`TypingStats=True` 才记，默认关），格式同另两端 |
 | `wowtype.log` | 日志（载入词库、设置、出错），超过 1 MB 从头写 |
 
 和另两端一样的：`EmojiKey` 默认是 `Control+period`（Windows 键的组合多半被系统拿走，`Win + .` 是系统的表情面板，
@@ -109,7 +110,7 @@ cmake --build build\windows --config Release
 
 - 设置界面（先直接改 `wowtype.conf`）、安装包和自动更新（`CheckUpdate`、`BetaUpdates`）
 - 语音输入（`Voice`、`VoiceKey`、`VoiceCopy`）：核心编的时候不带语音
-- 打字统计（`TypingStats`）：要给核心加 Windows 的键码表
+- 打字统计（`TypingStats`）记是记了（`stats.json`，按键按扫描码记，ABI 1.13 起核心认 Windows 的键码），但还没有看统计的界面
 - 本地翻译模型、整句增强模型的一键下载、导入（文件自己放进数据目录就能用）
 - ARM64、32 位、代码签名
 - 全屏游戏里的候选框（`ITfUIElement`，让游戏自己画）

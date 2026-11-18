@@ -96,7 +96,19 @@ fn key_ids_cover_both_platforms() {
     assert_eq!(key_id(1, 0x7e), Some("ArrowUp"));
     assert_eq!(key_id(0, 8 + 200), None);
     assert_eq!(key_id(1, 0xff), None);
-    assert_eq!(key_id(2, 1), None);
+    // Windows：扫描码，扩展键或上 0xE000
+    assert_eq!(key_id(2, 0x02), Some("Digit1"));
+    assert_eq!(key_id(2, 0x1E), Some("KeyA"));
+    assert_eq!(key_id(2, 0x39), Some("Space"));
+    assert_eq!(key_id(2, 0x1D), Some("ControlLeft"));
+    assert_eq!(key_id(2, 0xE01D), Some("ControlRight"));
+    assert_eq!(key_id(2, 0xE048), Some("ArrowUp"));
+    assert_eq!(key_id(2, 0x48), Some("Numpad8"));
+    assert_eq!(key_id(2, 0xE01C), Some("NumpadEnter"));
+    assert_eq!(key_id(2, 0xE05B), Some("MetaLeft"));
+    assert_eq!(key_id(2, 0x45), None);
+    assert_eq!(key_id(2, 0xE037), None);
+    assert_eq!(key_id(3, 1), None);
     // 低于 8 的 X11 键码没有对应的物理键。
     assert_eq!(key_id(0, 3), None);
 }

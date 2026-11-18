@@ -131,6 +131,7 @@ const std::vector<SettingDef> &settingDefs() {
         {"EmojiKey", T::Key, "Control+period"},
         {"ToggleKey", T::Key, ""},
         {"TranslateModeKey", T::Key, ""},
+        {"TypingStats", T::Bool, "False"},
         {"Translate", T::Bool, "False"},
         {"TranslateTarget", T::Enum, "en", 0, 0,
          {"en", "ja", "ko", "fr", "de", "es", "ru", "pt", "it", "vi", "th", "id", "ar"}},

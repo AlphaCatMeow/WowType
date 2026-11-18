@@ -111,6 +111,10 @@ void EngineHost::loadConfig() {
         config_ = loaded;
         ++configGeneration_;
         applyTranslateSettings();
+        if (stats_) {
+            // 关掉时记录器丢掉内存里还没写的计数，以后什么都不记
+            wowtype_stats_set_enabled(stats_, config_.flag("TypingStats"));
+        }
         if (WowtypeEngineHandle *engine = engine_.load()) {
             applyEngineSettings(engine);
         }
@@ -247,6 +251,12 @@ void EngineHost::ensureLoading() {
         loadConfig();
     }
     wowtype_recent_emoji_path(narrow(dataDir() + L"\\emoji-recent.txt").c_str());
+    // 打字统计的记录器：建好时是关着的（不读不建文件），按 TypingStats 打开。几个应用进程各有一个，
+    // 核心写文件时先读回再合并，计数不会互相盖掉
+    stats_ = wowtype_stats_new(narrow(dataDir() + L"\\stats.json").c_str());
+    if (stats_) {
+        wowtype_stats_set_enabled(stats_, config_.flag("TypingStats"));
+    }
     // 词库有几十 MB，放后台读，读完再交给文本服务（按键时看 engine() 有没有了）
     std::thread([this] {
         WowtypeEngineHandle *engine = makeEngine();
@@ -296,6 +306,31 @@ void EngineHost::save(bool wait) {
     if (wait && wowtype_engine_save_wait(engine, -1) < 0) {
         const char *error = wowtype_last_error();
         log(L"保存用户词库或输入习惯失败：" + widen(error ? error : ""));
+    }
+}
+
+void EngineHost::recordKey(uint32_t code, bool sensitive) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!stats_ || sensitive || !config_.flag("TypingStats")) {
+        return;
+    }
+    // platform 2 = Windows（ABI 1.13）
+    wowtype_stats_key(stats_, 2, code, 1, 0, wowtype_stats_now_ms());
+}
+
+void EngineHost::recordCommit(const std::string &text, const std::string &source, const std::string &scheme, int index,
+                              bool sensitive) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!stats_ || sensitive || !config_.flag("TypingStats")) {
+        return;
+    }
+    wowtype_stats_commit(stats_, text.c_str(), source.c_str(), scheme.c_str(), index, 0, wowtype_stats_now_ms());
+}
+
+void EngineHost::flushStats() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (stats_ && config_.flag("TypingStats")) {
+        wowtype_stats_flush(stats_, wowtype_stats_now_ms());
     }
 }
 
