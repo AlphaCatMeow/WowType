@@ -17,6 +17,7 @@
 
 #include "composer.h"
 #include "config.h"
+#include "app_update.h"
 #include "custom_words.h"
 #include "stats_view.h"
 #include "keys.h"
@@ -401,6 +402,56 @@ int main(int argc, char **argv) {
         check(keys.size() == 1 && keys[0].first == "KeyA" && keys[0].second == 12, "按得最多的键");
         check(StatsDocument::parse("不是 JSON").days.empty() && !stats::summary(StatsDocument{}, "2026-11-19").empty(),
               "读不出来是空的，空的也有一段说明");
+    }
+
+    // ---------------------------------------------------------------- 检查更新（和 macOS 的 AppUpdate 同名用例）
+    {
+        using namespace wowtype::update;
+        check(version("v0.4.1") == std::optional<std::string>("0.4.1") && version("0.4.1") == std::optional<std::string>("0.4.1"),
+              "tag 去掉 v");
+        check(!version("") && !version("v") && !version("v1/../x") && !version("v1 2") && !version("-1"), "不像版本号的 tag 不认");
+        check(packageName("0.4.1", "x64") == "WowType-0.4.1-windows-x64-setup.exe", "Windows 安装程序的名字");
+        const std::string notes = "# WowType 0.5.2\n\n## 这一版\n\n### 新功能\n- 自动配对\n  - 套着打\n```\nbrew x\n```\n## 安装\n下载 pkg\n";
+        check(highlights(notes) == "### 新功能\n- 自动配对\n  - 套着打\n```\nbrew x\n```", "更新内容只留「这一版」",
+              highlights(notes));
+        check(highlights("修了一个问题\n") == "修了一个问题", "没有「这一版」时原样");
+        const auto r = [](const char *tag, bool pre = false, bool draft = false) {
+            Release x;
+            x.tag = tag;
+            x.prerelease = pre;
+            x.draft = draft;
+            return x;
+        };
+        check(pickNewest({r("v0.4.0"), r("v0.5.0", true), r("v0.4.1")}) == std::optional<std::size_t>(1), "Beta：预发布也算");
+        check(pickNewest({r("v0.5.0", true), r("v0.5.0")}) == std::optional<std::size_t>(1), "Beta：一样大要正式版");
+        check(pickNewest({r("v0.4.0"), r("v0.6.0", false, true), r("lm-2026.11.09", true)}) == std::optional<std::size_t>(0),
+              "Beta：草稿、数据的发布不算");
+        check(pickNewest({r("v0.9.9", true), r("v0.10.0")}) == std::optional<std::size_t>(1), "Beta：按数字段比");
+        check(!pickNewest({r("nnlm-2026.11.17", true)}) && !pickNewest({}), "Beta：没有合适的");
+        check(isNewer("0.4.1", "0.4.0") && isNewer("0.10.0", "0.9.9") && isNewer("0.4.0.1", "0.4.0"), "新版本");
+        check(!isNewer("0.4.0", "0.4.0") && !isNewer("0.3.12", "0.4.0"), "一样的、旧的不算新版本");
+        check(!isNewer("0.4.1", "dev") && !isRelease("dev") && isRelease("0.4.0"), "开发版不提示更新");
+        const State state = State::parse("checked=1700000000\nlatest=v0.4.1\n");
+        check(state == State{1700000000, "v0.4.1"} && State::parse(state.text()) == state, "检查状态读写");
+        check(State::parse("乱写\nchecked=abc\nlatest=../x\n") == State{}, "写坏的检查状态当没查过");
+        check(!due(state, 1700000000 + 3600) && due(state, 1700000000 + 86400) && due(state, 1600000000) &&
+                  due(State{}, 1700000000),
+              "一天查一次，时钟往回拨了也查");
+        const auto release = parseRelease(R"({"tag_name":"v0.7.0","prerelease":false,"draft":false,"body":"## \u8fd9\u4e00\u7248\n- \u65b0",)"
+                                          R"("assets":[{"name":"WowType-0.7.0-windows-x64-setup.exe","browser_download_url":"https://x/a.exe"},)"
+                                          R"({"name":"SHA256SUMS","browser_download_url":"https://x/SHA256SUMS"}]})");
+        check(release && release->tag == "v0.7.0" && !release->prerelease && release->assets.size() == 2 &&
+                  release->assets.at("SHA256SUMS") == "https://x/SHA256SUMS" && highlights(release->notes) == "- 新",
+              "读发布页的 JSON（\\u 转义的中文）", release ? release->notes : "");
+        const auto list = parseReleaseList(R"([{"tag_name":"v0.6.0"},{"tag_name":"v0.7.0","prerelease":true}])");
+        check(list.size() == 2 && list[1].prerelease && pickNewest(list) == std::optional<std::size_t>(1), "读发布列表");
+        const std::string digest(64, 'a');
+        const std::string sums = digest + "  WowType-0.7.0-windows-x64-setup.exe\n" + std::string(64, 'b') + " *SHA256SUMS\n";
+        std::string error;
+        check(checksum(sums, "WowType-0.7.0-windows-x64-setup.exe") == std::optional<std::string>(digest), "SHA256SUMS 里取校验值");
+        check(!checksum(sums, "没有.exe", &error) && error.find("没有") != std::string::npos, "SHA256SUMS 里没有就不装");
+        check(!checksum(sums + digest + "  WowType-0.7.0-windows-x64-setup.exe\n", "WowType-0.7.0-windows-x64-setup.exe"),
+              "重复的不认");
     }
 
     const auto fresh = [&](Config config = Config{}) {

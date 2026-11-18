@@ -173,7 +173,8 @@ Windows 10 1803 或更新、Windows 11，x64。**预览版**：输入行为和 L
 
 - 设置：开始菜单里的「WowType 设置」，或任务栏上「中」按钮右键 →「WowType 设置…」。设置文件是
   `%LOCALAPPDATA%\WowType\wowtype.conf`，键名和 Linux、macOS 一样
-- 升级：下载新版的安装程序再装一次；正在用着输入法的应用重新打开以后用新版
+- 升级：有新版本时任务栏「中」按钮的右键菜单里会多一项，点它在设置窗口里下载并安装；也可以下载新版的安装程序再装一次。
+  正在用着输入法的应用重新打开以后用新版
 - 卸载：「设置 → 应用 → 已安装的应用」里找到「WowType 输入法」。学到的词和设置留在 `%LOCALAPPDATA%\WowType`
 - 还没有的、和另两端不一样的地方见 [docs/WINDOWS.md](docs/WINDOWS.md)
 

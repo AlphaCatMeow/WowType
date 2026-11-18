@@ -8,160 +8,11 @@
 #include <set>
 
 #include "config.h"
+#include "json.h"
 
 namespace wowtype {
 
 namespace {
-
-// ---------------------------------------------------------------- 够用的 JSON（只认 stats.json 用到的）
-
-struct Json {
-    enum class Kind { Null, Number, String, Array, Object, Other } kind = Kind::Null;
-    double number = 0;
-    std::string text;
-    std::vector<Json> items;
-    std::map<std::string, Json> fields;
-
-    const Json *field(const std::string &name) const {
-        const auto it = fields.find(name);
-        return it == fields.end() ? nullptr : &it->second;
-    }
-};
-
-class Parser {
-public:
-    explicit Parser(const std::string &s) : s_(s) {}
-
-    bool value(Json &out, int depth = 0) {
-        if (depth > 32) {
-            return false;
-        }
-        space();
-        if (i_ >= s_.size()) {
-            return false;
-        }
-        const char c = s_[i_];
-        if (c == '{') {
-            ++i_;
-            out.kind = Json::Kind::Object;
-            space();
-            if (peek('}')) {
-                ++i_;
-                return true;
-            }
-            while (true) {
-                space();
-                Json key;
-                if (!string(key.text)) {
-                    return false;
-                }
-                space();
-                if (!peek(':')) {
-                    return false;
-                }
-                ++i_;
-                Json item;
-                if (!value(item, depth + 1)) {
-                    return false;
-                }
-                out.fields[key.text] = std::move(item);
-                space();
-                if (peek(',')) {
-                    ++i_;
-                    continue;
-                }
-                if (peek('}')) {
-                    ++i_;
-                    return true;
-                }
-                return false;
-            }
-        }
-        if (c == '[') {
-            ++i_;
-            out.kind = Json::Kind::Array;
-            space();
-            if (peek(']')) {
-                ++i_;
-                return true;
-            }
-            while (true) {
-                Json item;
-                if (!value(item, depth + 1)) {
-                    return false;
-                }
-                out.items.push_back(std::move(item));
-                space();
-                if (peek(',')) {
-                    ++i_;
-                    continue;
-                }
-                if (peek(']')) {
-                    ++i_;
-                    return true;
-                }
-                return false;
-            }
-        }
-        if (c == '"') {
-            out.kind = Json::Kind::String;
-            return string(out.text);
-        }
-        if (c == '-' || (c >= '0' && c <= '9')) {
-            const std::size_t start = i_;
-            while (i_ < s_.size() && (std::isdigit(static_cast<unsigned char>(s_[i_])) || s_[i_] == '-' ||
-                                      s_[i_] == '+' || s_[i_] == '.' || s_[i_] == 'e' || s_[i_] == 'E')) {
-                ++i_;
-            }
-            out.kind = Json::Kind::Number;
-            out.number = std::strtod(s_.substr(start, i_ - start).c_str(), nullptr);
-            return true;
-        }
-        for (const char *word : {"true", "false", "null"}) {
-            const std::string w(word);
-            if (s_.compare(i_, w.size(), w) == 0) {
-                i_ += w.size();
-                out.kind = Json::Kind::Other;
-                return true;
-            }
-        }
-        return false;
-    }
-
-private:
-    void space() {
-        while (i_ < s_.size() && std::isspace(static_cast<unsigned char>(s_[i_]))) {
-            ++i_;
-        }
-    }
-    bool peek(char c) const { return i_ < s_.size() && s_[i_] == c; }
-    bool string(std::string &out) {
-        if (!peek('"')) {
-            return false;
-        }
-        ++i_;
-        while (i_ < s_.size()) {
-            const char c = s_[i_++];
-            if (c == '"') {
-                return true;
-            }
-            if (c == '\\' && i_ < s_.size()) {
-                const char e = s_[i_++];
-                switch (e) {
-                case 'n': out += '\n'; break;
-                case 't': out += '\t'; break;
-                case 'u': i_ = std::min(s_.size(), i_ + 4); break; // 键名、日期里不会有，跳过
-                default: out += e; break;
-                }
-            } else {
-                out += c;
-            }
-        }
-        return false;
-    }
-    const std::string &s_;
-    std::size_t i_ = 0;
-};
 
 long long integer(const Json *v) {
     if (!v || v->kind != Json::Kind::Number) {
@@ -436,8 +287,7 @@ bool knownKey(const std::string &key) {
             return true;
         }
     }
-    // Windows 还没有、别的端有的设置项也认识（不打码）
-    return key == "CheckUpdate" || key == "BetaUpdates";
+    return false;
 }
 
 } // namespace

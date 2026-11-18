@@ -3,11 +3,20 @@
 #include <shlobj.h>
 
 #include <algorithm>
+#include <ctime>
 #include <fstream>
 #include <iterator>
 #include <vector>
 
+#include "../win/updater.h"
 #include "globals.h"
+
+#ifndef WOWTYPE_VERSION
+#define WOWTYPE_VERSION "dev"
+#endif
+#define WOWTYPE_WIDEN2(x) L##x
+#define WOWTYPE_WIDEN(x) WOWTYPE_WIDEN2(x)
+#define WOWTYPE_WIDE_VERSION WOWTYPE_WIDEN(WOWTYPE_VERSION)
 
 namespace wowtype::tsf {
 
@@ -358,6 +367,50 @@ void EngineHost::flushStats() {
     if (stats_ && config_.flag("TypingStats")) {
         wowtype_stats_flush(stats_, wowtype_stats_now_ms());
     }
+}
+
+void EngineHost::checkUpdateIfDue() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    wchar_t override[8] = {};
+    // 开发版（dev）不查；测试时换了数据目录也不查
+    if (!config_.flag("CheckUpdate") || updateChecking_ || !update::isRelease(WOWTYPE_VERSION) ||
+        GetEnvironmentVariableW(L"WOWTYPE_DATA_DIR", override, 8) > 0) {
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (now < nextUpdateLook_) {
+        return;
+    }
+    nextUpdateLook_ = now + 3600 * 1000ULL;
+    const std::wstring dir = dataDir();
+    if (!update::due(win::readState(dir), static_cast<int64_t>(std::time(nullptr)))) {
+        return;
+    }
+    updateChecking_ = true;
+    const bool beta = config_.flag("BetaUpdates");
+    std::thread([this, dir, beta] {
+        std::string error;
+        const auto release = win::fetchLatest(dir, beta, &error);
+        std::lock_guard<std::recursive_mutex> inner(mutex_);
+        updateChecking_ = false;
+        if (!release) {
+            log(L"检查更新失败：" + widen(error));
+        } else if (const auto latest = update::version(release->tag); latest && update::isNewer(*latest, WOWTYPE_VERSION)) {
+            log(L"有新版本 " + widen(*latest) + L"（现在 " WOWTYPE_WIDE_VERSION L"）");
+        }
+    }).detach();
+}
+
+std::optional<std::string> EngineHost::availableUpdate() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!config_.flag("CheckUpdate")) {
+        return std::nullopt;
+    }
+    const auto latest = update::version(win::readState(dataDir()).latest);
+    if (latest && update::isNewer(*latest, WOWTYPE_VERSION)) {
+        return latest;
+    }
+    return std::nullopt;
 }
 
 void EngineHost::sampleClipboard() {

@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -54,6 +55,12 @@ public:
     void didForget();
     /// 存用户词库和输入习惯（核心的后台线程写）。wait：等写完。
     void save(bool wait = false);
+
+    /// 检查更新（设置里 CheckUpdate 开着时，和 macOS 一样）：切到输入法时最多一小时看一次，上次查过一天了才在后台
+    /// 问 GitHub，结果记在数据目录的 update-state（设置窗口也读写它）。
+    void checkUpdateIfDue();
+    /// 发布页上有比现在装的新的版本：返回版本号（任务栏菜单多一项「有新版本…」）。
+    std::optional<std::string> availableUpdate();
 
     /// 剪贴板历史（设置里 ClipboardHistory 开着时）：看一眼系统剪贴板，有新的交给核心。
     void sampleClipboard();
@@ -97,6 +104,8 @@ private:
     FILETIME historyStamp_{};
     /// 交给核心的后台存盘还没确认写完（写完了才记下上面两个时间）
     bool savePending_ = false;
+    bool updateChecking_ = false;
+    ULONGLONG nextUpdateLook_ = 0;
     DWORD clipboardSequence_ = 0;
     std::string lastClipboard_;
 };

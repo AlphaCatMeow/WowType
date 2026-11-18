@@ -29,11 +29,13 @@
 #include <thread>
 #include <vector>
 
+#include "app_update.h"
 #include "config.h"
 #include "custom_words.h"
 #include "stats_view.h"
 #include "utf.h"
 #include "wowtype_core.h"
+#include "../win/updater.h"
 
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
@@ -71,6 +73,11 @@ constexpr unsigned long long kVoicePackSize = 102920639ULL;
 constexpr char kVoicePackMd5[] = "28386481eb94ff73b28ee3949c0cf690";
 
 constexpr int kIdLocalModel = 119;
+constexpr int kIdUpdateCheck = 120;
+constexpr int kIdUpdateInstall = 121;
+constexpr UINT kMessageUpdateChecked = WM_APP + 4;
+constexpr UINT kMessageUpdateDownloaded = WM_APP + 5;
+constexpr UINT kMessageStartUpdate = WM_APP + 6;
 constexpr UINT kMessageLocalDone = WM_APP + 2;
 constexpr UINT kMessageProgress = WM_APP + 3;
 
@@ -92,6 +99,7 @@ constexpr char kLlamaSha256[] = "98901e327c252875accaf2d1bf364e10e868843b0b63468
 #ifndef WOWTYPE_VERSION
 #define WOWTYPE_VERSION "dev"
 #endif
+using namespace wowtype;
 constexpr int kIdFirstSetting = 1000;
 
 std::wstring widen(const std::string &s) {
@@ -287,6 +295,8 @@ struct Row {
 class SettingsWindow {
 public:
     bool create(HINSTANCE instance);
+    /// 输入法菜单里点了「有新版本…」：打开「常规」页，查一下、下载、装
+    void startUpdate() { checkUpdate(true); }
 
 private:
     static LRESULT CALLBACK proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -314,6 +324,11 @@ private:
     void importVoiceModel();
     void downloadVoiceModel();
     void downloadLocalModel();
+    void showUpdateState();
+    void checkUpdate(bool thenInstall);
+    void installUpdate();
+    bool updateAfterCheck_ = false;
+    std::optional<update::Release> release_;
     int pageNamed(const wchar_t *title) const;
     HWND child(const wchar_t *cls, const wchar_t *text, DWORD style, int id);
 
@@ -343,6 +358,8 @@ private:
     HWND voiceModel_ = nullptr;
     HWND voiceDownload_ = nullptr;
     HWND localModel_ = nullptr;
+    HWND updateCheck_ = nullptr;
+    HWND updateInstall_ = nullptr;
     bool downloading_ = false;
     CustomWords words_{std::nullopt};
     std::optional<std::string> lexicon_;
@@ -386,6 +403,7 @@ bool SettingsWindow::create(HINSTANCE instance) {
     load();
     layout();
     showPage(0);
+    showUpdateState();
     ShowWindow(hwnd_, SW_SHOWNORMAL);
     return true;
 }
@@ -469,6 +487,8 @@ void SettingsWindow::build() {
     statsText_ = child(L"EDIT", L"", WS_BORDER | ES_MULTILINE | ES_READONLY | WS_VSCROLL | ES_AUTOVSCROLL, kIdStatsText);
     statsRefresh_ = child(L"BUTTON", L"刷新", BS_PUSHBUTTON | WS_TABSTOP, kIdStatsRefresh);
     statsClear_ = child(L"BUTTON", L"清空统计", BS_PUSHBUTTON | WS_TABSTOP, kIdStatsClear);
+    updateCheck_ = child(L"BUTTON", L"检查更新", BS_PUSHBUTTON | WS_TABSTOP, kIdUpdateCheck);
+    updateInstall_ = child(L"BUTTON", L"下载并安装新版本", BS_PUSHBUTTON | WS_TABSTOP, kIdUpdateInstall);
     diagnostics_ = child(L"BUTTON", L"复制诊断信息（版本、数据文件、打码后的设置、最近的日志）", BS_PUSHBUTTON | WS_TABSTOP,
                          kIdDiagnostics);
     voiceDownload_ = child(L"BUTTON", L"下载语音模型（约 100 MB，从微信输入法的服务器）…", BS_PUSHBUTTON | WS_TABSTOP,
@@ -524,7 +544,7 @@ void SettingsWindow::layout() {
     for (const auto &[button, title] :
          {ButtonOnPage{nnlm_, L"输入"}, ButtonOnPage{voiceDownload_, L"语音"}, ButtonOnPage{voiceModel_, L"语音"},
           ButtonOnPage{localModel_, L"翻译"},
-          ButtonOnPage{diagnostics_, L"常规"}}) {
+          ButtonOnPage{updateCheck_, L"常规"}, ButtonOnPage{updateInstall_, L"常规"}, ButtonOnPage{diagnostics_, L"常规"}}) {
         const auto page = static_cast<std::size_t>(pageNamed(title));
         MoveWindow(button, margin * 2, y[page] + scale(6), width - margin * 4, scale(28), FALSE);
         y[page] += rowHeight + scale(6);
@@ -579,6 +599,8 @@ void SettingsWindow::showPage(int page) {
     ShowWindow(apiKey_, page == translate ? SW_SHOW : SW_HIDE);
     ShowWindow(nnlm_, page == pageNamed(L"输入") ? SW_SHOW : SW_HIDE);
     ShowWindow(diagnostics_, page == pageNamed(L"常规") ? SW_SHOW : SW_HIDE);
+    ShowWindow(updateCheck_, page == pageNamed(L"常规") ? SW_SHOW : SW_HIDE);
+    ShowWindow(updateInstall_, page == pageNamed(L"常规") ? SW_SHOW : SW_HIDE);
     for (HWND h : {statsText_, statsRefresh_, statsClear_}) {
         ShowWindow(h, page == statsPage() ? SW_SHOW : SW_HIDE);
     }
@@ -1051,6 +1073,103 @@ void SettingsWindow::downloadVoiceModel() {
     }).detach();
 }
 
+void SettingsWindow::showUpdateState() {
+    // 输入法每天查过一次的结果也在 update-state 里：有新版就把「下载并安装」点亮
+    const auto latest = update::version(win::readState(dataDir()).latest);
+    const bool newer = latest && update::isNewer(*latest, WOWTYPE_VERSION);
+    EnableWindow(updateInstall_, newer);
+    SetWindowTextW(updateInstall_, newer ? (L"下载并安装 " + widen(*latest)).c_str() : L"下载并安装新版本");
+}
+
+void SettingsWindow::checkUpdate(bool thenInstall) {
+    if (downloading_) {
+        return;
+    }
+    downloading_ = true;
+    updateAfterCheck_ = thenInstall;
+    EnableWindow(updateCheck_, FALSE);
+    SetWindowTextW(status_, L"正在检查更新……");
+    const std::wstring dir = dataDir();
+    const bool beta = fromControls().flag("BetaUpdates");
+    HWND window = hwnd_;
+    std::thread([dir, beta, window] {
+        std::string error;
+        auto release = win::fetchLatest(dir, beta, &error);
+        auto *result = new std::pair<std::optional<update::Release>, std::string>(std::move(release), error);
+        PostMessageW(window, kMessageUpdateChecked, 0, reinterpret_cast<LPARAM>(result));
+    }).detach();
+}
+
+void SettingsWindow::installUpdate() {
+    if (!release_) {
+        checkUpdate(true);
+        return;
+    }
+    const auto version = update::version(release_->tag);
+    if (!version) {
+        return;
+    }
+    const std::string name = update::packageName(*version, win::arch());
+    const auto exe = release_->assets.find(name);
+    const auto sums = release_->assets.find(update::kChecksumFile);
+    if (exe == release_->assets.end()) {
+        SetWindowTextW(status_, widen(release_->tag + " 的发布页上没有 Windows 安装程序 " + name).c_str());
+        return;
+    }
+    if (sums == release_->assets.end()) {
+        SetWindowTextW(status_, L"发布页上缺少 SHA256SUMS，不安装");
+        return;
+    }
+    const std::string notes = update::highlights(release_->notes);
+    const std::wstring ask = L"WowType " + widen(*version) + L"（现在 " + widen(WOWTYPE_VERSION) + L"）\n\n" +
+                             widen(notes.size() > 2000 ? notes.substr(0, 2000) + "…" : notes) +
+                             L"\n\n下载新版的安装程序并运行吗？安装时会问一次管理员权限；正在用着输入法的应用重新打开以后用新版。";
+    if (MessageBoxW(hwnd_, ask.c_str(), L"更新 WowType", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) {
+        return;
+    }
+    downloading_ = true;
+    EnableWindow(updateInstall_, FALSE);
+    const std::wstring folder = dataDir() + L"\\update";
+    CreateDirectoryW(dataDir().c_str(), nullptr);
+    CreateDirectoryW(folder.c_str(), nullptr);
+    const std::wstring path = folder + L"\\" + widen(name);
+    const std::wstring exeUrl = widen(exe->second);
+    const std::wstring sumsUrl = widen(sums->second);
+    HWND window = hwnd_;
+    std::thread([name, path, exeUrl, sumsUrl, window] {
+        auto *result = new std::wstring;
+        std::string error;
+        const auto text = win::httpGet(sumsUrl, &error);
+        const auto expected = text ? update::checksum(*text, name, &error) : std::nullopt;
+        if (!expected) {
+            *result = L"!" + widen(error);
+        } else {
+            DeleteFileW(path.c_str());
+            int last = -1;
+            const bool ok = win::httpDownload(
+                exeUrl, path,
+                [&](unsigned long long done, unsigned long long total) {
+                    const int percent = total ? static_cast<int>(100 * done / total) : -1;
+                    if (percent != last && percent >= 0) {
+                        last = percent;
+                        auto *p = new std::wstring(L"正在下载新版本：" + std::to_wstring(percent) + L"%");
+                        PostMessageW(window, kMessageProgress, 0, reinterpret_cast<LPARAM>(p));
+                    }
+                },
+                &error);
+            if (!ok) {
+                *result = L"!" + widen(error);
+            } else if (win::sha256File(path) != *expected) {
+                DeleteFileW(path.c_str());
+                *result = L"!下载的安装程序校验不对（SHA256 不一致），已删除，请重试";
+            } else {
+                *result = path;
+            }
+        }
+        PostMessageW(window, kMessageUpdateDownloaded, 0, reinterpret_cast<LPARAM>(result));
+    }).detach();
+}
+
 void SettingsWindow::refreshStats() {
     SYSTEMTIME t;
     GetLocalTime(&t);
@@ -1263,6 +1382,12 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
         case kIdDiagnostics:
             copyDiagnostics();
             return 0;
+        case kIdUpdateCheck:
+            checkUpdate(false);
+            return 0;
+        case kIdUpdateInstall:
+            installUpdate();
+            return 0;
         case kIdLocalModel:
             downloadLocalModel();
             return 0;
@@ -1313,6 +1438,49 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
         SetWindowTextW(status_, text->c_str());
         return 0;
     }
+    case kMessageStartUpdate:
+        TabCtrl_SetCurSel(tabs_, pageNamed(L"常规"));
+        showPage(pageNamed(L"常规"));
+        startUpdate();
+        return 0;
+    case kMessageUpdateChecked: {
+        std::unique_ptr<std::pair<std::optional<update::Release>, std::string>> result(
+            reinterpret_cast<std::pair<std::optional<update::Release>, std::string> *>(lParam));
+        downloading_ = false;
+        EnableWindow(updateCheck_, TRUE);
+        release_ = result->first;
+        showUpdateState();
+        if (!release_) {
+            SetWindowTextW(status_, (L"检查更新失败：" + widen(result->second)).c_str());
+            return 0;
+        }
+        const auto latest = update::version(release_->tag);
+        if (latest && update::isNewer(*latest, WOWTYPE_VERSION)) {
+            SetWindowTextW(status_, (L"有新版本 " + widen(*latest)).c_str());
+            if (updateAfterCheck_) {
+                installUpdate();
+            }
+        } else {
+            SetWindowTextW(status_, (L"已经是最新版（" + widen(WOWTYPE_VERSION) + L"）").c_str());
+        }
+        return 0;
+    }
+    case kMessageUpdateDownloaded: {
+        std::unique_ptr<std::wstring> result(reinterpret_cast<std::wstring *>(lParam));
+        downloading_ = false;
+        showUpdateState();
+        if (!result->empty() && (*result)[0] == L'!') {
+            SetWindowTextW(status_, (L"更新失败：" + result->substr(1)).c_str());
+            return 0;
+        }
+        // 运行安装程序（它自己问管理员权限），设置窗口退出：安装程序要换掉这个程序
+        if (reinterpret_cast<INT_PTR>(ShellExecuteW(hwnd_, L"open", result->c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
+            SetWindowTextW(status_, (L"打不开安装程序：" + *result).c_str());
+            return 0;
+        }
+        DestroyWindow(hwnd_);
+        return 0;
+    }
     case kMessageLocalDone: {
         std::unique_ptr<std::wstring> result(reinterpret_cast<std::wstring *>(lParam));
         downloading_ = false;
@@ -1344,6 +1512,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (HWND existing = FindWindowW(kClassName, nullptr)) {
         ShowWindow(existing, SW_RESTORE);
         SetForegroundWindow(existing);
+        if (wcsstr(GetCommandLineW(), L"--update")) {
+            PostMessageW(existing, kMessageStartUpdate, 0, 0);
+        }
         return 0;
     }
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -1352,6 +1523,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     SettingsWindow window;
     if (!window.create(instance)) {
         return 1;
+    }
+    if (wcsstr(GetCommandLineW(), L"--update")) {
+        window.startUpdate();
     }
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

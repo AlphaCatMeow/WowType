@@ -33,6 +33,7 @@ constexpr UINT kModeHintMs = 1000;
 
 enum MenuId : UINT {
     kMenuSettings = 10,
+    kMenuUpdate = 11,
     kMenuChinese = 1,
     kMenuEnglish,
     kMenuTranslate,
@@ -271,6 +272,8 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr *threadMgr, TfClientId clientI
     }
     // 剪贴板历史（设置里打开时）：切到输入法时看一眼（和另两端一样）
     host.sampleClipboard();
+    // 每天最多查一次有没有新版本（后台，有新版时任务栏菜单里多一项），和 macOS 一样
+    host.checkUpdateIfDue();
     return S_OK;
 }
 
@@ -1161,8 +1164,15 @@ std::vector<TextService::MenuItem> TextService::menuItems() {
     std::lock_guard<std::recursive_mutex> lock(EngineHost::instance().mutex());
     const Composer::Mode mode = composer_ ? composer_->mode() : Composer::Mode::Chinese;
     const bool translate = composer_ && composer_->translateAvailable();
+    const auto update = EngineHost::instance().availableUpdate();
     const auto radio = [&](Composer::Mode m) { return mode == m ? static_cast<DWORD>(TF_LBMENUF_RADIOCHECKED) : 0u; };
-    return {
+    std::vector<MenuItem> items;
+    if (update) {
+        // 新版本在设置窗口「常规」页下载安装（不在输入法所在的应用进程里装）
+        items.push_back({kMenuUpdate, 0, L"有新版本 " + widen(*update) + L"，下载并安装…"});
+        items.push_back({0, TF_LBMENUF_SEPARATOR, L""});
+    }
+    std::vector<MenuItem> rest = {
         {kMenuChinese, radio(Composer::Mode::Chinese), L"中文"},
         {kMenuEnglish, radio(Composer::Mode::English), L"英文"},
         {kMenuTranslate, radio(Composer::Mode::Translate) | (translate ? 0u : static_cast<DWORD>(TF_LBMENUF_GRAYED)),
@@ -1172,6 +1182,8 @@ std::vector<TextService::MenuItem> TextService::menuItems() {
         {kMenuConfig, 0, L"打开设置文件（wowtype.conf）"},
         {kMenuDataDir, 0, L"打开数据目录"},
     };
+    items.insert(items.end(), rest.begin(), rest.end());
+    return items;
 }
 
 namespace {
@@ -1221,6 +1233,15 @@ void TextService::menuCommand(UINT id) {
     case kMenuConfig:
         openConfigFile();
         break;
+    case kMenuUpdate: {
+        const std::wstring exe = moduleDir() + L"\\wowtype-settings.exe";
+        if (fileExists(exe)) {
+            ShellExecuteW(nullptr, L"open", exe.c_str(), L"--update", nullptr, SW_SHOWNORMAL);
+        } else {
+            ShellExecuteW(nullptr, L"open", L"https://github.com/Gloridust/WowType/releases", nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        break;
+    }
     case kMenuDataDir:
         CreateDirectoryW(host.dataDir().c_str(), nullptr);
         ShellExecuteW(nullptr, L"open", host.dataDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL);

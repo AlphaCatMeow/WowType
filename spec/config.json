@@ -15,7 +15,7 @@
     "fcitx5": "Linux 的 fcitx5 插件（C++）",
     "settings": "Linux 的设置界面 wowtype-config（Python）",
     "macos": "macOS 输入法外壳（Swift），设置窗口和输入法共用 Shared/Config.swift",
-    "windows": "Windows 输入法外壳（TSF，C++），见 docs/WINDOWS.md；第一阶段还没有设置界面、检查更新"
+    "windows": "Windows 输入法外壳（TSF，C++），见 docs/WINDOWS.md；安装程序、设置窗口和检查更新都有了"
   },
   "readRules": {
     "outOfRange": {
@@ -209,9 +209,9 @@
      "platforms": ["fcitx5", "settings", "macos", "windows"],
      "note": "进出「译」的快捷键（fcitx5 键名），留空不用（#87）：按它进「译」（打到一半的拼音带进去），在「译」里再按回到进来前的模式。设了以后单按 Shift 只在中 ↔ 英之间切；互译没打开、翻译没配好、密码框里这个键交给应用。键名不叫 TranslateKey：macOS 的设置文件模板里不许出现这个词（会当成 API Key）"},
     {"key": "CheckUpdate", "type": "bool", "default": true,
-     "platforms": ["fcitx5", "settings", "macos"], "note": "自动检查更新。Linux 切到 WowType 时最多一小时查一次，有新版发桌面通知；macOS 输入法进程每天最多查一次，有新版时输入法菜单里多一项，设置窗口打开时也查"},
+     "platforms": ["fcitx5", "settings", "macos", "windows"], "note": "自动检查更新。Linux 切到 WowType 时最多一小时查一次，有新版发桌面通知；macOS 输入法进程每天最多查一次，有新版时输入法菜单里多一项，设置窗口打开时也查"},
     {"key": "BetaUpdates", "type": "bool", "default": false,
-     "platforms": ["settings", "macos"],
+     "platforms": ["settings", "macos", "windows"],
      "note": "Beta 计划：检查更新也算 GitHub 上的预发布版（pre-release，v 开头的 tag），新功能先到、可能不稳定。关着时只认最新正式版（releases/latest）。关掉以后已经装上的预发布版不会退回，等正式版追上来再提示"},
     {"key": "TypingStats", "type": "bool", "default": false,
      "platforms": ["fcitx5", "settings", "macos", "windows"],

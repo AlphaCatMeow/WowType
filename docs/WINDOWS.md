@@ -91,6 +91,15 @@ regsvr32 /u "C:\Program Files\WowType\wowtype.dll"
 
 DLL 装进每个应用的进程里，载入以后不会卸载：换 DLL 前先关掉用着输入法的应用（或者像 `install.ps1` 那样先改名）。
 
+## 检查更新
+
+和 macOS 一样（`windows/src/common/app_update.*` 是 macOS `AppUpdate.swift` 的 C++ 版，`windows/src/win/updater.*` 联网）：
+`CheckUpdate` 开着时，输入法每天最多问一次 GitHub 的发布页（切到 WowType 时后台查，不挡打字；`BetaUpdates` 开着时预发布也算），
+结果记在数据目录的 `update-state`；有新版时任务栏「中」按钮的右键菜单里多一项「有新版本 …，下载并安装…」，点它打开设置窗口
+「常规」页。设置窗口里「检查更新」随时查，「下载并安装」下载 `WowType-<版本>-windows-<架构>-setup.exe` 和同一页的 `SHA256SUMS`、
+校验，给你看「这一版」的更新内容，确认后运行安装程序（问一次管理员权限），设置窗口自己退出好让安装程序换掉它。
+开发版（版本号不是数字开头）不查。
+
 ## 设置和数据
 
 数据目录是 `%LOCALAPPDATA%\WowType\`（`WOWTYPE_DATA_DIR` 可以换，测试用）：
@@ -106,6 +115,7 @@ DLL 装进每个应用的进程里，载入以后不会卸载：换 DLL 前先�
 | `models\HY-MT1.5-1.8B-Q4_K_M.gguf`、`llama\llama-server.exe` | 本地翻译模型和 llama.cpp（`TranslateLlamaServer` 留空时先在 PATH 里找） |
 | `wtlocal\` | 语音识别模型（微信输入法的离线模型，不随安装包分发，自己放进来） |
 | `stats.json` | 打字统计（`TypingStats=True` 才记，默认关），格式同另两端 |
+| `update-state`、`update\` | 检查更新的结果、下载的新版安装程序 |
 | `wowtype.log` | 日志（载入词库、设置、出错），超过 1 MB 从头写 |
 
 和另两端一样的：`EmojiKey` 默认是 `Control+period`（Windows 键的组合多半被系统拿走，`Win + .` 是系统的表情面板，
@@ -127,7 +137,7 @@ DLL 装进每个应用的进程里，载入以后不会卸载：换 DLL 前先�
   「翻译」页能一键下载本地翻译模型（HY-MT 1.5 1.8B，和另两端同一个文件、同一个 SHA256，先给许可说明）和 llama.cpp 官方的
   Windows 程序（`b12110` 的 CPU 包，钉死 SHA256，解到 `llama\`；PATH 里、设置里有 llama-server 就不下）。
   还没有的：统计的图表和键盘热力图（只有文字摘要）、下载断了接着下（现在断了要重下）
-- 自动更新（`CheckUpdate`、`BetaUpdates`）：安装程序已经进 Release，检查更新还没做（先手动下载新版装）
+- 检查更新的提醒只在任务栏菜单里，不弹系统通知（和 macOS 一样）
 - 代码签名（安装程序和 DLL 都没签，SmartScreen 会拦一下）
 - 打字统计（`TypingStats`）记是记了（`stats.json`，按键按扫描码记，ABI 1.13 起核心认 Windows 的键码），但还没有看统计的界面
 - 本地翻译模型、整句增强模型的一键下载、导入（文件自己放进数据目录就能用）

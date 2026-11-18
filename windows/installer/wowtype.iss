@@ -113,8 +113,9 @@ WindowsVersionNotSupported=WowType 要 Windows 10 1803 或更新的版本。
 OnlyOnTheseArchitectures=这个安装程序只能装在这些处理器的 Windows 上：%n%n%1
 
 [InstallDelete]
-; 以前升级时换下来的旧 DLL：现在没人用了就删掉（还被用着的删不掉，留到下一次）
+; 以前升级时换下来的旧文件：现在没人用了就删掉（还被用着的删不掉，留到下一次）
 Type: files; Name: "{app}\wowtype.dll.old-*"
+Type: files; Name: "{app}\wowtype-settings.exe.old-*"
 
 [Files]
 ; regserver：装好后调 DllRegisterServer（COM 类、简体中文的输入法配置、能力类别），卸载时先注销
@@ -131,22 +132,30 @@ Filename: "{app}\wowtype-settings.exe"; Description: "打开 WowType 设置"; Fl
 
 [UninstallDelete]
 Type: files; Name: "{app}\wowtype.dll.old-*"
+Type: files; Name: "{app}\wowtype-settings.exe.old-*"
 
 [Code]
 // 正在用着输入法的应用锁着旧的 wowtype.dll：不能覆盖，但能改名。改了名，新的照样装上，
 // 这些应用重开以后用新的（和 install.ps1 一样）。
-procedure CurStepChanged(CurStep: TSetupStep);
+// 开着的设置窗口（设置窗口里点「下载并安装」时它自己先退出，手动运行安装程序时可能还开着）也一样换下来。
+procedure MoveAside(const Name: String);
 var
-  Dll, Old: String;
+  Path, Old: String;
+begin
+  Path := ExpandConstant('{app}\') + Name;
+  if FileExists(Path) then
+  begin
+    Old := Path + '.old-' + GetDateTimeString('yyyymmddhhnnss', #0, #0);
+    if not RenameFile(Path, Old) then
+      Log('换不下旧的 ' + Path);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then
   begin
-    Dll := ExpandConstant('{app}\wowtype.dll');
-    if FileExists(Dll) then
-    begin
-      Old := Dll + '.old-' + GetDateTimeString('yyyymmddhhnnss', #0, #0);
-      if not RenameFile(Dll, Old) then
-        Log('换不下旧的 wowtype.dll：' + Dll);
-    end;
+    MoveAside('wowtype.dll');
+    MoveAside('wowtype-settings.exe');
   end;
 end;

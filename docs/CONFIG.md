@@ -278,7 +278,7 @@ Lexicon=
 
 Windows 版还在第一阶段（[WINDOWS.md](WINDOWS.md)）：设置在 `%LOCALAPPDATA%\WowType\wowtype.conf`，**键名、取值、默认值和上面一样**，
 `EmojiKey` 的默认值和 macOS 一样是 `Control+period`，也认 `CandidateFontSize`。开始菜单的「WowType 设置」（或任务栏上「中」按钮右键 →「WowType 设置…」）打开设置窗口，
-和 macOS 一样只写改过的键，注释、不认识的键原样留着；也可以右键 →「打开设置文件」用记事本改。存了以后下一次按键生效。检查更新（`CheckUpdate`、`BetaUpdates`）这一阶段还没有，读到了也不管；打字统计（`TypingStats`）记在同一个目录的 `stats.json`，还没有看统计的界面；
+和 macOS 一样只写改过的键，注释、不认识的键原样留着；也可以右键 →「打开设置文件」用记事本改。存了以后下一次按键生效。检查更新（`CheckUpdate`、`BetaUpdates`）和 macOS 一样，有新版时任务栏「中」按钮的右键菜单里多一项；打字统计（`TypingStats`）记在同一个目录的 `stats.json`，还没有看统计的界面；
 语音输入（`Voice*`）和另两端一样，模型要自己放进同一个目录的 `wtlocal\`（还没有下载按钮）。
 
 ### macOS
