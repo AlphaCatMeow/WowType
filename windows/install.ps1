@@ -70,12 +70,15 @@ $settings = Join-Path $Target 'wowtype-settings.exe'
 if (Test-Path $settings) {
     # 放不上快捷方式（精简过的系统没有开始菜单目录）不算装失败
     try {
-        New-Item -ItemType Directory -Force -Path (Split-Path $startMenuLink) | Out-Null
+        $folder = Split-Path $startMenuLink
+        New-Item -ItemType Directory -Force -Path $folder | Out-Null
+        # WScript.Shell 存不了中文名字的快捷方式：先用英文名存，再改名
+        $ascii = Join-Path $folder 'WowType-settings.lnk'
         $shell = New-Object -ComObject WScript.Shell
-        $link = $shell.CreateShortcut($startMenuLink)
+        $link = $shell.CreateShortcut($ascii)
         $link.TargetPath = $settings
-        $link.Description = 'WowType 设置'
         $link.Save()
+        Move-Item -Force -LiteralPath $ascii -Destination $startMenuLink
     } catch {
         Write-Warning "开始菜单的快捷方式没放上：$($_.Exception.Message)。设置窗口在 $settings"
     }

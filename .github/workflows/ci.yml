@@ -126,6 +126,8 @@ jobs:
           $tip = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{A895B83F-8F60-4990-A48F-17821E3BC14A}'
           if (-not (Test-Path $tip)) { throw '没注册到 TSF' }
           Get-ChildItem -Recurse $tip | Select-Object -ExpandProperty Name
+          $link = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\WowType 设置.lnk'
+          if (-not (Test-Path -LiteralPath $link)) { throw '开始菜单里没有「WowType 设置」' }
           # 类工厂和 QueryInterface：建一个文本服务对象（不激活）
           $service = [Activator]::CreateInstance([type]::GetTypeFromCLSID([guid]'A895B83F-8F60-4990-A48F-17821E3BC14A'))
           if ($null -eq $service) { throw '建不了文本服务对象' }
@@ -136,6 +138,7 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File "$pkg\install.ps1" -Uninstall -Target $target
           if ($LASTEXITCODE -ne 0) { throw "卸载失败：$LASTEXITCODE" }
           if (Test-Path $clsid) { throw '卸载以后 CLSID 还在' }
+          if (Test-Path -LiteralPath $link) { throw '卸载以后开始菜单里还有快捷方式' }
           if (Test-Path "$tip\LanguageProfile\0x00000804\{8106DB80-2DC6-4558-B368-86D26F78EC68}") { throw '卸载以后 TSF 里还有这个输入法' }
       - uses: actions/upload-artifact@v4
         with:
