@@ -85,6 +85,27 @@ char32_t typedCharacter(UINT virtualKey, LPARAM lParam, uint32_t modifiers) {
 
 bool isShift(WPARAM vk) { return vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT; }
 
+/// 同一次按键：TSF 先问（OnTestKeyDown）后给（OnKeyDown）时 lParam 的高位（之前的按键状态、重复次数）可能不一样，
+/// 只比虚拟键码、扫描码和扩展键位。（CI 的端到端打字测试发现整个 lParam 比的话每个键都处理两遍。）
+bool sameKey(WPARAM w1, LPARAM l1, WPARAM w2, LPARAM l2) {
+    return w1 == w2 && ((static_cast<UINT>(l1) ^ static_cast<UINT>(l2)) & 0x01FF0000u) == 0;
+}
+
+/// 设了环境变量 WOWTYPE_DEBUG_KEYS 时把每个按键回调记进日志（查按键处理了几遍用）。
+bool debugKeys() {
+    static const bool on = GetEnvironmentVariableW(L"WOWTYPE_DEBUG_KEYS", nullptr, 0) > 0;
+    return on;
+}
+
+void traceKey(const wchar_t *what, WPARAM wParam, LPARAM lParam, BOOL eaten) {
+    if (debugKeys()) {
+        wchar_t line[128];
+        swprintf_s(line, L"%s vk=%02X lParam=%08X eaten=%d", what, static_cast<unsigned>(wParam),
+                   static_cast<unsigned>(lParam), eaten);
+        log(line);
+    }
+}
+
 /// 放进系统剪贴板（语音结果，VoiceCopy）。
 void copyToClipboard(const std::string &utf8) {
     const std::wstring text = widen(utf8);
@@ -402,8 +423,9 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext *context, WPARAM wParam, LPAR
         return E_INVALIDARG;
     }
     // 同一个键问了两遍（有的应用会），照第一次答，不再处理
-    if (pendingDown_ && pendingDown_->wParam == wParam && pendingDown_->lParam == lParam) {
+    if (pendingDown_ && sameKey(pendingDown_->wParam, pendingDown_->lParam, wParam, lParam)) {
         *eaten = TRUE;
+        traceKey(L"OnTestKeyDown（问过了）", wParam, lParam, *eaten);
         return S_OK;
     }
     pendingDown_.reset();
@@ -413,6 +435,7 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext *context, WPARAM wParam, LPAR
         // 吃掉的键接着会来 OnKeyDown：那时照这次的答
         pendingDown_ = PendingKey{wParam, lParam};
     }
+    traceKey(L"OnTestKeyDown", wParam, lParam, *eaten);
     return S_OK;
 }
 
@@ -420,15 +443,17 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext *context, WPARAM wParam, LPARAM l
     if (!eaten) {
         return E_INVALIDARG;
     }
-    if (pendingDown_ && pendingDown_->wParam == wParam && pendingDown_->lParam == lParam) {
+    if (pendingDown_ && sameKey(pendingDown_->wParam, pendingDown_->lParam, wParam, lParam)) {
         pendingDown_.reset();
         *eaten = TRUE;
+        traceKey(L"OnKeyDown（问的时候处理过了）", wParam, lParam, *eaten);
         return S_OK;
     }
     // 没先问就直接给的（应用自己调 KeyDown）：现在处理
     pendingDown_.reset();
     handledUp_.reset();
     *eaten = processKeyDown(context, wParam, lParam) ? TRUE : FALSE;
+    traceKey(L"OnKeyDown", wParam, lParam, *eaten);
     return S_OK;
 }
 
@@ -436,7 +461,7 @@ STDMETHODIMP TextService::OnTestKeyUp(ITfContext *context, WPARAM wParam, LPARAM
     if (!eaten) {
         return E_INVALIDARG;
     }
-    if (handledUp_ && handledUp_->wParam == wParam && handledUp_->lParam == lParam) {
+    if (handledUp_ && sameKey(handledUp_->wParam, handledUp_->lParam, wParam, lParam)) {
         *eaten = handledUp_->eaten ? TRUE : FALSE;
         return S_OK;
     }

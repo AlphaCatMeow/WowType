@@ -177,7 +177,7 @@ jobs:
           $typing = (Resolve-Path build/windows/Release/wowtype-windows-typing-test.exe).Path
           $p = Start-Process $typing -Wait -PassThru -NoNewWindow
           if ($p.ExitCode -ne 0) {
-            Get-Content (Join-Path $env:LOCALAPPDATA 'WowType\wowtype.log') -ErrorAction SilentlyContinue
+            Get-Content (Join-Path $env:LOCALAPPDATA 'WowType\wowtype.log') -Tail 200 -ErrorAction SilentlyContinue
             throw "打字测试有 $($p.ExitCode) 项没过"
           }
           # 建一个文本服务对象：这个进程载入了 DLL，接着升级要能换掉它

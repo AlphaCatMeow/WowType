@@ -142,6 +142,8 @@ LRESULT CALLBACK proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
 
 int main() {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    // 输入法把每个按键回调记进日志：没过的时候 CI 打出来看
+    SetEnvironmentVariableW(L"WOWTYPE_DEBUG_KEYS", L"1");
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     WNDCLASSEXW wc{};
