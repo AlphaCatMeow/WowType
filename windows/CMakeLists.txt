@@ -5,7 +5,8 @@
 #   cmake -S windows -B build/windows -A x64
 #   cmake --build build/windows --config Release
 #
-# 产物：build/windows/Release/wowtype.dll（输入法，regsvr32 注册）、wowtype-windows-harness.exe（按键测试）、
+# 产物：build/windows/Release/wowtype.dll（输入法，regsvr32 注册）、wowtype-settings.exe（设置窗口）、
+# wowtype-windows-harness.exe（按键测试）、
 # wowtype-windows-config-dump.exe（设置契约，scripts/test-config-contract.py --windows 用）。
 # 核心和 DLL 都静态链 C 运行库（/MT），输入法装进别人的进程里，不指望那边有 VC++ 运行库。
 cmake_minimum_required(VERSION 3.21)
@@ -82,6 +83,10 @@ target_link_libraries(wowtype PRIVATE wowtype_common "${WOWTYPE_CORE_LIB}" ${COR
 target_compile_definitions(wowtype PRIVATE
   "$<$<COMPILE_LANGUAGE:RC>:WOWTYPE_VERSION_NUM=${WOWTYPE_VERSION_NUM}>"
   "$<$<COMPILE_LANGUAGE:RC>:WOWTYPE_VERSION_STR=\"${WOWTYPE_VERSION}\">")
+
+# 设置窗口：单独的进程，只读写 wowtype.conf（不链核心）
+add_executable(wowtype-settings WIN32 src/settings/settings_app.cpp src/settings/settings.rc)
+target_link_libraries(wowtype-settings PRIVATE wowtype_common comctl32 shell32 ole32 user32 gdi32)
 
 if(WOWTYPE_WINDOWS_TESTS)
   add_executable(wowtype-windows-harness tests/composer_test.cpp)

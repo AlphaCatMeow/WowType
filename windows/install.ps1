@@ -29,11 +29,13 @@ function Invoke-Regsvr32([string[]]$arguments) {
 }
 
 $dll = Join-Path $Target 'wowtype.dll'
+$startMenuLink = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\WowType 设置.lnk'
 
 if ($Uninstall) {
     if (Test-Path $dll) {
         Invoke-Regsvr32 @('/u', '/s', "`"$dll`"")
     }
+    Remove-Item -Force $startMenuLink -ErrorAction SilentlyContinue
     # 正在用着的 DLL 删不掉：留给重启以后
     Get-ChildItem -Path $Target -ErrorAction SilentlyContinue | ForEach-Object {
         try { Remove-Item -Recurse -Force $_.FullName } catch { Write-Warning "$($_.Exception.Message)（重启以后再删）" }
@@ -58,11 +60,20 @@ if (Test-Path $dll) {
 }
 Copy-Item -Force (Join-Path $source 'wowtype.dll') $dll
 Copy-Item -Force -Recurse (Join-Path $source 'data\*') (Join-Path $Target 'data')
-foreach ($f in @('install.ps1', 'LICENSE', 'README.txt')) {
+foreach ($f in @('wowtype-settings.exe', 'install.ps1', 'LICENSE', 'README.txt')) {
     if (Test-Path (Join-Path $source $f)) { Copy-Item -Force (Join-Path $source $f) $Target }
 }
 
 Invoke-Regsvr32 @('/s', "`"$dll`"")
+# 开始菜单里放一个「WowType 设置」
+$settings = Join-Path $Target 'wowtype-settings.exe'
+if (Test-Path $settings) {
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $shell.CreateShortcut($startMenuLink)
+    $link.TargetPath = $settings
+    $link.Description = 'WowType 设置'
+    $link.Save()
+}
 Write-Host "装好了：$Target"
 Write-Host '在「设置 → 时间和语言 → 语言和区域」的中文（简体）键盘里能看到 WowType，用 Win + 空格切过去。'
-Write-Host '设置文件：任务栏上「中」按钮右键 →「打开设置文件」。卸载：.\install.ps1 -Uninstall'
+Write-Host '设置：开始菜单里的「WowType 设置」，或者任务栏上「中」按钮右键。卸载：.\install.ps1 -Uninstall'

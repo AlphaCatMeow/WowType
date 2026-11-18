@@ -18,6 +18,7 @@ Windows 外壳只做平台的事：把按键翻成会话的键码、照会话给
 | TSF 文本服务 | `windows/src/tsf/text_service.*` | `ITfTextInputProcessorEx`、按键（`ITfKeyEventSink`）、组字和编辑会话、焦点 |
 | 候选框 | `windows/src/tsf/candidate_window.*` | 分层的弹出窗口，Direct2D + DirectWrite 画（彩色 emoji），位置用 `ITfContextView::GetTextExt` |
 | 任务栏「中 / 英」 | `windows/src/tsf/langbar.*` | `GUID_LBI_INPUTMODE` 按钮：左键切中英文，右键菜单切模式、打开设置文件和数据目录 |
+| 设置窗口 | `windows/src/settings/settings_app.cpp` | 单独的 `wowtype-settings.exe`，控件按设置项表生成，写回用 `Config::merged`（macOS `merged(changesFrom:into:)` 的 C++ 版） |
 | 引擎、数据 | `windows/src/tsf/engine_host.*` | 一个进程一份引擎（后台载入），设置文件改了下一次按键生效，学到的词每 20 次上屏存一次 |
 | 注册 | `windows/src/tsf/register.cpp`、`dllmain.cpp` | `regsvr32`：COM 类、简体中文下的输入法配置、能力类别（含沉浸式 / UWP） |
 | 测试 | `windows/tests/`、`windows/test.sh` | 按键测试照 `macos/Tests/main.swift`、`fcitx5-addon/test/key_harness.cpp` 的同名用例；Linux 上也能跑 |
@@ -88,7 +89,7 @@ DLL 装进每个应用的进程里，载入以后不会卸载：换 DLL 前先�
 
 | 文件 | 说明 |
 |---|---|
-| `wowtype.conf` | 设置，**键名、取值、默认值和 Linux、macOS 一样**，文件拷过来就能用（[CONFIG.md](CONFIG.md)）。还没有设置界面：任务栏「中」按钮右键 →「打开设置文件」用记事本打开（没有就先建一个），存了以后下一次按键生效 |
+| `wowtype.conf` | 设置，**键名、取值、默认值和 Linux、macOS 一样**，文件拷过来就能用（[CONFIG.md](CONFIG.md)）。用设置窗口改（开始菜单「WowType 设置」或任务栏「中」按钮右键 →「WowType 设置…」），也可以右键 →「打开设置文件」用记事本改；存了以后下一次按键生效 |
 | `user.tsv`、`history.tsv` | 学到的词和输入习惯，格式同另两端 |
 | `custom.tsv` | 自定义词，格式同 Linux（[CONFIG.md](CONFIG.md#自定义词)） |
 | `emoji-recent.txt` | 最近用过的 emoji |
@@ -108,7 +109,10 @@ DLL 装进每个应用的进程里，载入以后不会卸载：换 DLL 前先�
 
 这些在 Linux、macOS 上有，Windows 上还没做（`spec/config.json` 里对应的项 `platforms` 没写 `windows`，读到了也不管）：
 
-- 设置界面（先直接改 `wowtype.conf`）、图形安装程序（现在是 zip + `install.ps1`，还不进 Release）和自动更新（`CheckUpdate`、`BetaUpdates`）
+- 设置窗口（`wowtype-settings.exe`，`windows/src/settings/`）有了基本的：常规、候选、输入、模糊音、标点与表情、语音、翻译七页，
+  按 `spec/config.json` 里 Windows 认的项生成，只写改过的键（和 macOS 一样，别处改的、注释、不认识的键留着），API Key 存 `translate.key`。
+  还没有的：自定义词的编辑页（按钮用记事本打开 `custom.tsv`）、整句增强模型导入、语音模型和本地翻译模型的下载、看统计、诊断信息
+- 图形安装程序（现在是 zip + `install.ps1`，还不进 Release）和自动更新（`CheckUpdate`、`BetaUpdates`）
 - 语音模型的一键下载：语音输入本身有（按住 `VoiceKey`，默认右 Alt，和另两端一样），但模型要自己放进数据目录的 `wtlocal\`
   （从 Linux 的 `~/.local/share/wowtype/wtlocal`、macOS 的 `~/Library/Application Support/WowType/wtlocal` 拷过来，
   或者在 Linux 上用设置界面下载）。没放时按语音键会提示去设置里下载，Windows 上就是这样放

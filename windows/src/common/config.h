@@ -68,6 +68,17 @@ public:
     std::optional<Shortcut> toggleKey() const { return shortcut("ToggleKey"); }
     std::optional<Shortcut> translateModeKey() const { return shortcut("TranslateModeKey"); }
 
+    /// 把设置写进配置文件的原文（existing 是 nullptr 或全是空白时从模板开始），返回新的原文。和 macOS 的
+    /// WowtypeConfig.serialized(into:) 一样：只动认识的键，值读出来已经一样的那行原样不动，不一样的只换 = 后面的值；
+    /// 注释、空行、不认识的键（检查更新这些 Windows 还没有的）、[分组] 原样留着，所以别的端拷过来的文件改完拿回去照样能用。
+    /// 文件里没有、又不是默认值的键：有注释掉的那一行（# 键=默认值）就地换成生效的，没有就补在最后一个设置后面。
+    /// 只删一种行：0.3.12 及以前的 Shuangpin 开关。
+    std::string serialized(const std::string *existing) const;
+    /// 窗口开着时文件在别处改了：只把自己相对 base 改过的键写进 current（current 是 nullptr 时从模板开始）。
+    std::string merged(const Config &base, const std::string *current) const;
+    /// 第一次打开设置时写出来的文件：说明 + 每项注释掉的默认值（# PageSize=9），一项都不生效。
+    static std::string templateText();
+
     bool operator==(const Config &o) const { return values_ == o.values_; }
     bool operator!=(const Config &o) const { return !(*this == o); }
 

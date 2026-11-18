@@ -11,6 +11,8 @@ cd "$(dirname "$0")/.."
 
 DATA=${1:?用法：windows/package.sh <数据目录> <wowtype.dll> [输出目录]}
 DLL=${2:?用法：windows/package.sh <数据目录> <wowtype.dll> [输出目录]}
+# 设置窗口和 DLL 在同一个目录（CMake 一起编出来的）
+SETTINGS=$(dirname "$DLL")/wowtype-settings.exe
 OUT=${3:-dist/windows}
 VERSION=${WOWTYPE_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' core/Cargo.toml | head -1)}
 
@@ -23,6 +25,7 @@ pkg=$OUT/$name
 rm -rf "$pkg" "$OUT/$name.zip"
 mkdir -p "$pkg/data"
 cp "$DLL" "$pkg/wowtype.dll"
+if [[ -f "$SETTINGS" ]]; then cp "$SETTINGS" "$pkg/"; fi
 cp windows/install.ps1 "$pkg/"
 cp "$DATA/lexicon.tsv" "$DATA/english.txt" "$DATA/wubi86.tsv" "$pkg/data/"
 for f in words.lm nnlm.bin; do
@@ -45,13 +48,13 @@ WowType $VERSION（Windows x64，开发中的第一阶段，没有在很多机�
 装到 %ProgramFiles%\WowType，然后用 Win + 空格切到 WowType。
 卸载：powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
 
-设置：任务栏上「中」按钮右键 →「打开设置文件」（键名和 Linux、macOS 一样）。
+设置：开始菜单里的「WowType 设置」，或者任务栏上「中」按钮右键 →「WowType 设置…」。
 数据（学到的词、设置、日志）：%LOCALAPPDATA%\WowType
 说明和已知问题：https://github.com/Gloridust/WowType/blob/main/docs/WINDOWS.md
 EOF
 
 # 安装包里只能有这些文件
-allowed='^(wowtype\.dll|install\.ps1|README\.txt|data|data/(lexicon\.tsv|english\.txt|words\.lm|nnlm\.bin|s2t\.tsv|wubi86\.tsv|OPENCC-LICENSE|DATA-LICENSE|DATA-SOURCE\.txt|DATA-VERSION|DATA-MANIFEST|DATA-WUBI-LICENSE|DATA-WUBI-AUTHORS|DATA-WUBI-SOURCE\.txt))$'
+allowed='^(wowtype\.dll|wowtype-settings\.exe|install\.ps1|README\.txt|data|data/(lexicon\.tsv|english\.txt|words\.lm|nnlm\.bin|s2t\.tsv|wubi86\.tsv|OPENCC-LICENSE|DATA-LICENSE|DATA-SOURCE\.txt|DATA-VERSION|DATA-MANIFEST|DATA-WUBI-LICENSE|DATA-WUBI-AUTHORS|DATA-WUBI-SOURCE\.txt))$'
 bad=$(cd "$pkg" && find . -mindepth 1 | sed 's#^\./##' | grep -Ev "$allowed" || true)
 if [[ -n "$bad" ]]; then
   echo "安装包里有不该带的文件：" >&2

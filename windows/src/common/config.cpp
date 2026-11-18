@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <optional>
 
 #include "wowtype_core.h"
 
@@ -63,6 +64,29 @@ std::optional<long long> parseInt(std::string_view s) {
         n = n * 10 + (s[i] - '0');
     }
     return negative ? -n : n;
+}
+
+/// 写文件时：值里有空白、换行，或者本身就被引号包着，照 fcitx5 的写法加双引号并转义（unquote 读回来一样）。
+std::string quote(const std::string &value) {
+    const bool wrapped = value.size() >= 2 && value.front() == '"' && value.back() == '"';
+    const bool special = value.find_first_of(" \t\n\r\v\f") != std::string::npos;
+    if (!wrapped && !special) {
+        return value;
+    }
+    std::string out = "\"";
+    for (const char c : value) {
+        switch (c) {
+        case '\\': out += "\\\\"; break;
+        case '"': out += "\\\""; break;
+        case '\n': out += "\\n"; break;
+        default: out += c;
+        }
+    }
+    return out + "\"";
+}
+
+bool blank(std::string_view s) {
+    return std::all_of(s.begin(), s.end(), [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; });
 }
 
 const SettingDef *find(const std::string &key) {
@@ -250,6 +274,140 @@ void Config::setValue(const std::string &key, std::string_view value) {
         }
         break;
     }
+}
+
+std::string Config::templateText() {
+    std::string out = "# WowType 设置（键名、取值和 Linux、macOS 的 wowtype.conf 一样，见 docs/CONFIG.md）。\n"
+                      "# 前面带 # 的设置行是默认值，不生效；要改哪一项，去掉那一行前面的 # 再改值。\n"
+                      "# 改完保存，下一次按键时生效；删掉一行就是用默认值。注释要单独写一行。\n"
+                      "# 设置窗口只写和默认值不一样的项，以后默认值变了，没改过的项跟着变。\n\n";
+    const Config d;
+    for (const auto &def : settingDefs()) {
+        out += std::string("# ") + def.key + "=" + quote(d.value(def.key)) + "\n";
+    }
+    return out;
+}
+
+std::string Config::serialized(const std::string *existing) const {
+    if (!existing || blank(*existing)) {
+        const std::string text = templateText();
+        return serialized(&text);
+    }
+    // 按 \n 拆，每行末尾的 \r 留着
+    std::vector<std::string> lines;
+    {
+        std::size_t start = 0;
+        while (true) {
+            const std::size_t nl = existing->find('\n', start);
+            lines.push_back(existing->substr(start, nl == std::string::npos ? std::string::npos : nl - start));
+            if (nl == std::string::npos) {
+                break;
+            }
+            start = nl + 1;
+        }
+    }
+    std::map<std::string, bool> seen;
+    std::optional<std::size_t> firstGroup;
+    bool crlf = false;
+    std::vector<std::size_t> oldShuangpin;
+    std::map<std::string, std::size_t> commented;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        std::string line = lines[i];
+        const bool cr = !line.empty() && line.back() == '\r';
+        if (cr) {
+            line.pop_back();
+            crlf = true;
+        }
+        const std::string_view body = trim(line);
+        if (!body.empty() && body.front() == '[' && !firstGroup) {
+            firstGroup = i;
+        }
+        if (!firstGroup && !body.empty() && body.front() == '#') {
+            // 注释掉的设置行（# PageSize=9、#PageSize=9）：这个键要写进去时就地换成生效的
+            const std::string_view rest = body.substr(1);
+            const std::size_t eq = rest.find('=');
+            if (eq != std::string_view::npos) {
+                const std::string key(trim(rest.substr(0, eq)));
+                if (find(key) && !commented.count(key)) {
+                    commented[key] = i;
+                }
+            }
+        }
+        if (firstGroup || body.empty() || body.front() == '#' || body.front() == ';') {
+            continue;
+        }
+        const std::size_t eq = line.find('=');
+        if (eq == std::string::npos) {
+            continue;
+        }
+        const std::string key(trim(std::string_view(line).substr(0, eq)));
+        if (key == "Shuangpin") {
+            oldShuangpin.push_back(i);
+            continue;
+        }
+        if (!find(key)) {
+            continue;
+        }
+        const std::string wanted = value(key);
+        seen[key] = true;
+        // 这一行单独读出来（从默认值开始）已经是要的值：不动
+        Config probe;
+        probe.setValue(key, unquote(trim(std::string_view(line).substr(eq + 1))));
+        if (probe.value(key) == wanted) {
+            continue;
+        }
+        std::size_t start = eq + 1;
+        while (start < line.size() && (line[start] == ' ' || line[start] == '\t')) {
+            ++start;
+        }
+        lines[i] = line.substr(0, start) + quote(wanted) + (cr ? "\r" : "");
+    }
+    // 文件里没有的键读出来是默认值；TranslateLocal 没写时跟着 TranslateBaseUrl 走
+    Config implied;
+    implied.values_["TranslateLocal"] = impliedTranslateLocal(value("TranslateBaseUrl")) ? "True" : "False";
+    std::vector<std::string> missing;
+    for (const auto &def : settingDefs()) {
+        const std::string key = def.key;
+        if (seen.count(key) || value(key) == implied.value(key)) {
+            continue;
+        }
+        const std::string entry = key + "=" + quote(value(key)) + (crlf ? "\r" : "");
+        if (const auto it = commented.find(key); it != commented.end()) {
+            lines[it->second] = entry;
+        } else {
+            missing.push_back(entry);
+        }
+    }
+    for (auto it = oldShuangpin.rbegin(); it != oldShuangpin.rend(); ++it) {
+        lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(*it));
+    }
+    if (firstGroup) {
+        *firstGroup -= oldShuangpin.size();
+    }
+    if (!missing.empty()) {
+        // 补在最后一个设置后面：跳过 [分组]（或文件末尾）前面的空行
+        std::size_t at = firstGroup ? *firstGroup : lines.size();
+        while (at > 0 && (trim(lines[at - 1]).empty() || lines[at - 1] == "\r")) {
+            --at;
+        }
+        lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(at), missing.begin(), missing.end());
+    }
+    std::string out;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        out += (i ? "\n" : "") + lines[i];
+    }
+    return out;
+}
+
+std::string Config::merged(const Config &base, const std::string *current) const {
+    Config target = current ? parse(*current) : Config();
+    for (const auto &def : settingDefs()) {
+        const std::string mine = value(def.key);
+        if (mine != base.value(def.key)) {
+            target.setValue(def.key, mine);
+        }
+    }
+    return target.serialized(current);
 }
 
 int Config::number(const char *key) const {

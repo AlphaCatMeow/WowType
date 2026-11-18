@@ -32,6 +32,7 @@ constexpr UINT kTranslatePollMs = 50;
 constexpr UINT kModeHintMs = 1000;
 
 enum MenuId : UINT {
+    kMenuSettings = 10,
     kMenuChinese = 1,
     kMenuEnglish,
     kMenuTranslate,
@@ -1167,10 +1168,27 @@ std::vector<TextService::MenuItem> TextService::menuItems() {
         {kMenuTranslate, radio(Composer::Mode::Translate) | (translate ? 0u : static_cast<DWORD>(TF_LBMENUF_GRAYED)),
          L"互译"},
         {0, TF_LBMENUF_SEPARATOR, L""},
+        {kMenuSettings, 0, L"WowType 设置…"},
         {kMenuConfig, 0, L"打开设置文件（wowtype.conf）"},
         {kMenuDataDir, 0, L"打开数据目录"},
     };
 }
+
+namespace {
+
+/// 用记事本打开设置文件（没有就先建一个带说明的模板），存了以后下一次按键就生效。
+void openConfigFile() {
+    auto &host = EngineHost::instance();
+    CreateDirectoryW(host.dataDir().c_str(), nullptr);
+    const std::wstring path = host.configPath();
+    if (!fileExists(path)) {
+        std::ofstream out(path, std::ios::binary);
+        out << Config::templateText();
+    }
+    ShellExecuteW(nullptr, L"open", L"notepad.exe", path.c_str(), nullptr, SW_SHOWNORMAL);
+}
+
+} // namespace
 
 void TextService::menuCommand(UINT id) {
     auto &host = EngineHost::instance();
@@ -1190,19 +1208,19 @@ void TextService::menuCommand(UINT id) {
             flush(currentContext());
         }
         break;
-    case kMenuConfig: {
-        // 还没有设置界面：用记事本打开设置文件（没有就先建一个带说明的），存了以后下一次按键就生效
-        CreateDirectoryW(host.dataDir().c_str(), nullptr);
-        const std::wstring path = host.configPath();
-        if (!fileExists(path)) {
-            std::ofstream out(path, std::ios::binary);
-            out << "# WowType 设置（键名、取值和 Linux、macOS 一样，见 docs/CONFIG.md）\n"
-                   "# 一行一个 键=值，开关写 True / False。存盘以后下一次按键就生效。\n"
-                   "# PageSize=9\n# CandidateLayout=Horizontal\n# InputScheme=Quanpin\n# ShiftToggle=Both\n";
+    case kMenuSettings: {
+        // 设置窗口是安装目录里单独的程序（输入法在别人的进程里，不在这里开窗口）；没有就用记事本开设置文件
+        const std::wstring exe = moduleDir() + L"\\wowtype-settings.exe";
+        if (fileExists(exe)) {
+            ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        } else {
+            openConfigFile();
         }
-        ShellExecuteW(nullptr, L"open", L"notepad.exe", path.c_str(), nullptr, SW_SHOWNORMAL);
         break;
     }
+    case kMenuConfig:
+        openConfigFile();
+        break;
     case kMenuDataDir:
         CreateDirectoryW(host.dataDir().c_str(), nullptr);
         ShellExecuteW(nullptr, L"open", host.dataDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL);

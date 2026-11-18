@@ -265,6 +265,70 @@ int main(int argc, char **argv) {
         check(c.shuangpin(), "旧的 Shuangpin=True 是双拼");
     }
 
+    // ---------------------------------------------------------------- 写回设置文件（和 macOS 的 serialized、merged 同名用例）
+    {
+        const Config d;
+        const std::string tmpl = Config::templateText();
+        check(d.serialized(nullptr) == tmpl, "没有设置文件：写出来的是模板");
+        check(Config::parse(tmpl) == d, "模板读回来是默认值");
+        Config one;
+        one.setValue("PageSize", "5");
+        one.setValue("Traditional", "True");
+        const std::string fromTemplate = one.serialized(nullptr);
+        check(fromTemplate.find("\nPageSize=5\n") != std::string::npos &&
+                  fromTemplate.find("# PageSize=") == std::string::npos &&
+                  fromTemplate.find("\n# Fuzzy=False\n") != std::string::npos,
+              "从模板写只就地换掉改过的键", fromTemplate);
+        check(Config::parse(fromTemplate) == one && one.serialized(&fromTemplate) == fromTemplate,
+              "从模板写的读回来一样，再写一次不变");
+        const std::string mine = "# 我的设置\n#PageSize=7\n";
+        check(one.serialized(&mine) == "# 我的设置\nPageSize=5\nTraditional=True\n", "自己注释掉的设置行也就地换掉",
+              one.serialized(&mine));
+
+        const std::string linux = "# 自己写的注释\nCandidateLayout=horizontal\nPageSize=20\n  TypoCorrection = False\n"
+                                  "CheckUpdate=False\nVoiceKey=Alt_R\nTranslateBaseUrl=https://api.deepseek.com/v1\n"
+                                  "Lexicon=\"~/dicts/my lexicon.tsv\"\nTraditional=maybe\nShuangpinScheme=xiaohe\n"
+                                  "EmojiKey=Super+period\n\n[Hotkey]\nPageSize=4\n";
+        const Config parsed = Config::parse(linux);
+        check(parsed.serialized(&linux) == linux, "设置没改：文件一个字都不动", parsed.serialized(&linux));
+        Config changed = parsed;
+        changed.setValue("PageSize", "5");
+        changed.setValue("TypoCorrection", "True");
+        changed.setValue("Fuzzy", "True");
+        changed.setValue("Traditional", "True");
+        const std::string out = changed.serialized(&linux);
+        check(Config::parse(out) == changed, "改过的设置读回来一样", out);
+        check(out.find("\nPageSize=5\n") != std::string::npos && out.find("\n  TypoCorrection = True\n") != std::string::npos,
+              "改的行只换值，前面的空格留着", out);
+        check(out.find("CheckUpdate=False\n") != std::string::npos && out.find("EmojiKey=Super+period\n") != std::string::npos,
+              "Windows 还没有的键、读出来一样的写法原样留着", out);
+        const std::string tail = "Fuzzy=True\n\n[Hotkey]\nPageSize=4\n";
+        check(out.size() > tail.size() && out.compare(out.size() - tail.size(), tail.size(), tail) == 0,
+              "新加的键补在 [分组] 前面", out);
+        const std::string twice = "PageSize=5\r\nFuzzy=False\r\nPageSize=7\r\n";
+        Config three = Config::parse(twice);
+        three.setValue("PageSize", "3");
+        three.setValue("Traditional", "True");
+        check(three.serialized(&twice) == "PageSize=3\r\nFuzzy=False\r\nPageSize=3\r\nTraditional=True\r\n",
+              "重复的键都改，\\r\\n 留着", three.serialized(&twice));
+        const std::string old = "Shuangpin=True\nPageSize=7\n";
+        const Config oldConfig = Config::parse(old);
+        check(oldConfig.serialized(&old) == "PageSize=7\nInputScheme=Shuangpin\n", "旧的 Shuangpin 行换成 InputScheme",
+              oldConfig.serialized(&old));
+        const std::string opened = "PageSize=7\nFuzzy=False\nVoice=True\n";
+        const Config base = Config::parse(opened);
+        Config window = base;
+        window.setValue("PageSize", "4");
+        const std::string edited = "PageSize=7\nFuzzy=True\nVoice=True\nTraditional=True\n";
+        check(window.merged(base, &edited) == "PageSize=4\nFuzzy=True\nVoice=True\nTraditional=True\n",
+              "合并：别处改的留着，窗口改的写上", window.merged(base, &edited));
+        Config quoted;
+        quoted.setValue("Lexicon", "C:\\词库 \"新\".tsv");
+        const std::string q = quoted.serialized(nullptr);
+        check(Config::parse(q) == quoted && q.find("Lexicon=\"C:\\\\词库 \\\"新\\\".tsv\"") != std::string::npos,
+              "带空格、引号的值加引号转义", q);
+    }
+
     const auto fresh = [&](Config config = Config{}) {
         auto client = std::make_unique<FakeClient>();
         auto c = std::make_unique<Composer>(engine, client.get());
