@@ -173,6 +173,13 @@ jobs:
           if (-not (Test-Path $uninstallKey)) { throw '「设置 → 应用」里没有卸载项' }
           if (-not (Test-Path (Join-Path $app 'data\lexicon.tsv'))) { throw '没装词库' }
           (Get-ItemProperty $uninstallKey).DisplayName
+          # 端到端打字：开一个输入框，切到 WowType，用 SendInput 按真的键，看输入框里的字和候选框
+          $typing = (Resolve-Path build/windows/Release/wowtype-windows-typing-test.exe).Path
+          $p = Start-Process $typing -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) {
+            Get-Content (Join-Path $env:LOCALAPPDATA 'WowType\wowtype.log') -ErrorAction SilentlyContinue
+            throw "打字测试有 $($p.ExitCode) 项没过"
+          }
           # 建一个文本服务对象：这个进程载入了 DLL，接着升级要能换掉它
           $service = [Activator]::CreateInstance([type]::GetTypeFromCLSID([guid]'A895B83F-8F60-4990-A48F-17821E3BC14A'))
           if ($null -eq $service) { throw '建不了文本服务对象' }

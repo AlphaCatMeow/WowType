@@ -107,4 +107,7 @@ if(WOWTYPE_WINDOWS_TESTS)
   target_link_libraries(wowtype-windows-harness PRIVATE wowtype_common "${WOWTYPE_CORE_LIB}" ${CORE_SYSTEM_LIBS})
   add_executable(wowtype-windows-config-dump tests/config_dump.cpp)
   target_link_libraries(wowtype-windows-config-dump PRIVATE wowtype_common)
+  # 端到端打字测试：要先装好输入法（CI 装完安装程序以后跑）
+  add_executable(wowtype-windows-typing-test tests/typing_test.cpp)
+  target_link_libraries(wowtype-windows-typing-test PRIVATE ole32 uuid user32)
 endif()
