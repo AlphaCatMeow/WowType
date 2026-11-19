@@ -227,6 +227,8 @@ pub struct Engine {
     wubi: RwLock<Option<Arc<wubi::WubiTable>>>,
     /// 候选新词：分几次选出来拼成、第一次出现的词，第二次再拼出来才收进用户词库。
     new_words: RwLock<HashMap<String, learn::NewWord>>,
+    /// 忘掉的词和忘掉的时间（[`Engine::forget_word`]），跟输入习惯一起存，几个进程合并时用，见 [`learn::FORGOTTEN_TTL_MS`]。
+    forgotten: RwLock<learn::Forgotten>,
     /// 最近的学习改动（[`Engine::undo_learning`] 用）。
     journal: Mutex<learn::Journal>,
     /// 后台存盘（[`Engine::save_user_dict_async`]）。引擎释放时先写完。
@@ -253,6 +255,7 @@ impl Engine {
             nnlm: RwLock::new(None),
             wubi: RwLock::new(None),
             new_words: RwLock::new(HashMap::new()),
+            forgotten: RwLock::new(HashMap::new()),
             journal: Mutex::new(learn::Journal::default()),
             saver: saver::Saver::default(),
         }
@@ -625,19 +628,19 @@ impl Engine {
     pub fn save_history<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
         // 后台还排着、正在写的旧数据先写完，别等这次写好以后再盖上去
         self.saver.flush();
-        let (history, pairs, new_words) = self.history_snapshot()?;
-        let text = crate::learn::history_text(&history, &pairs, &new_words, now_ms());
+        let (history, pairs, new_words, forgotten) = self.history_snapshot()?;
+        let text = crate::learn::history_text_with(&history, &pairs, &new_words, &forgotten, now_ms());
         crate::fsutil::write_atomic(path.as_ref(), text.as_bytes())
     }
 
     /// 在后台存输入习惯：这里只在锁里抄一份，排成文字、写文件（两次 fsync）在存盘的线程上做。
     /// 连着几次还没写的合并成一次。[`Engine::save_wait`] 等写完。
     pub fn save_history_async<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
-        let (history, pairs, new_words) = self.history_snapshot()?;
+        let (history, pairs, new_words, forgotten) = self.history_snapshot()?;
         let now = now_ms();
         self.saver.submit(
             path.as_ref().to_path_buf(),
-            Box::new(move || Ok(crate::learn::history_text(&history, &pairs, &new_words, now))),
+            Box::new(move || Ok(crate::learn::history_text_with(&history, &pairs, &new_words, &forgotten, now))),
         );
         Ok(())
     }
@@ -662,7 +665,7 @@ impl Engine {
     #[allow(clippy::type_complexity)]
     fn history_snapshot(
         &self,
-    ) -> Result<(HashMap<String, HistoryEntry>, UserPairs, HashMap<String, learn::NewWord>)> {
+    ) -> Result<(HashMap<String, HistoryEntry>, UserPairs, HashMap<String, learn::NewWord>, learn::Forgotten)> {
         let history = self
             .history
             .read()
@@ -678,7 +681,12 @@ impl Engine {
             .read()
             .map_err(|_| anyhow::anyhow!("new words lock poisoned"))?
             .clone();
-        Ok((history, pairs, new_words))
+        let forgotten = self
+            .forgotten
+            .read()
+            .map_err(|_| anyhow::anyhow!("forgotten lock poisoned"))?
+            .clone();
+        Ok((history, pairs, new_words, forgotten))
     }
 
     /// 读回 [`Engine::save_history`] 存的输入习惯，返回条数。
@@ -695,7 +703,15 @@ impl Engine {
             .new_words
             .write()
             .map_err(|_| anyhow::anyhow!("new words lock poisoned"))?;
-        crate::learn::load_history(path, &mut history, &mut pairs, &mut new_words)
+        let mut forgotten = self
+            .forgotten
+            .write()
+            .map_err(|_| anyhow::anyhow!("forgotten lock poisoned"))?;
+        let n = crate::learn::load_history_with(path, &mut history, &mut pairs, &mut new_words, &mut forgotten)?;
+        drop((history, pairs, new_words, forgotten));
+        // 别的进程忘掉的词：用户词库里的也去掉（用户词库没有时间，按忘掉的记录来）
+        self.drop_forgotten_user_words();
+        Ok(n)
     }
 
     /// 上次选这个词时的次数（衰减过、四舍五入），没选过是 0。
@@ -922,7 +938,43 @@ impl Engine {
 
     /// 添加用户词（拼音可以是 ni hao / nihao / xi'an）。
     pub fn add_user_word(&self, pinyin: &str, word: &str, freq: f64) -> Result<()> {
+        self.unforget(word);
         self.lexicon.add(pinyin, word, freq)
+    }
+
+    /// 特意加进来的词（设置里加、导入）不再算忘掉的。忘掉以后又选了的不用这个：热度的时间比忘掉的晚，
+    /// 合并、存盘时按时间就知道又要了（选了又退格撤销的话热度退回去，还算忘掉的）。
+    fn unforget(&self, word: &str) {
+        let known = self.forgotten.read().is_ok_and(|f| f.contains_key(word));
+        if known {
+            if let Ok(mut forgotten) = self.forgotten.write() {
+                forgotten.remove(word);
+            }
+        }
+    }
+
+    /// 按忘掉的词去掉用户词库里的（合并别的进程存的用户词库、输入习惯以后）。忘掉以后又选过的
+    /// （热度的时间更晚）留着；自定义词不动。
+    fn drop_forgotten_user_words(&self) {
+        let words: Vec<String> = match (self.forgotten.read(), self.history.read()) {
+            (Ok(f), Ok(history)) if !f.is_empty() => f
+                .iter()
+                .filter(|(w, at)| history.get(w.as_str()).map_or(true, |e| e.last_used_ms <= **at))
+                .map(|(w, _)| w.clone())
+                .collect(),
+            _ => return,
+        };
+        for word in words {
+            if !self.lexicon.is_custom(&word) {
+                self.lexicon.remove(&word);
+            }
+        }
+    }
+
+    /// 是不是记着忘掉了（测试、诊断用）。
+    pub fn is_forgotten(&self, word: &str) -> bool {
+        let word = self.lexicon_form(word);
+        self.forgotten.read().is_ok_and(|f| f.contains_key(&word))
     }
 
     /// 删除用户词，返回是否删掉了。
@@ -949,6 +1001,10 @@ impl Engine {
         if let Ok(mut pairs) = self.pairs.write() {
             forgot |= pairs.remove_word(word) > 0;
         }
+        // 记下忘掉的时间（这个进程里本来没学过也记：别的应用进程可能学过，合并时按它去掉），跟输入习惯一起存
+        if let Ok(mut forgotten) = self.forgotten.write() {
+            forgotten.insert(word.to_string(), now_ms());
+        }
         // 下一次上屏别再拿刚忘掉的词接搭配
         if let Ok(mut last) = self.last_word.write() {
             if *last == word {
@@ -968,8 +1024,11 @@ impl Engine {
         self.lexicon.save_tsv(path)
     }
 
+    /// 读用户词库，和内存里的合并（同一个词留大的频次）。记着忘掉了的词不合并回来（见 [`Engine::forget_word`]）。
     pub fn load_user_dict<P: AsRef<std::path::Path>>(&self, path: P) -> Result<usize> {
-        self.lexicon.load_tsv(path)
+        let n = self.lexicon.load_tsv(path)?;
+        self.drop_forgotten_user_words();
+        Ok(n)
     }
 
     /// 读自定义词文件（custom.tsv），整体替换上一次读到的；文件不存在就清空。
@@ -5236,6 +5295,73 @@ mod peer_learning {
         b.load_user_dict(&user).unwrap();
         b.load_history(&history).unwrap();
         assert_eq!(top(&b), learned);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A 里 Ctrl+Delete 忘掉的词：开着的 B 合并以后也忘了，B 存盘、A 再合并也不会回来；
+    /// 之后在 B 里又选了（忘掉以后又要了），A 合并以后又有了。
+    #[test]
+    fn forgotten_word_stays_forgotten_across_engines() {
+        let tsv = "ni hao\t你好\t1000\n";
+        let make = || {
+            let lexicon: Arc<dyn Lexicon> = Arc::new(lexicon::MemoryLexicon::from_tsv_str(tsv).unwrap());
+            let lm: Arc<dyn LanguageModel> = Arc::new(lm::BigramLm::default());
+            Engine::new(lexicon, lm)
+        };
+        let dir = std::env::temp_dir().join(format!("wowtype-forget-peer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (user, history) = (dir.join("user.tsv"), dir.join("history.tsv"));
+        let save = |e: &Engine| {
+            e.load_history(&history).ok();
+            e.load_user_dict(&user).ok();
+            e.save_user_dict(&user).unwrap();
+            e.save_history(&history).unwrap();
+        };
+        let merge = |e: &Engine| {
+            e.load_history(&history).unwrap();
+            e.load_user_dict(&user).unwrap();
+        };
+        let has = |e: &Engine| e.user_words().iter().any(|(_, w, _)| w == "我特") || e.history_count("我特") > 0;
+
+        let a = make();
+        let b = make();
+        a.add_user_word("wo te", "我特", 5000.0).unwrap();
+        a.set_context("我特");
+        a.record_selection("你好");
+        a.record_selection("我特");
+        save(&a);
+        merge(&b);
+        assert!(has(&b), "B 合并到了 A 学的词");
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(a.forget_word("我特"));
+        save(&a);
+        assert!(std::fs::read_to_string(&history).unwrap().contains("f\t我特\t"), "忘掉的词写进输入习惯");
+        merge(&b);
+        assert!(!has(&b), "B 合并以后也忘了");
+        assert_eq!(b.pair_count(), 0, "和它有关的搭配也去掉");
+        save(&b);
+        merge(&a);
+        assert!(!has(&a), "B 存过以后 A 合并也不会回来");
+        assert!(!std::fs::read_to_string(&user).unwrap().contains("我特"));
+
+        // 选了又退格撤销：还算忘掉的
+        let start = b.learn_mark();
+        b.record_selection_with_pinyin("我特", Some("wo te"));
+        let end = b.learn_mark();
+        assert!(b.undo_learning(start, end));
+        save(&b);
+        merge(&a);
+        assert!(!has(&a), "撤销了的那次不算又要了");
+
+        // 忘掉以后在 B 里又选了：又要了，A 合并以后有了，忘掉的记录也不写了
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        b.record_selection_with_pinyin("我特", Some("wo te"));
+        save(&b);
+        merge(&a);
+        assert!(a.history_count("我特") > 0, "又选过的热度合并回来");
+        assert!(!a.is_forgotten("我特"));
+        assert!(!std::fs::read_to_string(&history).unwrap().contains("f\t我特\t"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

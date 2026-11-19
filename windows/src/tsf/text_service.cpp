@@ -92,10 +92,7 @@ bool sameKey(WPARAM w1, LPARAM l1, WPARAM w2, LPARAM l2) {
 }
 
 /// 设了环境变量 WOWTYPE_DEBUG_KEYS 时把每个按键回调记进日志（查按键处理了几遍用）。
-bool debugKeys() {
-    static const bool on = GetEnvironmentVariableW(L"WOWTYPE_DEBUG_KEYS", nullptr, 0) > 0;
-    return on;
-}
+bool debugKeys() { return debugLogging(); }
 
 void traceKey(const wchar_t *what, WPARAM wParam, LPARAM lParam, BOOL eaten) {
     if (debugKeys()) {

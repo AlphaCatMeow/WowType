@@ -309,17 +309,19 @@ void EngineHost::mergeLearning(WowtypeEngineHandle *engine) {
     }
     // 每个应用进程各有一个引擎、各存各的：文件和上次合并时不一样了（别的进程存过，也可能是自己刚存的）就合并进来。
     // 合并自己存的没关系：用户词留大的频次、输入习惯同一条留最近用过的（核心的 load 就是这么合并的），不会往回改。
-    // 以前只认「不是自己写的」：自己的存盘写完的那一刻别的进程也写过，就当成自己的、漏了（CI 的两个进程测试抓到的）
-    if (const FILETIME now = fileStamp(userPath); !sameStamp(now, userStamp_)) {
-        const int n = wowtype_engine_load_user_dict(engine, narrow(userPath).c_str());
-        userStamp_ = now;
-        log(L"合并 user.tsv：" + std::to_wstring(n) + L" 条");
+    // 以前只认「不是自己写的」：自己的存盘写完的那一刻别的进程也写过，就当成自己的、漏了（CI 的两个进程测试抓到的）。
+    // 哪个变了两个都读，先读输入习惯：里面有别的应用忘掉的词（f 行），读用户词库时按它去掉；忘掉以后又学到的，
+    // 输入习惯里的热度更新，读用户词库时就留着
+    const FILETIME userNow = fileStamp(userPath);
+    const FILETIME historyNow = fileStamp(historyPath);
+    if (sameStamp(userNow, userStamp_) && sameStamp(historyNow, historyStamp_)) {
+        return;
     }
-    if (const FILETIME now = fileStamp(historyPath); !sameStamp(now, historyStamp_)) {
-        const int n = wowtype_engine_load_history(engine, narrow(historyPath).c_str());
-        historyStamp_ = now;
-        log(L"合并 history.tsv：" + std::to_wstring(n) + L" 条");
-    }
+    const int history = wowtype_engine_load_history(engine, narrow(historyPath).c_str());
+    const int user = wowtype_engine_load_user_dict(engine, narrow(userPath).c_str());
+    userStamp_ = userNow;
+    historyStamp_ = historyNow;
+    trace(L"合并别的应用存的学习数据：输入习惯 " + std::to_wstring(history) + L" 条，用户词 " + std::to_wstring(user) + L" 条");
 }
 
 void EngineHost::didForget() {
@@ -344,7 +346,11 @@ void EngineHost::save(bool wait) {
         if (dict && history) {
             commitsSinceSave_ = 0;
         }
-        log(std::wstring(L"存学习数据（后台写）") + (dict && history ? L"" : L"：交不出去"));
+        if (!dict || !history) {
+            log(L"存学习数据交不出去（下次接着存）");
+        } else {
+            trace(L"存学习数据（后台写）");
+        }
     }
     if (wait && wowtype_engine_save_wait(engine, -1) < 0) {
         const char *error = wowtype_last_error();
