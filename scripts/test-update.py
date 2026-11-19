@@ -4,6 +4,7 @@
 import ast
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import re
@@ -13,6 +14,8 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -23,15 +26,17 @@ tree = ast.parse(source, filename=str(SCRIPT))
 functions = {
     "current_version", "development_build", "dpkg_version", "read_os_release", "update_platform",
     "package_version", "install_commands", "plan_update", "download_updates", "http_open",
+    "release_info", "pick_release", "fetch_latest", "fetch_latest_web", "web_release", "parse_version",
 }
-constants = {"VERSION", "HOMEPAGE", "INSTALL_GUIDE", "REPO", "ENGINE_PKG"}
+constants = {"VERSION", "HOMEPAGE", "INSTALL_GUIDE", "REPO", "ENGINE_PKG", "RELEASE_API", "RELEASES_API",
+             "RELEASES_PAGE", "RELEASES_LATEST_PAGE", "RELEASES_ATOM", "RELEASES_DOWNLOAD", "APP_TAG"}
 nodes = [node for node in tree.body if
          isinstance(node, ast.FunctionDef) and node.name in functions or
          isinstance(node, ast.Assign) and any(
              isinstance(target, ast.Name) and target.id in constants for target in node.targets)]
 window = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "SettingsWindow")
 nodes.append(next(node for node in window.body if isinstance(node, ast.FunctionDef) and node.name == "run_installer"))
-updater = dict(hashlib=hashlib, os=os, re=re, shlex=shlex, subprocess=subprocess, urllib=urllib)
+updater = dict(hashlib=hashlib, json=json, os=os, re=re, shlex=shlex, subprocess=subprocess, urllib=urllib)
 exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SCRIPT), "exec"), updater)
 
 
@@ -217,6 +222,53 @@ class UpdateTests(unittest.TestCase):
                         with self.assertRaises(RuntimeError):
                             updater["download_updates"](release, [(name, "package")], lambda *_: None)
                         self.assertFalse((Path(folder) / release["tag"] / name).exists())
+
+    def test_rate_limited_api_falls_back_to_web(self):
+        """接口限流（不登录每个 IP 每小时 60 次）时改走网页：releases/latest 的跳转、releases.atom、SHA256SUMS。"""
+        home = updater["HOMEPAGE"]
+        sha = "a" * 64
+        sums = {
+            "v0.6.0": f"{sha}  wowtype_0.6.0_ubuntu26.04_amd64.deb\n{sha} *WowType-0.6.0-macos.pkg\n",
+            "v0.7.0": f"{sha}  wowtype_0.7.0_ubuntu26.04_amd64.deb\n",
+        }
+        # v0.8.0 只推了 tag、还没发出来：atom 里有，SHA256SUMS 是 404
+        feed = "".join(f'<link href="{home}/releases/tag/{t}"/>' for t in ("v0.8.0", "v0.7.0", "lm-2026.11.09", "v0.6.0"))
+
+        class Response(io.BytesIO):
+            def __init__(self, body=b"", url=""):
+                super().__init__(body)
+                self.url = url
+            def geturl(self):
+                return self.url
+
+        def fetch(url, **_kwargs):
+            if "api.github.com" in url:
+                raise urllib.error.HTTPError(url, 403, "rate limit exceeded", {}, None)
+            if url == updater["RELEASES_LATEST_PAGE"]:
+                return Response(url=f"{home}/releases/tag/v0.6.0")
+            if url == updater["RELEASES_ATOM"]:
+                return Response(feed.encode())
+            for tag, body in sums.items():
+                if url == f"{updater['RELEASES_DOWNLOAD']}/{tag}/SHA256SUMS":
+                    return Response(body.encode())
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+        with patch.dict(updater, http_open=fetch):
+            stable = updater["fetch_latest"](False)
+            beta = updater["fetch_latest"](True)
+        self.assertEqual((stable["tag"], stable["prerelease"]), ("v0.6.0", False))
+        self.assertEqual(stable["assets"]["WowType-0.6.0-macos.pkg"],
+                         f"{home}/releases/download/v0.6.0/WowType-0.6.0-macos.pkg")
+        self.assertIn("SHA256SUMS", stable["assets"])
+        self.assertIn("发布页", stable["notes"])
+        self.assertEqual((beta["tag"], beta["prerelease"]), ("v0.7.0", True))
+        self.assertIn("wowtype_0.7.0_ubuntu26.04_amd64.deb", beta["assets"])
+
+        # 别的错（404、500、断网）照旧报出来，不悄悄换路
+        def broken(url, **_kwargs):
+            raise urllib.error.HTTPError(url, 500, "Server Error", {}, None)
+        with patch.dict(updater, http_open=broken), self.assertRaises(urllib.error.HTTPError):
+            updater["fetch_latest"](False)
 
     def test_download_rejects_path_traversal(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(updater, UPDATE_DIR=folder):

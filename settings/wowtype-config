@@ -2568,6 +2568,12 @@ RELEASE_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 # Beta 计划：最近的几十个发布（含预发布），挑版本号最大的
 RELEASES_API = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
 RELEASES_PAGE = f"{HOMEPAGE}/releases"
+# 接口被限流时（不登录每个 IP 每小时 60 次：校园网、公司网、运营商 NAT 后面很多人共用一个 IP）改走网页：
+# releases/latest 跳到最新正式版的 tag 页，releases.atom 列着最近的发布，发布页的 SHA256SUMS 列着这一版的全部文件。
+# 这些都不算接口次数
+RELEASES_LATEST_PAGE = f"{HOMEPAGE}/releases/latest"
+RELEASES_ATOM = f"{HOMEPAGE}/releases.atom"
+RELEASES_DOWNLOAD = f"{HOMEPAGE}/releases/download"
 CACHE_DIR = os.path.join(_xdg("XDG_CACHE_HOME", "~/.cache"), "wowtype")
 UPDATE_DIR = os.path.join(CACHE_DIR, "updates")
 UPDATE_STATE = os.path.join(CACHE_DIR, "update-check.json")
@@ -2837,16 +2843,76 @@ def beta_updates(values=None):
 
 
 def fetch_latest(beta=None):
-    """GitHub 上最新的正式版；Beta 计划开着时是最新的版本（预发布也算）。beta 不给时按设置。"""
+    """GitHub 上最新的正式版；Beta 计划开着时是最新的版本（预发布也算）。beta 不给时按设置。
+
+    接口限流（403、429）时改走网页（fetch_latest_web），只是拿不到更新说明。"""
     if beta is None:
         beta = beta_updates()
+    try:
+        if beta:
+            with http_open(RELEASES_API, timeout=20) as response:
+                picked = pick_release(json.load(response))
+            if picked:
+                return picked
+        with http_open(RELEASE_API, timeout=20) as response:
+            return release_info(json.load(response))
+    except urllib.error.HTTPError as e:
+        if e.code not in (403, 429):
+            raise
+    return fetch_latest_web(beta)
+
+
+APP_TAG = re.compile(r"[vV]\d+(\.\d+)*")
+
+
+def fetch_latest_web(beta):
+    """不走接口：最新正式版的 tag 从 releases/latest 跳到的地址里取；Beta 计划开着时再看 releases.atom，
+    从版本号最大的往下试（一样大要正式版）。文件列表从这一版的 SHA256SUMS 读。
+
+    releases.atom 里也有只推了 tag、还没发出来（正在构建）的版本，它们没有 SHA256SUMS（404），跳过。"""
+    with http_open(RELEASES_LATEST_PAGE, timeout=20) as response:
+        match = re.search(r"/releases/tag/([^/?#]+)$", response.geturl())
+    latest = urllib.parse.unquote(match.group(1)) if match else ""
+    tags = [latest] if APP_TAG.fullmatch(latest) else []
     if beta:
-        with http_open(RELEASES_API, timeout=20) as response:
-            picked = pick_release(json.load(response))
-        if picked:
-            return picked
-    with http_open(RELEASE_API, timeout=20) as response:
-        return release_info(json.load(response))
+        with http_open(RELEASES_ATOM, timeout=20) as response:
+            feed = response.read().decode("utf-8", "replace")
+        for found in re.findall(r"/releases/tag/([^\"'<>/?#]+)", feed):
+            found = urllib.parse.unquote(found)
+            if APP_TAG.fullmatch(found) and found not in tags:
+                tags.append(found)
+    # 版本号大的在前，一样大时正式版（latest）在前
+    tags.sort(key=lambda t: (parse_version(t), t == latest), reverse=True)
+    for tag in tags:
+        try:
+            return web_release(tag, prerelease=tag != latest)
+        except urllib.error.HTTPError as e:
+            if e.code != 404 or tag == latest:
+                raise
+    raise OSError("GitHub 上找不到发布的版本")
+
+
+def web_release(tag, prerelease=False):
+    """不走接口拼出 release_info 的样子：下载地址按发布页的规则拼，有哪些文件看 SHA256SUMS。"""
+    base = f"{RELEASES_DOWNLOAD}/{urllib.parse.quote(tag)}"
+    with http_open(f"{base}/SHA256SUMS", timeout=20) as response:
+        sums = response.read().decode("utf-8", "replace")
+    assets = {"SHA256SUMS": f"{base}/SHA256SUMS"}
+    for line in sums.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2 and re.fullmatch(r"[0-9A-Fa-f]{64}", parts[0]):
+            name = parts[1].lstrip("*").strip()
+            if name and "/" not in name:
+                assets[name] = f"{base}/{urllib.parse.quote(name)}"
+    url = f"{HOMEPAGE}/releases/tag/{urllib.parse.quote(tag)}"
+    return {
+        "tag": tag,
+        "version": tag.lstrip("vV"),
+        "notes": f"GitHub 接口这会儿访问次数到了上限，没取到更新说明，见[发布页]({url})。",
+        "url": url,
+        "prerelease": prerelease,
+        "assets": assets,
+    }
 
 
 def is_newer(release):

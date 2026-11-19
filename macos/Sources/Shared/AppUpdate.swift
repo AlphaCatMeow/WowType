@@ -61,6 +61,63 @@ public enum AppUpdate {
         return best
     }
 
+    // MARK: 接口限流时改走网页
+
+    /// GitHub 的接口不登录时每个 IP 每小时只能问 60 次（校园网、公司网、运营商 NAT 后面很多人共用一个 IP），
+    /// 用完了回 403 / 429。这时改走网页：releases/latest 跳到最新正式版的 tag 页，releases.atom 列着最近的发布，
+    /// 发布页的 SHA256SUMS 列着这一版的全部文件。这些都不算接口次数。和 Linux 的 fetch_latest_web 一样
+    public static let repoPage = "https://github.com/Gloridust/WowType"
+    public static let latestPage = repoPage + "/releases/latest"
+    public static let atomFeed = repoPage + "/releases.atom"
+
+    public static func downloadURL(tag: String, file: String) -> String {
+        "\(repoPage)/releases/download/\(tag)/\(file)"
+    }
+
+    public static func tagPage(_ tag: String) -> String {
+        "\(repoPage)/releases/tag/\(tag)"
+    }
+
+    /// releases/latest 跳到的地址（…/releases/tag/v0.6.0）里的 tag；不是这个样子是 nil
+    public static func tag(fromLatestURL url: String) -> String? {
+        guard let range = url.range(of: "/releases/tag/") else { return nil }
+        let tag = String(url[range.upperBound...].prefix { $0 != "?" && $0 != "#" && $0 != "/" })
+        return tag.isEmpty ? nil : tag
+    }
+
+    /// 网页上要按顺序试的 tag：最新正式版，Beta 计划开着时加上 releases.atom 里的版本；只要 v 加数字的，
+    /// 版本号大的在前，一样大时正式版在前。atom 里也有只推了 tag、还没发出来的版本，调用方遇到 404 往下试
+    public static func webCandidates(latest: String?, feed: String?) -> [String] {
+        var tags: [String] = []
+        if let latest, isAppTag(latest) { tags.append(latest) }
+        if let feed {
+            var rest = feed[...]
+            while let range = rest.range(of: "/releases/tag/") {
+                let tag = String(rest[range.upperBound...].prefix { !"\"'<>/?#".contains($0) })
+                if isAppTag(tag) && !tags.contains(tag) { tags.append(tag) }
+                rest = rest[range.upperBound...]
+            }
+        }
+        return tags.sorted { a, b in
+            let c = LexiconPack.compareVersions(a, b)
+            return c != 0 ? c > 0 : a == latest
+        }
+    }
+
+    /// SHA256SUMS 里列的文件名（「64 位十六进制  文件名」，文件名前可以带 *）
+    public static func assetNames(sums: String) -> [String] {
+        // 不用 Foundation（这个文件的测试在 Linux 上也跑）：空白自己切
+        let blank: (Character) -> Bool = { $0 == " " || $0 == "\t" || $0 == "\r" }
+        return sums.split(whereSeparator: \.isNewline).compactMap { line in
+            let parts = line.split(maxSplits: 1, omittingEmptySubsequences: true, whereSeparator: blank)
+            guard parts.count == 2, parts[0].count == 64, parts[0].allSatisfy(\.isHexDigit) else { return nil }
+            var name = parts[1].drop(while: blank)
+            while let last = name.last, blank(last) { name = name.dropLast() }
+            if name.first == "*" { name = name.dropFirst() }
+            return name.isEmpty || name.contains("/") ? nil : String(name)
+        }
+    }
+
     /// v0.5.0 这样的 tag（v 加数字和点）
     static func isAppTag(_ tag: String) -> Bool {
         guard tag.hasPrefix("v") || tag.hasPrefix("V") else { return false }

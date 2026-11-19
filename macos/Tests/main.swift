@@ -2143,6 +2143,18 @@ do {
     check(AppUpdate.pickNewest([L(tag: "v0.9.9", prerelease: true), L(tag: "v0.10.0")]) == 1, "Beta：按数字段比")
     check(AppUpdate.pickNewest([L(tag: "nnlm-2026.11.17", prerelease: true)]) == nil && AppUpdate.pickNewest([]) == nil,
           "Beta：没有合适的")
+    // 接口限流时改走网页（和 Linux 的 fetch_latest_web 一样）
+    check(AppUpdate.tag(fromLatestURL: "https://github.com/Gloridust/WowType/releases/tag/v0.6.0") == "v0.6.0"
+          && AppUpdate.tag(fromLatestURL: "https://github.com/Gloridust/WowType/releases") == nil,
+          "releases/latest 跳到的地址里取 tag")
+    let feed = ["v0.8.0", "v0.7.0", "lm-2026.11.09", "v0.6.0", "v0.7.0"]
+        .map { "<link href=\"https://github.com/Gloridust/WowType/releases/tag/\($0)\"/>" }.joined()
+    check(AppUpdate.webCandidates(latest: "v0.6.0", feed: nil) == ["v0.6.0"], "网页：不开 Beta 只看最新正式版")
+    check(AppUpdate.webCandidates(latest: "v0.6.0", feed: feed) == ["v0.8.0", "v0.7.0", "v0.6.0"],
+          "网页：Beta 按版本号从大到小试，数据的发布不算、重复的去掉", AppUpdate.webCandidates(latest: "v0.6.0", feed: feed))
+    let sha = String(repeating: "a", count: 64)
+    check(AppUpdate.assetNames(sums: "\(sha)  WowType-0.6.0-macos.pkg\n\(sha) *wowtype_0.6.0_debian13_amd64.deb\nbad  x\n\(sha)  ../evil\n")
+          == ["WowType-0.6.0-macos.pkg", "wowtype_0.6.0_debian13_amd64.deb"], "SHA256SUMS 里的文件名")
     check(!WowtypeConfig().betaUpdates && WowtypeConfig.parse("BetaUpdates=True\n").betaUpdates, "BetaUpdates 默认关、读得出来")
     check(!WowtypeConfig().typingStats && WowtypeConfig.parse("TypingStats=True\n").typingStats, "TypingStats 默认关、读得出来")
     check(AppUpdate.isNewer("0.4.1", than: "0.4.0") && AppUpdate.isNewer("0.10.0", than: "0.9.9")

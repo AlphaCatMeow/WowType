@@ -37,8 +37,14 @@ enum LexiconPackInstaller {
 
     // MARK: 下载
 
+    /// 最新正式版。接口限流时改走网页（fromWeb），只是拿不到更新说明
     static func fetchLatest() throws -> Release {
-        let data = try get(releaseAPI, timeout: 20)
+        let data: Data
+        do {
+            data = try get(releaseAPI, timeout: 20)
+        } catch let error as HTTPStatus where error.rateLimited {
+            return try fromWeb(beta: false)
+        }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw PackError("发布页的内容看不懂")
         }
@@ -47,7 +53,12 @@ enum LexiconPackInstaller {
 
     /// Beta 计划：最近的发布里版本号最大的（预发布也算，见 AppUpdate.pickNewest）；一个都挑不出来时退回最新正式版
     static func fetchNewest() throws -> Release {
-        let data = try get(releasesAPI, timeout: 20)
+        let data: Data
+        do {
+            data = try get(releasesAPI, timeout: 20)
+        } catch let error as HTTPStatus where error.rateLimited {
+            return try fromWeb(beta: true)
+        }
         guard let list = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             throw PackError("发布页的内容看不懂")
         }
@@ -57,6 +68,30 @@ enum LexiconPackInstaller {
         }
         guard let i = AppUpdate.pickNewest(listed) else { return try fetchLatest() }
         return release(list[i])
+    }
+
+    /// 不走接口拼出 Release（见 AppUpdate.webCandidates）：文件列表从这一版的 SHA256SUMS 读，下载地址按发布页的规则拼。
+    /// releases.atom 里只推了 tag、还没发出来的版本没有 SHA256SUMS（404），跳过
+    static func fromWeb(beta: Bool) throws -> Release {
+        let (_, final) = try fetch(URL(string: AppUpdate.latestPage)!, timeout: 20)
+        let latest = final.flatMap { AppUpdate.tag(fromLatestURL: $0.absoluteString) }
+        let feed = beta ? String(decoding: try get(URL(string: AppUpdate.atomFeed)!, timeout: 20), as: UTF8.self) : nil
+        for tag in AppUpdate.webCandidates(latest: latest, feed: feed) {
+            guard let sumsURL = URL(string: AppUpdate.downloadURL(tag: tag, file: LexiconPack.checksumFile)) else { continue }
+            let sums: Data
+            do {
+                sums = try get(sumsURL, timeout: 20)
+            } catch let error as HTTPStatus where error.code == 404 && tag != latest {
+                continue
+            }
+            var assets: [String: URL] = [LexiconPack.checksumFile: sumsURL]
+            for name in AppUpdate.assetNames(sums: String(decoding: sums, as: UTF8.self)) {
+                if let url = URL(string: AppUpdate.downloadURL(tag: tag, file: name)) { assets[name] = url }
+            }
+            return Release(tag: tag, assets: assets, prerelease: tag != latest,
+                           notes: "GitHub 接口这会儿访问次数到了上限，没取到更新说明，见发布页：\(AppUpdate.tagPage(tag))")
+        }
+        throw PackError("GitHub 上找不到发布的版本")
     }
 
     /// GitHub 一个发布的 JSON -> Release
@@ -95,21 +130,35 @@ enum LexiconPackInstaller {
         return file
     }
 
+    /// 服务器回的不是 2xx。403 / 429 是接口限流（rateLimited）
+    struct HTTPStatus: Error, CustomStringConvertible {
+        let code: Int
+        var rateLimited: Bool { code == 403 || code == 429 }
+        var description: String {
+            rateLimited ? "GitHub 返回 \(code)（访问次数到了上限，过一会儿再试）" : "GitHub 返回 \(code)"
+        }
+    }
+
     /// GET 一个小文件（发布页的 JSON、SHA256SUMS）；UpdateInstaller 也用
     static func get(_ url: URL, timeout: TimeInterval) throws -> Data {
+        try fetch(url, timeout: timeout).data
+    }
+
+    /// GET，连同跟着跳转以后最后的地址（releases/latest 跳到哪个 tag 页）
+    static func fetch(_ url: URL, timeout: TimeInterval) throws -> (data: Data, url: URL?) {
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.setValue(url.host == "api.github.com" ? "application/vnd.github+json" : "*/*",
                          forHTTPHeaderField: "Accept")
         request.setValue("WowType", forHTTPHeaderField: "User-Agent")
         let done = DispatchSemaphore(value: 0)
-        var result: Result<Data, Error> = .failure(PackError("连不上 GitHub"))
+        var result: Result<(data: Data, url: URL?), Error> = .failure(PackError("连不上 GitHub"))
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error {
                 result = .failure(error)
             } else if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                result = .failure(PackError("GitHub 返回 \(http.statusCode)"))
+                result = .failure(HTTPStatus(code: http.statusCode))
             } else {
-                result = .success(data ?? Data())
+                result = .success((data ?? Data(), response?.url))
             }
             done.signal()
         }.resume()
