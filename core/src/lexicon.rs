@@ -1063,7 +1063,13 @@ impl UserLexicon {
         if !words.is_empty() {
             let mut user = self.user.write().unwrap();
             for (pinyin, word, freq) in &words {
-                user.put(pinyin, word, *freq);
+                // 已经有这个词（读进一个用过的引擎：Windows 上把别的应用进程存的合并进来）时留大的那个频次，
+                // 不让一份旧文件把学到的往回改；新建的引擎上读和以前一样
+                let freq = match user.pos.get(*word) {
+                    Some(&i) => user.list[i].2.max(*freq),
+                    None => *freq,
+                };
+                user.put(pinyin, word, freq);
             }
             self.rebuild_user(&mut user);
         }

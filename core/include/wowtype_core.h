@@ -171,7 +171,8 @@ int wowtype_engine_load_custom_words(WowtypeEngineHandle *engine, const char *pa
 /* 用户输入习惯：选过的词的热度（30 天半衰期）和词搭配（上一个词 -> 这个词），
  * 参与排序，存成 TSV。save 返回 0 成功；load 返回条数，-1 表示出错。
  * 1.13 起 load 和引擎里已有的合并：同一个词、同一个搭配留最近用过的那份（新建的引擎上读和以前一样）。
- * load_user_dict 本来就是加进去（并集）。几个进程各有一个引擎时（Windows），存盘前先读回别人存的再写。 */
+ * load_user_dict 本来就是加进去（并集），1.13 起已经有的词留大的那个频次。几个进程各有一个引擎时（Windows），
+ * 文件变了就读回来合并（别人存的、自己存的都行，不会往回改）。 */
 int wowtype_engine_save_history(WowtypeEngineHandle *engine, const char *path);
 int wowtype_engine_load_history(WowtypeEngineHandle *engine, const char *path);
 

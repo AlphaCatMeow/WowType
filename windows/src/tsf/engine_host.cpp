@@ -302,23 +302,14 @@ void EngineHost::mergeLearning(WowtypeEngineHandle *engine) {
     const std::wstring userPath = dataDir() + L"\\user.tsv";
     const std::wstring historyPath = dataDir() + L"\\history.tsv";
     // 上次后台写失败了现在才知道：记下来，下次接着存
-    const int state = wowtype_engine_save_wait(engine, 0);
-    if (state < 0) {
+    if (wowtype_engine_save_wait(engine, 0) < 0) {
         const char *error = wowtype_last_error();
         log(L"保存用户词库或输入习惯失败：" + widen(error ? error : ""));
         commitsSinceSave_ = std::max(commitsSinceSave_, 1);
     }
-    if (state <= 0 && savePending_) {
-        // 我们交出去的都写完了：现在文件的时间是我们写的
-        userStamp_ = fileStamp(userPath);
-        historyStamp_ = fileStamp(historyPath);
-        savePending_ = false;
-    }
-    if (savePending_) {
-        return;
-    }
-    // 每个应用进程各有一个引擎、各存各的：别的进程存过的合并进来（用户词取并集，输入习惯同一条留最近用过的，
-    // 核心的 load 就是这么合并的），免得把别的应用里学到的词盖掉，也让那边学到的词这边马上能用
+    // 每个应用进程各有一个引擎、各存各的：文件和上次合并时不一样了（别的进程存过，也可能是自己刚存的）就合并进来。
+    // 合并自己存的没关系：用户词留大的频次、输入习惯同一条留最近用过的（核心的 load 就是这么合并的），不会往回改。
+    // 以前只认「不是自己写的」：自己的存盘写完的那一刻别的进程也写过，就当成自己的、漏了（CI 的两个进程测试抓到的）
     if (const FILETIME now = fileStamp(userPath); !sameStamp(now, userStamp_)) {
         wowtype_engine_load_user_dict(engine, narrow(userPath).c_str());
         userStamp_ = now;
@@ -351,7 +342,6 @@ void EngineHost::save(bool wait) {
         if (dict && history) {
             commitsSinceSave_ = 0;
         }
-        savePending_ = true;
     }
     if (wait && wowtype_engine_save_wait(engine, -1) < 0) {
         const char *error = wowtype_last_error();

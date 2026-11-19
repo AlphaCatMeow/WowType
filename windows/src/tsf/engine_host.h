@@ -83,7 +83,7 @@ private:
     void loadConfig();
     void applyEngineSettings(WowtypeEngineHandle *engine);
     void applyTranslateSettings();
-    /// 别的应用进程存过的学习数据合并进来（自己交出去的还没写完时不动）。
+    /// 学习数据的文件和上次合并时不一样了就合并进来（别的应用进程存的、自己存的都行）。
     void mergeLearning(WowtypeEngineHandle *engine);
     WowtypeEngineHandle *makeEngine();
     std::wstring lexiconPath() const;
@@ -104,8 +104,6 @@ private:
     /// user.tsv、history.tsv 上次是我们读的或者写的时候的修改时间：变了就是别的应用进程存过，存盘前先合并进来
     FILETIME userStamp_{};
     FILETIME historyStamp_{};
-    /// 交给核心的后台存盘还没确认写完（写完了才记下上面两个时间）
-    bool savePending_ = false;
     ULONGLONG lastSave_ = 0;
     bool updateChecking_ = false;
     ULONGLONG nextUpdateLook_ = 0;
