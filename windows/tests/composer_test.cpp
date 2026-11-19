@@ -469,6 +469,17 @@ int main(int argc, char **argv) {
         check(!checksum(sums + digest + "  WowType-0.7.0-windows-x64-setup.exe\n", "WowType-0.7.0-windows-x64-setup.exe"),
               "重复的不认");
     }
+    {
+        // 下载续传：206 的 Content-Range
+        const auto range = update::parseContentRange("bytes 100-999/1000");
+        check(range && range->start == 100 && range->total == 1000, "续传：Content-Range 的起点和总长");
+        const auto unknown = update::parseContentRange("bytes 0-9/*");
+        check(unknown && unknown->start == 0 && unknown->total == 0, "续传：总长不知道（*）");
+        check(!update::parseContentRange("bytes */1000") && !update::parseContentRange("items 0-9/10") &&
+                  !update::parseContentRange("bytes 10-5/100") && !update::parseContentRange("bytes 0-99/50") &&
+                  !update::parseContentRange("bytes 0-9/10x"),
+              "续传：看不懂的 Content-Range 不认（从头下）");
+    }
 
     const auto fresh = [&](Config config = Config{}) {
         auto client = std::make_unique<FakeClient>();

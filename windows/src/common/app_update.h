@@ -49,6 +49,14 @@ std::optional<std::size_t> pickNewest(const std::vector<Release> &releases);
 /// SHA256SUMS 里 name 的校验值（小写）；没有、重复、写坏了返回 nullopt，error 是原因。
 std::optional<std::string> checksum(const std::string &sums, const std::string &name, std::string *error = nullptr);
 
+/// 续传（下载断了从断的地方接着下）：服务器回 206 时 Content-Range 头（"bytes 100-199/1000"）里的起点和总长。
+/// 总长是 * 时 total 为 0。看不懂是 nullopt。
+struct ContentRange {
+    unsigned long long start = 0;
+    unsigned long long total = 0;
+};
+std::optional<ContentRange> parseContentRange(const std::string &header);
+
 /// 数据目录里 update-state 记的：上次查成功的时间（Unix 秒）、那时发布页上最新的 tag。输入法和设置窗口都读写它。
 struct State {
     int64_t checked = 0;

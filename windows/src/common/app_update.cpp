@@ -158,6 +158,57 @@ std::optional<std::size_t> pickNewest(const std::vector<Release> &releases) {
     return best;
 }
 
+std::optional<ContentRange> parseContentRange(const std::string &header) {
+    // bytes <起点>-<终点>/<总长或 *>
+    std::size_t i = 0;
+    const auto skipSpaces = [&] {
+        while (i < header.size() && header[i] == ' ') {
+            ++i;
+        }
+    };
+    const auto number = [&]() -> std::optional<unsigned long long> {
+        const std::size_t from = i;
+        unsigned long long n = 0;
+        while (i < header.size() && std::isdigit(static_cast<unsigned char>(header[i]))) {
+            if (n > (~0ULL - 9) / 10) {
+                return std::nullopt;
+            }
+            n = n * 10 + static_cast<unsigned>(header[i] - '0');
+            ++i;
+        }
+        return i > from ? std::optional<unsigned long long>(n) : std::nullopt;
+    };
+    skipSpaces();
+    if (header.compare(i, 5, "bytes") != 0) {
+        return std::nullopt;
+    }
+    i += 5;
+    skipSpaces();
+    const auto start = number();
+    if (!start || i >= header.size() || header[i] != '-') {
+        return std::nullopt;
+    }
+    ++i;
+    const auto end = number();
+    if (!end || *end < *start || i >= header.size() || header[i] != '/') {
+        return std::nullopt;
+    }
+    ++i;
+    ContentRange range;
+    range.start = *start;
+    if (i < header.size() && header[i] == '*') {
+        ++i;
+    } else {
+        const auto total = number();
+        if (!total || *total <= *end) {
+            return std::nullopt;
+        }
+        range.total = *total;
+    }
+    skipSpaces();
+    return i == header.size() ? std::optional<ContentRange>(range) : std::nullopt;
+}
+
 std::optional<std::string> checksum(const std::string &sums, const std::string &name, std::string *error) {
     std::optional<std::string> found;
     std::size_t start = 0;

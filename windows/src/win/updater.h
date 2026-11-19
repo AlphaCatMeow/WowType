@@ -22,6 +22,7 @@ const char *arch();
 /// GET 一个小文件（发布页的 JSON、SHA256SUMS），返回内容；失败返回 nullopt，error 是给人看的原因。
 std::optional<std::string> httpGet(const std::wstring &url, std::string *error);
 /// 下载到 path（先写 path.part，下完改名）；progress(已下, 总共) 每收到一块调一次（总共可能是 0）。
+/// 断了从断的地方接着下（HTTP Range）：这一次里自动接几次，还不行就留着 .part，下次调用接着下。
 bool httpDownload(const std::wstring &url, const std::wstring &path,
                   const std::function<void(unsigned long long, unsigned long long)> &progress, std::string *error);
 

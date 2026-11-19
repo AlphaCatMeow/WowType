@@ -125,6 +125,38 @@ jobs:
         run: |
           build/windows/Release/wowtype-windows-harness.exe
           build/windows/Release/wowtype-windows-harness.exe dist/data/lexicon.tsv
+      - name: 下载续传（设置窗口下模型、新版用的；配一个会掐断连接的服务器）
+        shell: pwsh
+        run: |
+          $served = Join-Path $env:RUNNER_TEMP 'served.bin'
+          $server = Start-Process python -ArgumentList 'windows/tests/range_server.py', '18765', "`"$served`"" -PassThru -NoNewWindow
+          for ($i = 0; $i -lt 40 -and -not (Test-Path $served); $i++) { Start-Sleep -Milliseconds 250 }
+          Start-Sleep -Seconds 1
+          $want = (Get-FileHash $served -Algorithm SHA256).Hash.ToLower()
+          $exe = (Resolve-Path build/windows/Release/wowtype-windows-download-test.exe).Path
+          $dir = Join-Path $env:RUNNER_TEMP 'download-test'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          try {
+            # 一次下载里断了好几次：自动从断的地方接着下
+            & $exe 'http://127.0.0.1:18765/flaky' (Join-Path $dir 'flaky.bin') $want
+            if ($LASTEXITCODE -ne 0) { throw "断了几次没接上：$LASTEXITCODE" }
+            # 服务器不认 Range：从头下
+            & $exe 'http://127.0.0.1:18765/norange' (Join-Path $dir 'norange.bin') $want
+            if ($LASTEXITCODE -ne 0) { throw "服务器不认 Range 时没从头下好：$LASTEXITCODE" }
+            # 这一次下不完：留着 .part；再下一次从断的地方接着下完
+            $broken = Join-Path $dir 'broken.bin'
+            & $exe 'http://127.0.0.1:18765/broken' $broken $want
+            if ($LASTEXITCODE -ne 1) { throw "第一次应该下不完：$LASTEXITCODE" }
+            $part = (Get-Item "$broken.part").Length
+            if ($part -le 0) { throw '没下完的部分没留着' }
+            $out = & $exe 'http://127.0.0.1:18765/broken' $broken $want | Out-String
+            Write-Host $out
+            if ($LASTEXITCODE -ne 0) { throw "第二次没下完：$LASTEXITCODE" }
+            if ($out -notmatch "从 $part 开始") { throw "第二次不是从上次断的 $part 字节接着下的" }
+            if (Test-Path "$broken.part") { throw '下完了 .part 还在' }
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
       - name: 设置契约（spec/config.json）
         run: python scripts/test-config-contract.py --windows build/windows/Release/wowtype-windows-config-dump.exe
       - name: 打 zip
@@ -207,6 +239,7 @@ jobs:
             throw "打字测试有 $($p.ExitCode) 项没过"
           }
           # 两个进程（两个应用）之间的学习：B 开着，A 学到 shi 的第三个候选；B 不用重开，再打一次就是 A 学到的
+          # 接着 A 用 Ctrl+退格忘掉它：B 也忘了；B 存过盘以后 A 再合并也不会回来
           $peer = Join-Path $env:RUNNER_TEMP 'peer'
           New-Item -ItemType Directory -Force -Path $peer | Out-Null
           $b = Start-Process $typing -ArgumentList '--peer-wait', "`"$peer`"" -PassThru -NoNewWindow

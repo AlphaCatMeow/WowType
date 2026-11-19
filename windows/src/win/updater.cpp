@@ -4,6 +4,7 @@
 #include <winhttp.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <fstream>
 #include <iterator>
@@ -37,8 +38,8 @@ struct Request {
         }
     }
 
-    /// 打开、发出去、等到响应头；返回 HTTP 状态码，失败是 0。
-    DWORD open(const std::wstring &url, std::string *error) {
+    /// 打开、发出去、等到响应头；返回 HTTP 状态码，失败是 0。headers 是多加的请求头（续传的 Range）。
+    DWORD open(const std::wstring &url, std::string *error, const std::wstring &headers = L"") {
         URL_COMPONENTS parts{};
         parts.dwStructSize = sizeof parts;
         wchar_t host[256] = {};
@@ -72,8 +73,11 @@ struct Request {
             *error = "连不上服务器";
             return 0;
         }
-        const wchar_t *accept = wcsstr(host, L"api.github.com") ? L"Accept: application/vnd.github+json" : L"Accept: */*";
-        if (!WinHttpSendRequest(request, accept, static_cast<DWORD>(-1L), WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+        std::wstring send = wcsstr(host, L"api.github.com") ? L"Accept: application/vnd.github+json" : L"Accept: */*";
+        if (!headers.empty()) {
+            send += L"\r\n" + headers;
+        }
+        if (!WinHttpSendRequest(request, send.c_str(), static_cast<DWORD>(-1L), WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
             !WinHttpReceiveResponse(request, nullptr)) {
             *error = "连不上服务器（看看网络和代理）";
             return 0;
@@ -82,21 +86,24 @@ struct Request {
         DWORD size = sizeof status;
         WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
                             &status, &size, WINHTTP_NO_HEADER_INDEX);
-        if (status != 200) {
+        if (status != 200 && status != 206) {
             *error = "服务器回了 " + std::to_string(status);
         }
         return status;
     }
 
-    unsigned long long length() {
-        wchar_t buffer[32] = {};
+    /// 响应头（没有是空串）。
+    std::string header(DWORD query) {
+        wchar_t buffer[256] = {};
         DWORD size = sizeof buffer;
-        if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, buffer, &size,
-                                 WINHTTP_NO_HEADER_INDEX)) {
-            return 0;
+        if (!WinHttpQueryHeaders(request, query, WINHTTP_HEADER_NAME_BY_INDEX, buffer, &size, WINHTTP_NO_HEADER_INDEX)) {
+            return {};
         }
-        return _wcstoui64(buffer, nullptr, 10);
+        const std::wstring w(buffer);
+        return utf16To8(std::u16string(w.begin(), w.end()));
     }
+
+    unsigned long long length() { return std::strtoull(header(WINHTTP_QUERY_CONTENT_LENGTH).c_str(), nullptr, 10); }
 
     /// 读一块；0 是读完了，-1 是出错。
     long read(char *buffer, DWORD capacity) {
@@ -109,6 +116,15 @@ struct Request {
 };
 
 std::wstring statePath(const std::wstring &dataDir) { return dataDir + L"\\update-state"; }
+
+/// 文件多大；没有是 0。
+unsigned long long fileSize(const std::wstring &path) {
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) {
+        return 0;
+    }
+    return (static_cast<unsigned long long>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+}
 
 } // namespace
 
@@ -146,45 +162,83 @@ std::optional<std::string> httpGet(const std::wstring &url, std::string *error) 
 
 bool httpDownload(const std::wstring &url, const std::wstring &path,
                   const std::function<void(unsigned long long, unsigned long long)> &progress, std::string *error) {
-    Request r;
-    if (r.open(url, error) != 200) {
-        return false;
-    }
-    const unsigned long long total = r.length();
+    // 先写 path.part。断了（网络、服务器掐了连接）不删：带 Range 从断的地方接着要，这一次里自动接几次，
+    // 都不行就留着，下次再点下载接着下。服务器不认 Range（回 200）就从头下；.part 比服务器上的文件还长
+    // （416，文件换过了）也从头下。下完的内容对不对由调用的人校验（SHA256、MD5）
     const std::wstring part = path + L".part";
-    {
-        std::ofstream out(part, std::ios::binary | std::ios::trunc);
+    constexpr int kAttempts = 6;
+    for (int attempt = 0; attempt < kAttempts; ++attempt) {
+        if (attempt > 0) {
+            Sleep(static_cast<DWORD>(1000 * attempt));
+        }
+        unsigned long long done = fileSize(part);
+        Request r;
+        const DWORD status = r.open(url, error, done > 0 ? L"Range: bytes=" + std::to_wstring(done) + L"-" : L"");
+        if (status == 416 && done > 0) {
+            DeleteFileW(part.c_str());
+            continue;
+        }
+        if (status == 0) {
+            continue; // 连不上：等一下再试
+        }
+        if (status != 200 && status != 206) {
+            return false; // 404 之类：再试也一样
+        }
+        unsigned long long total = 0;
+        if (status == 206) {
+            const auto range = update::parseContentRange(r.header(WINHTTP_QUERY_CONTENT_RANGE));
+            if (!range || range->start != done) {
+                DeleteFileW(part.c_str()); // 给的不是要的那段：从头下
+                continue;
+            }
+            total = range->total;
+        } else {
+            done = 0;
+            total = r.length();
+        }
+        std::ofstream out(part, std::ios::binary | (status == 206 ? std::ios::app : std::ios::trunc));
         if (!out) {
             *error = "写不了下载的文件";
             return false;
         }
+        if (progress) {
+            progress(done, total);
+        }
         std::vector<char> buffer(1 << 16);
-        unsigned long long done = 0;
+        bool broken = false;
         while (true) {
             const long n = r.read(buffer.data(), static_cast<DWORD>(buffer.size()));
             if (n < 0) {
-                *error = "下载到一半断了，再试一次";
-                return false;
+                broken = true;
+                break;
             }
             if (n == 0) {
                 break;
             }
             out.write(buffer.data(), n);
+            if (!out) {
+                *error = "写不了下载的文件（磁盘满了？）";
+                return false;
+            }
             done += static_cast<unsigned long long>(n);
             if (progress) {
                 progress(done, total);
             }
         }
-        if (!out) {
+        out.close();
+        if (broken || (total > 0 && done < total)) {
+            continue; // 断了：接着下
+        }
+        if (!MoveFileExW(part.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
             *error = "写不了下载的文件";
             return false;
         }
+        return true;
     }
-    if (!MoveFileExW(part.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        *error = "写不了下载的文件";
-        return false;
-    }
-    return true;
+    if (fileSize(part) > 0) {
+        *error = "下载断了几次没接上；已经下好的部分留着，再点一次会从断的地方接着下";
+    } // 一点都没下到：留着连不上的原因
+    return false;
 }
 
 update::State readState(const std::wstring &dataDir) {
