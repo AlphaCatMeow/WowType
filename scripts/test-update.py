@@ -26,10 +26,12 @@ tree = ast.parse(source, filename=str(SCRIPT))
 functions = {
     "current_version", "development_build", "dpkg_version", "read_os_release", "update_platform",
     "package_version", "install_commands", "plan_update", "download_updates", "http_open",
-    "release_info", "pick_release", "fetch_latest", "fetch_latest_web", "web_release", "parse_version",
+    "release_info", "pick_release", "fetch_latest", "fetch_latest_api", "fetch_latest_web", "web_release",
+    "release_notes", "parse_version", "release_highlights",
 }
 constants = {"VERSION", "HOMEPAGE", "INSTALL_GUIDE", "REPO", "ENGINE_PKG", "RELEASE_API", "RELEASES_API",
-             "RELEASES_PAGE", "RELEASES_LATEST_PAGE", "RELEASES_ATOM", "RELEASES_DOWNLOAD", "APP_TAG"}
+             "RELEASES_PAGE", "RELEASES_LATEST_PAGE", "RELEASES_ATOM", "RELEASES_DOWNLOAD", "APP_TAG",
+             "RELEASE_NOTES_FILE", "RELEASE_TAG_API"}
 nodes = [node for node in tree.body if
          isinstance(node, ast.FunctionDef) and node.name in functions or
          isinstance(node, ast.Assign) and any(
@@ -223,16 +225,20 @@ class UpdateTests(unittest.TestCase):
                             updater["download_updates"](release, [(name, "package")], lambda *_: None)
                         self.assertFalse((Path(folder) / release["tag"] / name).exists())
 
-    def test_rate_limited_api_falls_back_to_web(self):
-        """接口限流（不登录每个 IP 每小时 60 次）时改走网页：releases/latest 的跳转、releases.atom、SHA256SUMS。"""
+    def test_update_check_uses_web_not_api(self):
+        """检查更新走网页（不登录时接口每个 IP 每小时只能问 60 次）：releases/latest 的跳转、releases.atom、
+        SHA256SUMS；更新说明下发布页上的 RELEASE-NOTES.md，更早的版本没有这个文件才问一次接口。"""
         home = updater["HOMEPAGE"]
         sha = "a" * 64
         sums = {
             "v0.6.0": f"{sha}  wowtype_0.6.0_ubuntu26.04_amd64.deb\n{sha} *WowType-0.6.0-macos.pkg\n",
             "v0.7.0": f"{sha}  wowtype_0.7.0_ubuntu26.04_amd64.deb\n",
+            "v0.7.1": f"{sha}  wowtype_0.7.1_ubuntu26.04_amd64.deb\n",
         }
+        notes_files = {"v0.7.1": "## 这一版要注意\n\n- 网页取说明\n\n"}
         # v0.8.0 只推了 tag、还没发出来：atom 里有，SHA256SUMS 是 404
-        feed = "".join(f'<link href="{home}/releases/tag/{t}"/>' for t in ("v0.8.0", "v0.7.0", "lm-2026.11.09", "v0.6.0"))
+        feed = "".join(f'<link href="{home}/releases/tag/{t}"/>'
+                       for t in ("v0.8.0", "v0.7.1", "v0.7.0", "lm-2026.11.09", "v0.6.0"))
 
         class Response(io.BytesIO):
             def __init__(self, body=b"", url=""):
@@ -241,30 +247,71 @@ class UpdateTests(unittest.TestCase):
             def geturl(self):
                 return self.url
 
-        def fetch(url, **_kwargs):
-            if "api.github.com" in url:
-                raise urllib.error.HTTPError(url, 403, "rate limit exceeded", {}, None)
-            if url == updater["RELEASES_LATEST_PAGE"]:
-                return Response(url=f"{home}/releases/tag/v0.6.0")
-            if url == updater["RELEASES_ATOM"]:
-                return Response(feed.encode())
-            for tag, body in sums.items():
-                if url == f"{updater['RELEASES_DOWNLOAD']}/{tag}/SHA256SUMS":
-                    return Response(body.encode())
-            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+        def site(api, latest="v0.6.0"):
+            calls = []
+            def fetch(url, **_kwargs):
+                calls.append(url)
+                if "api.github.com" in url:
+                    return api(url)
+                if url == updater["RELEASES_LATEST_PAGE"]:
+                    return Response(url=f"{home}/releases/tag/{latest}")
+                if url == updater["RELEASES_ATOM"]:
+                    return Response(feed.encode())
+                for tag, body in sums.items():
+                    if url == f"{updater['RELEASES_DOWNLOAD']}/{tag}/SHA256SUMS":
+                        return Response(body.encode())
+                    if url == f"{updater['RELEASES_DOWNLOAD']}/{tag}/RELEASE-NOTES.md" and tag in notes_files:
+                        return Response(notes_files[tag].encode())
+                raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+            return fetch, calls
 
-        with patch.dict(updater, http_open=fetch):
+        def limited(url):
+            raise urllib.error.HTTPError(url, 403, "rate limit exceeded", {}, None)
+
+        def tag_api(url):
+            self.assertTrue(url.endswith("/releases/tags/v0.7.0"), url)
+            return Response(json.dumps({"body": "## 这一版要注意\n\n- 接口取说明\n"}).encode())
+
+        # 现在装的是 0.6.0：正式版没有更新，不取说明，一次接口都不问
+        fetch, calls = site(limited)
+        with patch.dict(updater, http_open=fetch, VERSION="0.6.0"):
             stable = updater["fetch_latest"](False)
-            beta = updater["fetch_latest"](True)
-        self.assertEqual((stable["tag"], stable["prerelease"]), ("v0.6.0", False))
+        self.assertEqual((stable["tag"], stable["prerelease"], stable["notes"]), ("v0.6.0", False, ""))
         self.assertEqual(stable["assets"]["WowType-0.6.0-macos.pkg"],
                          f"{home}/releases/download/v0.6.0/WowType-0.6.0-macos.pkg")
         self.assertIn("SHA256SUMS", stable["assets"])
-        self.assertIn("发布页", stable["notes"])
-        self.assertEqual((beta["tag"], beta["prerelease"]), ("v0.7.0", True))
-        self.assertIn("wowtype_0.7.0_ubuntu26.04_amd64.deb", beta["assets"])
+        self.assertFalse([u for u in calls if "api.github.com" in u])
 
-        # 别的错（404、500、断网）照旧报出来，不悄悄换路
+        # Beta：跳过还没发出来的 v0.8.0，挑 v0.7.1，说明从 RELEASE-NOTES.md 来，也不问接口
+        fetch, calls = site(limited)
+        with patch.dict(updater, http_open=fetch, VERSION="0.6.0"):
+            beta = updater["fetch_latest"](True)
+        self.assertEqual((beta["tag"], beta["prerelease"]), ("v0.7.1", True))
+        self.assertIn("wowtype_0.7.1_ubuntu26.04_amd64.deb", beta["assets"])
+        self.assertEqual(updater["release_highlights"](beta["notes"]), "- 网页取说明")
+        self.assertFalse([u for u in calls if "api.github.com" in u])
+
+        # 更早的版本没有 RELEASE-NOTES.md：问一次接口要说明；接口也限流了就指向发布页，检查照样成功
+        del notes_files["v0.7.1"]
+        sums.pop("v0.7.1")
+        fetch, calls = site(tag_api)
+        with patch.dict(updater, http_open=fetch, VERSION="0.6.0"):
+            beta = updater["fetch_latest"](True)
+        self.assertEqual(beta["tag"], "v0.7.0")
+        self.assertEqual(updater["release_highlights"](beta["notes"]), "- 接口取说明")
+        fetch, _ = site(limited)
+        with patch.dict(updater, http_open=fetch, VERSION="0.6.0"):
+            beta = updater["fetch_latest"](True)
+        self.assertIn("发布页", beta["notes"])
+
+        # 网页那条路走不通（页面改了）时退回接口
+        def api_only(url, **_kwargs):
+            if url == updater["RELEASE_API"]:
+                return Response(json.dumps({"tag_name": "v0.6.0", "body": "x", "assets": []}).encode())
+            raise urllib.error.HTTPError(url, 500, "Server Error", {}, None)
+        with patch.dict(updater, http_open=api_only, VERSION="0.6.0"):
+            self.assertEqual(updater["fetch_latest"](False)["tag"], "v0.6.0")
+        # 两条路都不通：报网页那条路的错
         def broken(url, **_kwargs):
             raise urllib.error.HTTPError(url, 500, "Server Error", {}, None)
         with patch.dict(updater, http_open=broken), self.assertRaises(urllib.error.HTTPError):

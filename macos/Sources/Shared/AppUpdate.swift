@@ -61,14 +61,21 @@ public enum AppUpdate {
         return best
     }
 
-    // MARK: 接口限流时改走网页
+    // MARK: 检查更新走网页
 
     /// GitHub 的接口不登录时每个 IP 每小时只能问 60 次（校园网、公司网、运营商 NAT 后面很多人共用一个 IP），
-    /// 用完了回 403 / 429。这时改走网页：releases/latest 跳到最新正式版的 tag 页，releases.atom 列着最近的发布，
-    /// 发布页的 SHA256SUMS 列着这一版的全部文件。这些都不算接口次数。和 Linux 的 fetch_latest_web 一样
+    /// 用完了回 403。所以检查更新先走网页：releases/latest 跳到最新正式版的 tag 页，releases.atom 列着最近的发布，
+    /// 发布页的 SHA256SUMS 列着这一版的全部文件，RELEASE-NOTES.md 是更新说明。这些都不算接口次数。
+    /// 和 Linux 的 fetch_latest_web 一样
     public static let repoPage = "https://github.com/Gloridust/WowType"
     public static let latestPage = repoPage + "/releases/latest"
     public static let atomFeed = repoPage + "/releases.atom"
+    /// 发布任务把「这一版要注意」那一节单独传成这个文件（0.7.1 起），取更新说明也不用接口
+    public static let notesFile = "RELEASE-NOTES.md"
+    /// 更早的版本没有那个文件：有新版时才问一次接口要说明
+    public static func tagAPI(_ tag: String) -> String {
+        "https://api.github.com/repos/Gloridust/WowType/releases/tags/\(tag)"
+    }
 
     public static func downloadURL(tag: String, file: String) -> String {
         "\(repoPage)/releases/download/\(tag)/\(file)"
@@ -174,7 +181,9 @@ public enum AppUpdate {
         let lines = all.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
         for (i, line) in lines.enumerated() {
             let stripped = line.trimmingWhitespace()
-            guard stripped.hasPrefix("##"), String(stripped.dropFirst(2)).trimmingWhitespace() == "这一版" else {
+            let title = String(stripped.dropFirst(2)).trimmingWhitespace()
+            // 发布任务写的标题是「这一版要注意」
+            guard stripped.hasPrefix("##"), title == "这一版" || title == "这一版要注意" else {
                 continue
             }
             var body: [String] = []

@@ -889,6 +889,10 @@ jobs:
           想用的话在「WowType 设置 → 输入 → 词库」里选「万象拼音」并下载，或运行 \`wowtype-config --install-lexicon wanxiang\`；随时可以切回默认的雾凇。
 
           EOF
+          # 「这一版要注意」单独传一份（RELEASE-NOTES.md）：各端检查更新从这里取更新说明，不用问 GitHub 接口
+          #（不登录时每个 IP 每小时只能问 60 次）。不进 SHA256SUMS，各端按名字直接下
+          awk '/^## 这一版要注意/{on=1} on && /^## / && !/^## 这一版要注意/{exit} on' notes.md > dist/RELEASE-NOTES.md
+          grep -q '^## 这一版要注意' dist/RELEASE-NOTES.md
           extra=()
           if [ -n "$PRERELEASE" ]; then
             extra=(--prerelease --latest=false)
