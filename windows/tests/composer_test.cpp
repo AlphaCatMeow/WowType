@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -782,6 +783,34 @@ int main(int argc, char **argv) {
         pairType(c, client, "(");
         check(client.shown() == "（|", "说不清光标在哪的输入框里不配对", client.shown());
     });
+
+    {
+        // 输入框清空了（光标前没有字，应用说得清）：会话清掉记的上文，不拿上一次上屏的字学搭配。
+        // 和 fcitx5、macOS 一样；对照：没清空时接着打，搭配照常学到
+        auto [c, client] = fresh();
+        const auto pairs = [&] {
+            const auto path = dir / "context-history.tsv";
+            wowtype_engine_save_history(engine, path.string().c_str());
+            std::ifstream in(path, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        };
+        type(*c, "kaixin ");
+        check(client->committed == "开心", "kaixin 空格上屏开心", client->committed);
+        client->committed.clear();
+        type(*c, "lve ");
+        check(client->committed == "略", "清空输入框后打略", client->committed);
+        check(pairs().find("p\t开心\t略\t") == std::string::npos, "清空输入框后不学上一次上屏的字的搭配（开心 → 略）");
+        type(*c, "hao");
+        const auto texts = client->texts();
+        for (std::size_t i = 0; i < texts.size(); ++i) {
+            if (texts[i] == "号") {
+                c->select(static_cast<int>(i));
+                break;
+            }
+        }
+        check(client->committed == "略号", "没清空接着选号", client->committed);
+        check(pairs().find("p\t略\t号\t") != std::string::npos, "没清空时照常学搭配（略 → 号）");
+    }
 
     wowtype_engine_free(engine);
     std::error_code ignored;
