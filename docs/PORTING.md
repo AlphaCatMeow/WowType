@@ -1,5 +1,7 @@
 # 移植到 macOS：一套代码，两个外壳
 
+> Windows（TSF）照同样的分层做，第一阶段的进度和没验证的在 [WINDOWS.md](WINDOWS.md)。
+
 > 状态（2026-11）：第 2 步进行中；第 3 步的最小 macOS 外壳在 `macos/`，CI 能编译、打包、自检，还没在真机上试过。讨论在 [#42](https://github.com/Gloridust/WowType/issues/42)。
 
 ## 结论

@@ -16,7 +16,7 @@
  * 删函数或改参数含义时升主版本。外壳启动时用 wowtype_abi_version() 比对主版本。
  * 规则见 docs/ABI.md。 */
 #define WOWTYPE_ABI_VERSION_MAJOR 1
-#define WOWTYPE_ABI_VERSION_MINOR 12
+#define WOWTYPE_ABI_VERSION_MINOR 13
 
 #ifdef __cplusplus
 extern "C" {
@@ -169,7 +169,10 @@ int wowtype_engine_load_user_dict(WowtypeEngineHandle *engine, const char *path)
 int wowtype_engine_load_custom_words(WowtypeEngineHandle *engine, const char *path);
 
 /* 用户输入习惯：选过的词的热度（30 天半衰期）和词搭配（上一个词 -> 这个词），
- * 参与排序，存成 TSV。save 返回 0 成功；load 返回条数，-1 表示出错。 */
+ * 参与排序，存成 TSV。save 返回 0 成功；load 返回条数，-1 表示出错。
+ * 1.13 起 load 和引擎里已有的合并：同一个词、同一个搭配留最近用过的那份（新建的引擎上读和以前一样）。
+ * load_user_dict 本来就是加进去（并集），1.13 起已经有的词留大的那个频次。几个进程各有一个引擎时（Windows），
+ * 文件变了就读回来合并（别人存的、自己存的都行，不会往回改）。 */
 int wowtype_engine_save_history(WowtypeEngineHandle *engine, const char *path);
 int wowtype_engine_load_history(WowtypeEngineHandle *engine, const char *path);
 
@@ -689,7 +692,9 @@ int wowtype_stats_set_enabled(WowtypeStats *stats, int enabled);
 int wowtype_stats_enabled(const WowtypeStats *stats);
 
 /* 一次物理按键。platform：0 = X11/fcitx5（code 是 XKB 键码，松开也要传，用来认长按），
- * 1 = macOS（NSEvent.keyCode，只传按下，自动重复外壳自己挡掉）。down 非 0 表示按下。
+ * 1 = macOS（NSEvent.keyCode，只传按下，自动重复外壳自己挡掉），
+ * 2 = Windows（1.13 起；键盘消息 lParam 里的扫描码，带扩展键位的或上 0xE000，只传按下，自动重复外壳挡掉）。
+ * down 非 0 表示按下。
  * 关着、密码框、热力图上没有的键不算。返回 0 成功，-1 参数为 NULL。 */
 int wowtype_stats_key(WowtypeStats *stats, int platform, unsigned int code, int down,
                       unsigned int flags, int64_t now_ms);

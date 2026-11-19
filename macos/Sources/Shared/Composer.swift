@@ -737,9 +737,10 @@ public final class Composer {
             raw.hints |= WOWTYPE_KEY_HINT_NO_AUTO_SPACE
         } else {
             // 应用告诉的才给（自己猜的给 0）：会话按它决定要不要补空格、核对自己记的上文；
-            // 数字后面的标点它自己也记
+            // 数字后面的标点它自己也记。应用说了光标前没有字（输入框清空了、光标在开头）也报：
+            // 会话清掉记的上文，和 fcitx5、Windows 一样（不报的话清空输入框后还拿上一次上屏的字当上文）
             raw.prev_char = reliablePreviousCharacter
-            if raw.prev_char != 0 {
+            if client?.previousCharacterIsReliable == true {
                 raw.hints |= WOWTYPE_KEY_HINT_SURROUNDING
             }
         }

@@ -55,12 +55,8 @@ fn cache_path(path: &Path) -> std::path::PathBuf {
 /// 再放 XDG 缓存目录。
 fn cache_paths(path: &Path) -> Vec<std::path::PathBuf> {
     let mut out = vec![cache_path(path)];
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cache"))
-        });
-    if let Some(base) = base {
+    // Windows 上是 %LOCALAPPDATA%（词库装在 Program Files 里，旁边写不进去）
+    if let Some(base) = crate::platform::cache_dir() {
         // 用 FNV-1a 给路径算个短名字，避免不同词库撞在一起
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for byte in path.to_string_lossy().as_bytes() {
@@ -1067,7 +1063,13 @@ impl UserLexicon {
         if !words.is_empty() {
             let mut user = self.user.write().unwrap();
             for (pinyin, word, freq) in &words {
-                user.put(pinyin, word, *freq);
+                // 已经有这个词（读进一个用过的引擎：Windows 上把别的应用进程存的合并进来）时留大的那个频次，
+                // 不让一份旧文件把学到的往回改；新建的引擎上读和以前一样
+                let freq = match user.pos.get(*word) {
+                    Some(&i) => user.list[i].2.max(*freq),
+                    None => *freq,
+                };
+                user.put(pinyin, word, freq);
             }
             self.rebuild_user(&mut user);
         }

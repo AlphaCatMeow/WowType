@@ -36,7 +36,7 @@ pub struct LocalConfig {
 
 /// 把开头的 `~/` 换成家目录（设置里常这么写）。
 pub fn expand_home(path: &str) -> PathBuf {
-    match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
+    match (path.strip_prefix("~/"), crate::platform::home_dir()) {
         (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
         _ => PathBuf::from(path),
     }
@@ -55,7 +55,7 @@ impl LocalConfig {
         } else {
             self.server.trim()
         };
-        if name.contains('/') {
+        if name.contains('/') || (cfg!(windows) && name.contains('\\')) {
             let path = PathBuf::from(name);
             return is_executable(&path).then_some(path);
         }
@@ -69,9 +69,15 @@ fn find_server(
     path: Option<std::ffi::OsString>,
     downloaded: Option<PathBuf>,
 ) -> Option<PathBuf> {
+    // Windows 上设置里写的名字一般不带 .exe
+    let name = if cfg!(windows) && !name.to_ascii_lowercase().ends_with(".exe") {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
     path.and_then(|path| {
         std::env::split_paths(&path)
-            .map(|dir| dir.join(name))
+            .map(|dir| dir.join(&name))
             .find(|p| is_executable(p))
     })
     .or_else(|| downloaded.filter(|p| is_executable(p)))
@@ -79,6 +85,16 @@ fn find_server(
 
 /// 设置界面「下载」放 llama-server 的地方：`$XDG_DATA_HOME/wowtype/llama/llama-server`
 /// （llama.cpp 官方发布的二进制，和它的动态库在同一个目录）。
+/// Windows 上是 `%LOCALAPPDATA%\WowType\llama\llama-server.exe`（和外壳的数据目录一样）。
+#[cfg(windows)]
+pub fn downloaded_server() -> Option<PathBuf> {
+    let data = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty())?;
+    Some(PathBuf::from(data).join("WowType\\llama\\llama-server.exe"))
+}
+
+/// 设置界面「下载」放 llama-server 的地方：`$XDG_DATA_HOME/wowtype/llama/llama-server`
+/// （llama.cpp 官方发布的二进制，和它的动态库在同一个目录）。
+#[cfg(not(windows))]
 pub fn downloaded_server() -> Option<PathBuf> {
     let data = match std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
         Some(dir) => PathBuf::from(dir),
@@ -87,6 +103,16 @@ pub fn downloaded_server() -> Option<PathBuf> {
     Some(data.join("wowtype/llama/llama-server"))
 }
 
+#[cfg(windows)]
+fn is_executable(path: &Path) -> bool {
+    // Windows 没有执行位：是文件、扩展名是 .exe 就算
+    path.is_file()
+        && path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+}
+
+#[cfg(not(windows))]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata()
@@ -397,8 +423,17 @@ fn spawn_server(command: Command) -> std::io::Result<Child> {
     pdeathsig::spawn(command)
 }
 
+/// Windows：不弹黑框，起来以后放进「输入法所在进程退出就一起杀掉」的 Job Object。
+#[cfg(windows)]
+fn spawn_server(mut command: Command) -> std::io::Result<Child> {
+    crate::platform::no_console_window(&mut command);
+    let child = command.spawn()?;
+    crate::platform::tie_to_this_process(&child);
+    Ok(child)
+}
+
 /// macOS 没有 `PR_SET_PDEATHSIG` 这样的机制，照原样起。
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn spawn_server(mut command: Command) -> std::io::Result<Child> {
     command.spawn()
 }
@@ -476,8 +511,8 @@ mod pdeathsig {
     }
 }
 
-/// 测试用的假 llama-server（translate 的测试也用）。
-#[cfg(test)]
+/// 测试用的假 llama-server（translate 的测试也用）。是带 `#!` 的 Python 脚本，只在 Unix 上跑得起来。
+#[cfg(all(test, unix))]
 pub(crate) mod test_support {
     use std::path::{Path, PathBuf};
 
@@ -516,7 +551,8 @@ http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
     }
 }
 
-#[cfg(test)]
+// 这些测试起假的 llama-server（Python 脚本）、改执行位，只在 Unix 上跑
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

@@ -3,9 +3,12 @@
 
   python3 scripts/test-config-contract.py                                   # 规格自检 + 设置界面
   python3 scripts/test-config-contract.py --fcitx5 <wowtype-config-dump>    # 再对照 fcitx5 插件
+  python3 scripts/test-config-contract.py --windows <wowtype-windows-config-dump>  # 规格自检 + Windows 外壳
 
 wowtype-config-dump 是 scripts/addon-test.sh 编出来的（fcitx5-addon/test/config_dump.cpp），导出插件里
 WowtypeConfig 的键、类型、默认值、范围、可选值。macOS 那端在 macos/test.sh 里对照同一份规格。
+wowtype-windows-config-dump 是 windows/test.sh（或 CI 里 CMake）编出来的（windows/tests/config_dump.cpp），
+导出 Windows 外壳的设置项表、按文件读出来的值。--windows 只对照规格和 Windows（Windows 上没有 GTK 的设置界面可导）。
 
 设置界面（settings/wowtype-config）没有 .py 后缀，用 importlib 按路径导入。不用装 GTK：导入前塞一个假的 gi，
 它在模块顶层只用到 gi.require_version、几个当基类的控件和 GObject.Property。XDG 目录都指到临时目录，不碰自己的配置。
@@ -28,7 +31,7 @@ import types
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_DIR = ROOT / "spec"
 SETTINGS = ROOT / "settings" / "wowtype-config"
-ENDS = ("fcitx5", "settings", "macos")
+ENDS = ("fcitx5", "settings", "macos", "windows")
 TYPES = ("bool", "int", "enum", "string", "key")
 # fcitx5 配置说明里的类型名
 FCITX_TYPES = {"Boolean": "bool", "Integer": "int", "Enum": "enum", "String": "string", "Key": "key"}
@@ -442,7 +445,7 @@ def check_settings_lexicon(pack, wc, home):
 
 
 def run_dump(exe, *args):
-    result = subprocess.run([exe, *args], capture_output=True, text=True, timeout=30)
+    result = subprocess.run([exe, *args], capture_output=True, text=True, encoding="utf-8", timeout=30)
     if result.returncode != 0:
         raise SystemExit(f"{exe} {' '.join(args)} 失败：{result.stderr}")
     return json.loads(result.stdout)
@@ -496,20 +499,80 @@ def check_fcitx5(spec, exe):
                 same(values.get(key), expect, f"fcitx5：文件是 {case['file']!r} 时 {key}")
 
 
+def check_windows(spec, exe):
+    """Windows 外壳（windows/src/common/config.cpp）：键、类型、默认值、范围、可选值，按文件读出来的值。"""
+    table = {s["key"]: s for s in run_dump(exe)["settings"]}
+    mine = settings_for(spec, "windows")
+    same([s["key"] for s in run_dump(exe)["settings"]], [s["key"] for s in mine], "windows：认的键（顺序同规格）")
+    defaults = run_dump(exe, "--load")["values"]
+    for s in mine:
+        key = s["key"]
+        ours = table.get(key)
+        if ours is None:
+            continue
+        default = default_for(s, "windows")
+        same(ours["type"], s["type"], f"windows：{key} 的类型")
+        same(ours["default"], default, f"windows：{key} 的默认值（表里）")
+        same(defaults.get(key), default, f"windows：{key} 的默认值（空文件读出来）")
+        if s["type"] == "int":
+            same((ours["min"], ours["max"]), (s["min"], s["max"]), f"windows：{key} 的范围")
+        if s["type"] == "enum":
+            same(ours["values"], enum_values(s), f"windows：{key} 的可选值")
+            for v in enum_values(s):
+                same(run_dump(exe, "--load", f"{key}={v}")["values"].get(key), v, f"windows：{key} 认 {v}")
+        if s["type"] == "bool":
+            for v in ("True", "False"):
+                same(run_dump(exe, "--load", f"{key}={v}")["values"].get(key), v, f"windows：{key}={v}")
+        if s["type"] == "key":
+            same(run_dump(exe, "--load", f"{key}=")["values"].get(key), "", f"windows：{key} 留空是不用")
+            shared = file_text(s["default"])
+            if shared:
+                # 别的端的默认值拷过来，读成 Windows 的默认值（EmojiKey：Super 当 Control，原因见规格的 why）
+                same(run_dump(exe, "--load", f"{key}={shared}")["values"].get(key), default,
+                     f"windows：{key} 写 {shared} 读出来")
+        missing = s.get("whenMissing")
+        for case in missing["cases"] if missing else ():
+            values = run_dump(exe, "--load", *(f"{k}={v}" for k, v in case["file"].items()))["values"]
+            same(values.get(key), file_text(case["expect"]), f"windows：文件是 {case['file']} 时 {key}")
+    policy = spec["readRules"]["outOfRange"]["windows"]
+    for s in mine:
+        if s["type"] == "int":
+            for raw, expect in out_of_range_cases(s, policy, "windows"):
+                values = run_dump(exe, "--load", f"{s['key']}={raw}")["values"]
+                same(values.get(s["key"]), expect, f"windows：{s['key']}={raw} 读出来")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "wowtype.conf")
+        for case in spec["readRules"]["cases"]["items"]:
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(case["file"] + "\n")
+            values = run_dump(exe, "--load-file", path)["values"]
+            for key, expect in case["expect"].items():
+                same(values.get(key), expect, f"windows：文件是 {case['file']!r} 时 {key}")
+
+
 def main(argv):
-    fcitx5 = None
+    # Windows 的控制台默认不是 UTF-8（cp1252 / cp936），中文的结果行会写不出来
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    fcitx5 = windows = None
     if argv[:1] == ["--fcitx5"] and len(argv) == 2:
         fcitx5 = argv[1]
+    elif argv[:1] == ["--windows"] and len(argv) == 2:
+        windows = argv[1]
     elif argv:
         print(__doc__)
         return 2
     spec, pack = load_spec("config.json"), load_spec("lexicon-pack.json")
     check_spec(spec, pack)
-    with tempfile.TemporaryDirectory() as home:
-        wc = import_settings(home)
-        check_settings(spec, wc, home)
-        check_settings_lexicon(pack, wc, home)
-    ends = "规格、设置界面"
+    if windows:
+        check_windows(spec, windows)
+        ends = "规格、Windows 外壳"
+    else:
+        with tempfile.TemporaryDirectory() as home:
+            wc = import_settings(home)
+            check_settings(spec, wc, home)
+            check_settings_lexicon(pack, wc, home)
+        ends = "规格、设置界面"
     if fcitx5:
         check_fcitx5(spec, fcitx5)
         ends += "、fcitx5 插件"

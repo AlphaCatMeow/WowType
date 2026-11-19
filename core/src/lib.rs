@@ -20,6 +20,7 @@ pub mod lexicon;
 pub mod llama;
 pub mod lm;
 pub mod nnlm;
+pub mod platform;
 pub mod preedit;
 pub mod rank;
 pub mod recent_emoji;
@@ -5794,5 +5795,48 @@ mod tests {
         let cands = e.input("xian");
         assert!(!cands.is_empty());
         assert_eq!(cands[0].features.ltr_valid, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod peer_learning {
+    use super::*;
+
+    /// Windows 上每个应用进程各有一个引擎：A 学到的存盘后，开着的 B 读回来（不重开）就排到第一。
+    #[test]
+    fn another_engine_learning_merged_from_disk_ranks_first() {
+        let tsv = "shi\t是\t1000\nshi\t时\t500\nshi\t事\t400\nshi\t十\t300\n";
+        let make = || {
+            let lexicon: Arc<dyn Lexicon> = Arc::new(lexicon::MemoryLexicon::from_tsv_str(tsv).unwrap());
+            let lm: Arc<dyn LanguageModel> = Arc::new(lm::BigramLm::default());
+            Engine::new(lexicon, lm)
+        };
+        let top = |e: &Engine| e.input("shi")[0].text.clone();
+        let dir = std::env::temp_dir().join(format!("wowtype-peer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (user, history) = (dir.join("user.tsv"), dir.join("history.tsv"));
+
+        let b = make();
+        let first = top(&b);
+        b.record_selection_with_pinyin(&first, Some("shi"));
+        b.save_user_dict(&user).unwrap();
+        b.save_history(&history).unwrap();
+
+        let a = make();
+        a.load_user_dict(&user).unwrap();
+        a.load_history(&history).unwrap();
+        for _ in 0..6 {
+            let third = a.input("shi")[2].text.clone();
+            a.record_selection_with_pinyin(&third, Some("shi"));
+        }
+        let learned = top(&a);
+        assert_ne!(learned, first);
+        a.save_user_dict(&user).unwrap();
+        a.save_history(&history).unwrap();
+
+        b.load_user_dict(&user).unwrap();
+        b.load_history(&history).unwrap();
+        assert_eq!(top(&b), learned);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

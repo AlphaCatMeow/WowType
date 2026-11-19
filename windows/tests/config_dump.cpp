@@ -1,0 +1,109 @@
+// 导出 Windows 外壳认的设置项，给 scripts/test-config-contract.py --windows 拿 spec/config.json 对照。
+//
+//   wowtype-windows-config-dump                     设置项表：{"settings": [{key, type, default, min, max, values}]}
+//   wowtype-windows-config-dump --load k=v ...      这几行当 wowtype.conf 读出来的值：{"values": {...}}
+//   wowtype-windows-config-dump --load-file <path>  读这个文件
+
+#include <cstdio>
+#include <fstream>
+#include <iterator>
+#include <sstream>
+#include <string>
+
+#include "config.h"
+
+using namespace wowtype;
+
+namespace {
+
+std::string json(const std::string &s) {
+    std::string out = "\"";
+    for (const char c : s) {
+        switch (c) {
+        case '"': out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20) {
+                char buf[8];
+                std::snprintf(buf, sizeof buf, "\\u%04x", c);
+                out += buf;
+            } else {
+                out += c;
+            }
+        }
+    }
+    return out + "\"";
+}
+
+const char *typeName(SettingType t) {
+    switch (t) {
+    case SettingType::Bool: return "bool";
+    case SettingType::Int: return "int";
+    case SettingType::Enum: return "enum";
+    case SettingType::String: return "string";
+    case SettingType::Key: return "key";
+    }
+    return "?";
+}
+
+void dumpValues(const Config &config) {
+    std::string out = "{\"values\": {";
+    bool first = true;
+    for (const auto &def : settingDefs()) {
+        out += (first ? "" : ", ") + json(def.key) + ": " + json(config.value(def.key));
+        first = false;
+    }
+    std::printf("%s}}\n", out.c_str());
+}
+
+} // namespace
+
+int main(int argc, char **argv) {
+    const std::string mode = argc > 1 ? argv[1] : "";
+    if (mode.empty()) {
+        std::string out = "{\"settings\": [";
+        bool first = true;
+        for (const auto &def : settingDefs()) {
+            out += first ? "" : ", ";
+            first = false;
+            out += "{\"key\": " + json(def.key) + ", \"type\": " + json(typeName(def.type)) +
+                   ", \"default\": " + json(def.defaultValue);
+            if (def.type == SettingType::Int) {
+                out += ", \"min\": " + std::to_string(def.min) + ", \"max\": " + std::to_string(def.max);
+            }
+            if (def.type == SettingType::Enum) {
+                out += ", \"values\": [";
+                for (std::size_t i = 0; i < def.values.size(); ++i) {
+                    out += (i ? ", " : "") + json(def.values[i]);
+                }
+                out += "]";
+            }
+            out += "}";
+        }
+        std::printf("%s]}\n", out.c_str());
+        return 0;
+    }
+    if (mode == "--load") {
+        std::string text;
+        for (int i = 2; i < argc; ++i) {
+            text += std::string(argv[i]) + "\n";
+        }
+        dumpValues(Config::parse(text));
+        return 0;
+    }
+    if (mode == "--load-file" && argc == 3) {
+        std::ifstream in(argv[2], std::ios::binary);
+        if (!in) {
+            std::fprintf(stderr, "读不了 %s\n", argv[2]);
+            return 1;
+        }
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        dumpValues(Config::parse(text));
+        return 0;
+    }
+    std::fprintf(stderr, "用法：wowtype-windows-config-dump [--load k=v ... | --load-file <path>]\n");
+    return 2;
+}

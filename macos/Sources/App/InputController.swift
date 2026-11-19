@@ -388,19 +388,32 @@ extension WowTypeInputController: TextClient {
         modeHintTimer = timer
     }
 
-    /// 应用告诉的光标前一个字；读不到是 nil。打字途中光标在编辑区里，要看编辑区前面那个字。
+    /// 应用告诉的光标前一个字；光标在开头、应用说得清（见 caretAtStartIsKnown）是 0；读不到是 nil。
+    /// 打字途中光标在编辑区里，要看编辑区前面那个字。
     private var clientPreviousCharacter: UInt32? {
         guard let client = textInput else { return nil }
         let marked = client.markedRange()
         let location = marked.location != NSNotFound && marked.length > 0
             ? marked.location : client.selectedRange().location
-        guard location != NSNotFound, location > 0,
-              let text = client.attributedSubstring(from: NSRange(location: location - 1, length: 1))?.string,
+        guard location != NSNotFound else { return nil }
+        if location == 0 {
+            return caretAtStartIsKnown(client) ? 0 : nil
+        }
+        guard let text = client.attributedSubstring(from: NSRange(location: location - 1, length: 1))?.string,
               let scalar = text.unicodeScalars.last
         else {
             return nil
         }
         return scalar.value
+    }
+
+    /// 光标在位置 0 时光标前确实没有字（输入框清空了、光标挪到了开头）：应用读得出开头的字，或者整个输入框是空的。
+    /// 会话拿它清掉自己记的上文，和 fcitx5、Windows 一样。终端不算（位置是假的）；什么都不说的应用位置是 NSNotFound，到不了这里
+    private func caretAtStartIsKnown(_ client: IMKTextInput & NSObjectProtocol) -> Bool {
+        if WowTypeInputController.terminalApps.contains(client.bundleIdentifier() ?? "") {
+            return false
+        }
+        return client.length() == 0 || readable(client, NSRange(location: 0, length: 1))
     }
 
     var previousCharacterIsReliable: Bool {

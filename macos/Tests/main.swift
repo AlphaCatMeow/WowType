@@ -2584,6 +2584,39 @@ withConfig({ $0.association = true }) { c, client in
     check(client.page == nil, "联想收起")
 }
 
+do {
+    // 输入框清空了（光标前没有字，应用说得清）：会话清掉记的上文，不拿上一次上屏的字学搭配。
+    // 和 fcitx5、Windows 一样；对照：没清空时接着打，搭配照常学到
+    let (c, client) = fresh()
+    let path = "/tmp/wowtype-macos-harness-\(getpid())-context-history.tsv"
+    func pairs() -> String {
+        _ = engine.saveHistory(path)
+        defer { unlink(path) }
+        guard let f = fopen(path, "r") else { return "" }
+        defer { fclose(f) }
+        var bytes: [UInt8] = []
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let n = fread(&buffer, 1, buffer.count, f)
+            if n <= 0 { break }
+            bytes.append(contentsOf: buffer[0..<n])
+        }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+    type(c, "kaixin ")
+    check(client.committed == "开心", "kaixin 空格上屏开心", client.committed)
+    client.committed = ""
+    type(c, "lve ")
+    check(client.committed == "略", "清空输入框后打略", client.committed)
+    check(!pairs().contains("p\t开心\t略\t"), "清空输入框后不学上一次上屏的字的搭配（开心 → 略）")
+    type(c, "hao")
+    if let at = client.page?.texts.firstIndex(of: "号") {
+        c.select(at)
+    }
+    check(client.committed == "略号", "没清空接着选号", client.committed)
+    check(pairs().contains("p\t略\t号\t"), "没清空时照常学搭配（略 → 号）")
+}
+
 if failures > 0 {
     print("macOS HARNESS FAILED (\(failures))")
     exit(1)

@@ -399,6 +399,10 @@ pub fn save_history<P: AsRef<Path>>(
 
 /// 读回 [`save_history`] 写的文件，返回读到的条数。坏行（列数不对、数字解析不了、
 /// 不是合法 UTF-8）跳过，别的行照常，见 [`crate::fsutil::read_lines_lossy`]。
+///
+/// 内存里已经有的条目和文件里的合并：同一个词、同一个搭配留最近用过的那份（`last_used_ms` 大的），
+/// 新词留先记下的那份。外壳只在新建的引擎上读一次时和以前一样；Windows 上每个应用进程各有一个引擎，
+/// 存盘前把别的进程存的读进来合并，学到的词就不会互相盖掉（docs/WINDOWS.md）。
 pub fn load_history<P: AsRef<Path>>(
     path: P,
     words: &mut HashMap<String, HistoryEntry>,
@@ -425,7 +429,10 @@ pub fn load_history<P: AsRef<Path>>(
         match parts.as_slice() {
             ["w", word, count, last] if !word.is_empty() && !plain_ascii(word) => {
                 if let Some(e) = entry(count, last) {
-                    words.insert((*word).to_string(), e);
+                    let newer = words.get(*word).map_or(true, |old| e.last_used_ms > old.last_used_ms);
+                    if newer {
+                        words.insert((*word).to_string(), e);
+                    }
                     loaded += 1;
                 }
             }
@@ -433,7 +440,12 @@ pub fn load_history<P: AsRef<Path>>(
                 if !prev.is_empty() && !cur.is_empty() && !plain_ascii(prev) && !plain_ascii(cur) =>
             {
                 if let Some(e) = entry(count, last) {
-                    pairs.insert((*prev).to_string(), (*cur).to_string(), e);
+                    let newer = pairs
+                        .get(prev, cur)
+                        .map_or(true, |old| e.last_used_ms > old.last_used_ms);
+                    if newer {
+                        pairs.insert((*prev).to_string(), (*cur).to_string(), e);
+                    }
                     loaded += 1;
                 }
             }
@@ -443,7 +455,7 @@ pub fn load_history<P: AsRef<Path>>(
                         pinyin: (*pinyin).to_string(),
                         at_ms,
                     };
-                    new_words.insert((*word).to_string(), new);
+                    new_words.entry((*word).to_string()).or_insert(new);
                     loaded += 1;
                 }
             }
@@ -457,6 +469,36 @@ pub fn load_history<P: AsRef<Path>>(
 mod tests {
     use super::*;
     use crate::lm::BigramLm;
+
+    /// 内存里已经有的和文件里的合并：同一条留最近用过的（Windows 上几个应用进程各存各的，存盘前先合并别人的）。
+    #[test]
+    fn loading_into_a_used_engine_keeps_the_newer_entries() {
+        let dir = std::env::temp_dir().join(format!("wowtype_merge_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.tsv");
+        std::fs::write(
+            &path,
+            "w\t你好\t5\t2000\nw\t世界\t1\t500\nw\t别人的\t2\t1500\n\
+             p\t你好\t世界\t3\t2000\np\t旧的\t搭配\t9\t100\nn\t新词\txin ci\t900\n",
+        )
+        .unwrap();
+        let mut words = HashMap::new();
+        words.insert("世界".to_string(), HistoryEntry { count: 4.0, last_used_ms: 1000 });
+        words.insert("你好".to_string(), HistoryEntry { count: 1.0, last_used_ms: 1000 });
+        let mut pairs = UserPairs::default();
+        pairs.insert("旧的".into(), "搭配".into(), HistoryEntry { count: 1.0, last_used_ms: 3000 });
+        let mut new_words = HashMap::new();
+        new_words.insert("新词".to_string(), NewWord { pinyin: "xin ci".into(), at_ms: 100 });
+        load_history(&path, &mut words, &mut pairs, &mut new_words).unwrap();
+        // 文件里的更新：用文件的；内存里的更新：留着；只在文件里的：加进来
+        assert_eq!(words["你好"].count, 5.0);
+        assert_eq!(words["世界"].count, 4.0);
+        assert_eq!(words["别人的"].count, 2.0);
+        assert_eq!(pairs.get("你好", "世界").unwrap().count, 3.0);
+        assert_eq!(pairs.get("旧的", "搭配").unwrap().count, 1.0);
+        assert_eq!(new_words["新词"].at_ms, 100);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// 旧文件里纯 ASCII 的词和搭配（回车上屏的原始字母串）载入时跳过，存盘后文件里也没有了。
     #[test]

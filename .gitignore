@@ -55,3 +55,6 @@ swbd*.bin
 decgnr.bin
 mpd_e2e.bin
 nlrgpt2_nnlm.bin
+
+# Windows 输入法构建目录
+build/
