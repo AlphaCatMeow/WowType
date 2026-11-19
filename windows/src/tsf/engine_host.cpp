@@ -311,12 +311,14 @@ void EngineHost::mergeLearning(WowtypeEngineHandle *engine) {
     // 合并自己存的没关系：用户词留大的频次、输入习惯同一条留最近用过的（核心的 load 就是这么合并的），不会往回改。
     // 以前只认「不是自己写的」：自己的存盘写完的那一刻别的进程也写过，就当成自己的、漏了（CI 的两个进程测试抓到的）
     if (const FILETIME now = fileStamp(userPath); !sameStamp(now, userStamp_)) {
-        wowtype_engine_load_user_dict(engine, narrow(userPath).c_str());
+        const int n = wowtype_engine_load_user_dict(engine, narrow(userPath).c_str());
         userStamp_ = now;
+        log(L"合并 user.tsv：" + std::to_wstring(n) + L" 条");
     }
     if (const FILETIME now = fileStamp(historyPath); !sameStamp(now, historyStamp_)) {
-        wowtype_engine_load_history(engine, narrow(historyPath).c_str());
+        const int n = wowtype_engine_load_history(engine, narrow(historyPath).c_str());
         historyStamp_ = now;
+        log(L"合并 history.tsv：" + std::to_wstring(n) + L" 条");
     }
 }
 
@@ -342,6 +344,7 @@ void EngineHost::save(bool wait) {
         if (dict && history) {
             commitsSinceSave_ = 0;
         }
+        log(std::wstring(L"存学习数据（后台写）") + (dict && history ? L"" : L"：交不出去"));
     }
     if (wait && wowtype_engine_save_wait(engine, -1) < 0) {
         const char *error = wowtype_last_error();

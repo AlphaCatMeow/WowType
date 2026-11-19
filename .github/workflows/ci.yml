@@ -214,7 +214,8 @@ jobs:
           $a = Start-Process $typing -ArgumentList '--peer-learn', "`"$peer`"" -PassThru -NoNewWindow
           $a.WaitForExit(); $b.WaitForExit()
           if ($a.ExitCode -ne 0 -or $b.ExitCode -ne 0) {
-            Get-Content (Join-Path $env:LOCALAPPDATA 'WowType\wowtype.log') -Tail 60 -ErrorAction SilentlyContinue
+            Get-Content (Join-Path $env:LOCALAPPDATA 'WowType\wowtype.log') -Tail 300 -ErrorAction SilentlyContinue | Select-String -NotMatch 'vk='
+            Get-Content (Join-Path $env:LOCALAPPDATA 'WowType\history.tsv') -ErrorAction SilentlyContinue | Select-String '时|是'
             throw "两个进程之间的学习没过（A $($a.ExitCode)，B $($b.ExitCode)）"
           }
           # 设置窗口几页的截图：先放一份假的打字统计，统计页的柱状图、热力图才有东西
