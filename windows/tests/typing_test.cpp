@@ -425,6 +425,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
 //   wowtype-windows-typing-test.exe --peer-wait <目录>   B：先开着，记下 shi 空格出的字，等 A 学完再打一次
 //   wowtype-windows-typing-test.exe --peer-learn <目录>  A：等 B 准备好，连着选 shi 的第三个候选几次（学到它），等存盘
 // 两个进程在 <目录> 里用小文件打招呼。B 第二次出的字应该是 A 学到的（各个应用学到的词几秒内都有，docs/WINDOWS.md）。
+// 接着 A 用 Ctrl+退格忘掉这个字：B 也忘了；B 存过盘以后 A 再合并，也不会回来。
 
 bool waitForFile(const std::wstring &path, DWORD ms) {
     const ULONGLONG until = GetTickCount64() + ms;
@@ -483,6 +484,19 @@ int peerWait(const std::wstring &dir) {
     const std::wstring after = commitShi();
     check(after == wanted, "B：A 在另一个进程里学到的字，B 不用重开就排到了第一（几秒内各个应用都有）",
           L"之前 " + before + L"，A 学的 " + wanted + L"，现在 " + after);
+    writeFile(dir + L"\\b-checked", after);
+    // A 忘掉它：B 下一次按键合并以后也忘了
+    check(waitForFile(dir + L"\\forgot", 120000), "B：等到 A 忘掉");
+    pump(1000);
+    const std::wstring afterForget = commitShi();
+    check(afterForget.size() == 1 && afterForget != wanted, "B：A 在另一个进程里忘掉的字，B 也忘了",
+          L"A 忘掉的 " + wanted + L"，现在 " + afterForget);
+    // 让 B 存一次盘（存之前先合并 A 存的：A 忘掉的不会被 B 写回去）
+    pump(3000);
+    typeKeys("a");
+    tap(VK_ESCAPE);
+    pump(2000);
+    writeFile(dir + L"\\b-saved", afterForget);
     return g_failures;
 }
 
@@ -520,6 +534,27 @@ int peerLearn(const std::wstring &dir) {
     tap(VK_ESCAPE);
     pump(2000);
     writeFile(dir + L"\\learned", top);
+    // B 看过了：A 用 Ctrl+退格忘掉第一个候选（学到的那个），马上存
+    check(waitForFile(dir + L"\\b-checked", 120000), "A：等到 B 看过");
+    pump(1000);
+    clear();
+    focus();
+    typeKeys("shi");
+    sendKey(VK_CONTROL, false);
+    tap(VK_BACK);
+    sendKey(VK_CONTROL, true);
+    pump(300);
+    tap(VK_ESCAPE);
+    pump(300);
+    const std::wstring afterForget = commitShi();
+    check(afterForget.size() == 1 && afterForget != top, "A：Ctrl+退格忘掉学到的字", L"忘掉的 " + top + L"，现在 " + afterForget);
+    pump(1500);
+    writeFile(dir + L"\\forgot", top);
+    // B 存过盘（B 内存里还有这个字的时候学的那些）：A 合并以后也不会回来
+    check(waitForFile(dir + L"\\b-saved", 120000), "A：等到 B 存盘");
+    pump(1000);
+    const std::wstring last = commitShi();
+    check(last.size() == 1 && last != top, "A：B 存过盘以后，A 忘掉的字也没有回来", L"忘掉的 " + top + L"，现在 " + last);
     return g_failures;
 }
 

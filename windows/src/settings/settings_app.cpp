@@ -8,7 +8,6 @@
 #include <windows.h>
 
 #include <bcrypt.h>
-#include <urlmon.h>
 
 #include <commctrl.h>
 #include <commdlg.h>
@@ -21,6 +20,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -1053,43 +1053,18 @@ void removeTree(const std::wstring &dir) {
     RemoveDirectoryW(dir.c_str());
 }
 
-/// 下载进度：每过一个百分点给窗口发一次（窗口在状态栏里写「已下载 x%」）。
-class Progress final : public IBindStatusCallback {
-public:
-    Progress(HWND window, const wchar_t *what) : window_(window), what_(what) {}
-    STDMETHODIMP QueryInterface(REFIID riid, void **ppv) override {
-        if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_IBindStatusCallback)) {
-            *ppv = static_cast<IBindStatusCallback *>(this);
-            return S_OK;
-        }
-        *ppv = nullptr;
-        return E_NOINTERFACE;
-    }
-    // 在栈上，跟着下载的线程走完：不用引用计数
-    STDMETHODIMP_(ULONG) AddRef() override { return 2; }
-    STDMETHODIMP_(ULONG) Release() override { return 1; }
-    STDMETHODIMP OnStartBinding(DWORD, IBinding *) override { return S_OK; }
-    STDMETHODIMP GetPriority(LONG *) override { return E_NOTIMPL; }
-    STDMETHODIMP OnLowResource(DWORD) override { return S_OK; }
-    STDMETHODIMP OnProgress(ULONG done, ULONG total, ULONG, LPCWSTR) override {
+/// 下载进度：每过一个百分点给窗口发一次（窗口在状态栏里写「语音模型：已下载 x%」）。
+std::function<void(unsigned long long, unsigned long long)> reportProgress(HWND window, const wchar_t *what) {
+    auto last = std::make_shared<int>(-1);
+    return [window, what, last](unsigned long long done, unsigned long long total) {
         const int percent = total > 0 ? static_cast<int>(100ULL * done / total) : -1;
-        if (percent >= 0 && percent != last_) {
-            last_ = percent;
-            auto *text = new std::wstring(std::wstring(what_) + L"：已下载 " + std::to_wstring(percent) + L"%");
-            PostMessageW(window_, kMessageProgress, 0, reinterpret_cast<LPARAM>(text));
+        if (percent >= 0 && percent != *last) {
+            *last = percent;
+            auto *text = new std::wstring(std::wstring(what) + L"：已下载 " + std::to_wstring(percent) + L"%");
+            PostMessageW(window, kMessageProgress, 0, reinterpret_cast<LPARAM>(text));
         }
-        return S_OK;
-    }
-    STDMETHODIMP OnStopBinding(HRESULT, LPCWSTR) override { return S_OK; }
-    STDMETHODIMP GetBindInfo(DWORD *, BINDINFO *) override { return S_OK; }
-    STDMETHODIMP OnDataAvailable(DWORD, DWORD, FORMATETC *, STGMEDIUM *) override { return S_OK; }
-    STDMETHODIMP OnObjectAvailable(REFIID, IUnknown *) override { return S_OK; }
-
-private:
-    HWND window_;
-    const wchar_t *what_;
-    int last_ = -1;
-};
+    };
+}
 
 /// llama-server 在不在：设置里写了路径、PATH 里有、数据目录的 llama\ 里有（和核心找的顺序一样）。
 bool llamaServerFound(const std::wstring &dir, const std::string &configured) {
@@ -1135,14 +1110,15 @@ void SettingsWindow::downloadLocalModel() {
             if (slash != std::wstring::npos) {
                 SHCreateDirectoryExW(nullptr, model.substr(0, slash).c_str(), nullptr);
             }
-            const std::wstring part = model + L".part";
-            Progress progress(window, L"本地翻译模型");
-            if (FAILED(URLDownloadToFileW(nullptr, kLocalModelUrl, part.c_str(), 0, &progress))) {
-                *result = L"下载模型失败：连不上 Hugging Face";
-            } else if (hashFile(part, BCRYPT_SHA256_ALGORITHM) != kLocalModelSha256) {
-                DeleteFileW(part.c_str());
+            // 先下成 .download（断了留着 .download.part，下次接着下），校验过了才改成模型的名字
+            const std::wstring staged = model + L".download";
+            std::string error;
+            if (!win::httpDownload(kLocalModelUrl, staged, reportProgress(window, L"本地翻译模型"), &error)) {
+                *result = L"下载模型失败：" + widen(error);
+            } else if (hashFile(staged, BCRYPT_SHA256_ALGORITHM) != kLocalModelSha256) {
+                DeleteFileW(staged.c_str());
                 *result = L"下载的模型校验不对（SHA256 不一致），已删除，请重试";
-            } else if (!MoveFileExW(part.c_str(), model.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+            } else if (!MoveFileExW(staged.c_str(), model.c_str(), MOVEFILE_REPLACE_EXISTING)) {
                 *result = L"模型下好了，但放不到 " + model;
             }
         }
@@ -1150,9 +1126,9 @@ void SettingsWindow::downloadLocalModel() {
             const std::wstring zip = dir + L"\\llama.zip";
             const std::wstring target = dir + L"\\llama";
             CreateDirectoryW(target.c_str(), nullptr);
-            Progress progress(window, L"llama-server");
-            if (FAILED(URLDownloadToFileW(nullptr, kLlamaUrl, zip.c_str(), 0, &progress))) {
-                *result = L"模型装好了，但下载 llama-server 失败：连不上 GitHub";
+            std::string error;
+            if (!win::httpDownload(kLlamaUrl, zip, reportProgress(window, L"llama-server"), &error)) {
+                *result = L"模型装好了，但下载 llama-server 失败：" + widen(error);
             } else if (hashFile(zip, BCRYPT_SHA256_ALGORITHM) != kLlamaSha256) {
                 *result = L"下载的 llama-server 校验不对，已删除，请重试";
             } else if (!runTar(zip, target, L"")) {
@@ -1186,9 +1162,9 @@ void SettingsWindow::downloadVoiceModel() {
         const std::wstring tmp = dir + L"\\wtlocal.tmp";
         const std::wstring target = dir + L"\\wtlocal";
         WIN32_FILE_ATTRIBUTE_DATA info{};
-        Progress progress(window, L"语音模型");
-        if (FAILED(URLDownloadToFileW(nullptr, kVoicePackUrl, pack.c_str(), 0, &progress))) {
-            *result = L"下载失败：连不上服务器";
+        std::string error;
+        if (!win::httpDownload(kVoicePackUrl, pack, reportProgress(window, L"语音模型"), &error)) {
+            *result = L"下载失败：" + widen(error);
         } else if (!GetFileAttributesExW(pack.c_str(), GetFileExInfoStandard, &info) ||
                    ((static_cast<unsigned long long>(info.nFileSizeHigh) << 32) | info.nFileSizeLow) != kVoicePackSize ||
                    hashFile(pack, BCRYPT_MD5_ALGORITHM) != kVoicePackMd5) {
@@ -1235,7 +1211,7 @@ void SettingsWindow::checkUpdate(bool thenInstall) {
     HWND window = hwnd_;
     std::thread([dir, beta, window] {
         std::string error;
-        auto release = win::fetchLatest(dir, beta, &error);
+        auto release = win::fetchLatest(dir, beta, WOWTYPE_VERSION, &error);
         auto *result = new std::pair<std::optional<update::Release>, std::string>(std::move(release), error);
         PostMessageW(window, kMessageUpdateChecked, 0, reinterpret_cast<LPARAM>(result));
     }).detach();

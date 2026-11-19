@@ -11,6 +11,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <string>
@@ -453,6 +455,132 @@ int main(int argc, char **argv) {
         check(!due(state, 1700000000 + 3600) && due(state, 1700000000 + 86400) && due(state, 1600000000) &&
                   due(State{}, 1700000000),
               "一天查一次，时钟往回拨了也查");
+        {
+            State tried = state;
+            tried.tried = 1700000000 + 86400;
+            check(State::parse(tried.text()) == tried, "检查状态记上次试的时间");
+            check(!due(tried, 1700000000 + 86400 + 600) && due(tried, 1700000000 + 86400 + 3600),
+                  "查不成以后所有应用合起来一小时最多试一次");
+        }
+        // 接口限流时改走网页（和 Linux 的 fetch_latest_web、macOS 的 AppUpdate.webCandidates 一样）
+        check(tagFromLatestUrl("https://github.com/Gloridust/WowType/releases/tag/v0.6.0") == std::optional<std::string>("v0.6.0") &&
+                  !tagFromLatestUrl("https://github.com/Gloridust/WowType/releases"),
+              "releases/latest 跳到的地址里取 tag");
+        std::string feed;
+        for (const char *t : {"v0.8.0", "v0.7.0", "lm-2026.11.09", "v0.6.0", "v0.7.0"}) {
+            feed += std::string("<link href=\"https://github.com/Gloridust/WowType/releases/tag/") + t + "\"/>";
+        }
+        check(webCandidates(std::string("v0.6.0"), std::nullopt) == std::vector<std::string>{"v0.6.0"},
+              "网页：不开 Beta 只看最新正式版");
+        check(webCandidates(std::string("v0.6.0"), feed) == std::vector<std::string>{"v0.8.0", "v0.7.0", "v0.6.0"},
+              "网页：Beta 按版本号从大到小试，数据的发布不算、重复的去掉");
+        const std::string sha(64, 'a');
+        check(assetNames(sha + "  WowType-0.6.0-macos.pkg\n" + sha + " *wowtype_0.6.0_debian13_amd64.deb\nbad  x\n" + sha +
+                         "  ../evil\n") == std::vector<std::string>{"WowType-0.6.0-macos.pkg", "wowtype_0.6.0_debian13_amd64.deb"},
+              "SHA256SUMS 里的文件名");
+        {
+            // 检查更新走网页（和 Linux 的 test_update_check_uses_web_not_api 一样）：releases/latest 的跳转、releases.atom、
+            // SHA256SUMS；更新说明下发布页上的 RELEASE-NOTES.md，更早的版本没有这个文件才问一次接口
+            const std::string home = kRepoPage;
+            std::map<std::string, std::string> sums = {
+                {"v0.6.0", sha + "  WowType-0.6.0-windows-x64-setup.exe\n" + sha + " *WowType-0.6.0-macos.pkg\n"},
+                {"v0.7.0", sha + "  WowType-0.7.0-windows-x64-setup.exe\n"},
+                {"v0.7.1", sha + "  WowType-0.7.1-windows-x64-setup.exe\n"},
+            };
+            std::map<std::string, std::string> notesFiles = {{"v0.7.1", "## 这一版要注意\n\n- 网页取说明\n\n"}};
+            // v0.8.0 只推了 tag、还没发出来：atom 里有，SHA256SUMS 是 404
+            std::string atom;
+            for (const char *t : {"v0.8.0", "v0.7.1", "v0.7.0", "lm-2026.11.09", "v0.6.0"}) {
+                atom += "<link href=\"" + home + "/releases/tag/" + t + "\"/>";
+            }
+            std::vector<std::string> asked;
+            std::function<HttpResult(const std::string &)> api;
+            bool webBroken = false;
+            const Fetch site = [&](const std::string &url) {
+                asked.push_back(url);
+                HttpResult r;
+                if (url.find("api.github.com") != std::string::npos) {
+                    return api(url);
+                }
+                r.status = 404;
+                if (webBroken) {
+                    r.status = 500;
+                } else if (url == kLatestPage) {
+                    r.status = 200;
+                    r.finalUrl = home + "/releases/tag/v0.6.0";
+                } else if (url == kAtomFeed) {
+                    r.status = 200;
+                    r.body = atom;
+                } else {
+                    for (const auto &[tag, body] : sums) {
+                        if (url == home + "/releases/download/" + tag + "/SHA256SUMS") {
+                            r.status = 200;
+                            r.body = body;
+                        } else if (url == home + "/releases/download/" + tag + "/RELEASE-NOTES.md" && notesFiles.count(tag)) {
+                            r.status = 200;
+                            r.body = notesFiles[tag];
+                        }
+                    }
+                }
+                return r;
+            };
+            const auto apiCalls = [&] {
+                return std::count_if(asked.begin(), asked.end(),
+                                     [](const std::string &u) { return u.find("api.github.com") != std::string::npos; });
+            };
+            const auto limited = [](const std::string &) {
+                HttpResult r;
+                r.status = 403;
+                return r;
+            };
+            std::string error;
+            // 现在装的是 0.6.0：正式版没有更新，不取说明，一次接口都不问
+            api = limited;
+            const auto stable = fetchLatest(site, false, "0.6.0", &error);
+            check(stable && stable->tag == "v0.6.0" && !stable->prerelease && stable->notes.empty() &&
+                      stable->assets.at("WowType-0.6.0-windows-x64-setup.exe") ==
+                          home + "/releases/download/v0.6.0/WowType-0.6.0-windows-x64-setup.exe" &&
+                      stable->assets.count("SHA256SUMS") && apiCalls() == 0,
+                  "检查更新走网页：正式版从 releases/latest 的跳转和 SHA256SUMS 拼出来，没新版不取说明，不问接口", error);
+            // Beta：跳过还没发出来的 v0.8.0，挑 v0.7.1，说明从 RELEASE-NOTES.md 来，也不问接口
+            asked.clear();
+            const auto beta = fetchLatest(site, true, "0.6.0", &error);
+            check(beta && beta->tag == "v0.7.1" && beta->prerelease &&
+                      beta->assets.count("WowType-0.7.1-windows-x64-setup.exe") && highlights(beta->notes) == "- 网页取说明" &&
+                      apiCalls() == 0,
+                  "Beta：跳过还没发出来的 v0.8.0，说明从 RELEASE-NOTES.md 来", beta ? beta->notes : error);
+            // 更早的版本没有 RELEASE-NOTES.md：问一次接口要说明；接口也限流了就指向发布页，检查照样成功
+            notesFiles.clear();
+            sums.erase("v0.7.1");
+            asked.clear();
+            api = [&](const std::string &url) {
+                HttpResult r;
+                r.status = url == std::string("https://api.github.com/repos/Gloridust/WowType/releases/tags/v0.7.0") ? 200 : 404;
+                r.body = R"({"tag_name":"v0.7.0","body":"## \u8fd9\u4e00\u7248\u8981\u6ce8\u610f\n\n- \u63a5\u53e3\u53d6\u8bf4\u660e\n"})";
+                return r;
+            };
+            const auto older = fetchLatest(site, true, "0.6.0", &error);
+            check(older && older->tag == "v0.7.0" && highlights(older->notes) == "- 接口取说明" && apiCalls() == 1,
+                  "没有 RELEASE-NOTES.md 的版本问一次接口要说明", older ? older->notes : error);
+            api = limited;
+            const auto noNotes = fetchLatest(site, true, "0.6.0", &error);
+            check(noNotes && noNotes->notes.find("发布页") != std::string::npos, "说明拿不到：指向发布页，检查照样成功");
+            // 网页那条路走不通（页面改了）时退回接口；两条都不通报网页那条的错
+            webBroken = true;
+            api = [](const std::string &url) {
+                HttpResult r;
+                r.status = url == kLatestApi ? 200 : 500;
+                r.body = R"({"tag_name":"v0.6.0","body":"x","assets":[]})";
+                return r;
+            };
+            const auto fromApi = fetchLatest(site, false, "0.6.0", &error);
+            check(fromApi && fromApi->tag == "v0.6.0", "网页走不通时退回接口", error);
+            api = limited;
+            error.clear();
+            check(!fetchLatest(site, false, "0.6.0", &error) && error.find("发布页回了 500") != std::string::npos,
+                  "两条路都不通：报网页那条路的错", error);
+        }
+        check(highlights("# 标题\n## 这一版要注意\n- 一\n## 安装\n步骤") == "- 一", "更新说明认「## 这一版要注意」");
         const auto release = parseRelease(R"({"tag_name":"v0.7.0","prerelease":false,"draft":false,"body":"## \u8fd9\u4e00\u7248\n- \u65b0",)"
                                           R"("assets":[{"name":"WowType-0.7.0-windows-x64-setup.exe","browser_download_url":"https://x/a.exe"},)"
                                           R"({"name":"SHA256SUMS","browser_download_url":"https://x/SHA256SUMS"}]})");
@@ -468,6 +596,17 @@ int main(int argc, char **argv) {
         check(!checksum(sums, "没有.exe", &error) && error.find("没有") != std::string::npos, "SHA256SUMS 里没有就不装");
         check(!checksum(sums + digest + "  WowType-0.7.0-windows-x64-setup.exe\n", "WowType-0.7.0-windows-x64-setup.exe"),
               "重复的不认");
+    }
+    {
+        // 下载续传：206 的 Content-Range
+        const auto range = update::parseContentRange("bytes 100-999/1000");
+        check(range && range->start == 100 && range->total == 1000, "续传：Content-Range 的起点和总长");
+        const auto unknown = update::parseContentRange("bytes 0-9/*");
+        check(unknown && unknown->start == 0 && unknown->total == 0, "续传：总长不知道（*）");
+        check(!update::parseContentRange("bytes */1000") && !update::parseContentRange("items 0-9/10") &&
+                  !update::parseContentRange("bytes 10-5/100") && !update::parseContentRange("bytes 0-99/50") &&
+                  !update::parseContentRange("bytes 0-9/10x"),
+              "续传：看不懂的 Content-Range 不认（从头下）");
     }
 
     const auto fresh = [&](Config config = Config{}) {

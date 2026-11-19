@@ -1,5 +1,7 @@
 #include "app_update.h"
 
+#include <algorithm>
+#include <cstring>
 #include <cctype>
 
 #include "json.h"
@@ -158,6 +160,306 @@ std::optional<std::size_t> pickNewest(const std::vector<Release> &releases) {
     return best;
 }
 
+namespace {
+
+/// 网址里的一段（tag、文件名）：字母数字和 -._~ 原样，别的按 UTF-8 字节转成 %XX
+std::string urlPart(const std::string &s) {
+    static const char hex[] = "0123456789ABCDEF";
+    std::string out;
+    for (const char ch : s) {
+        const auto c = static_cast<unsigned char>(ch);
+        if (std::isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~') {
+            out += ch;
+        } else {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 15];
+        }
+    }
+    return out;
+}
+
+/// releases/tag/ 后面的 tag：到 stop 里的字符为止（再把 %XX 解回来）
+std::string tagAfter(const std::string &s, std::size_t from, const char *stop) {
+    std::string raw;
+    for (std::size_t i = from; i < s.size() && !std::strchr(stop, s[i]); ++i) {
+        raw += s[i];
+    }
+    std::string out;
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i] == '%' && i + 2 < raw.size() && std::isxdigit(static_cast<unsigned char>(raw[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(raw[i + 2]))) {
+            out += static_cast<char>(std::stoi(raw.substr(i + 1, 2), nullptr, 16));
+            i += 2;
+        } else {
+            out += raw[i];
+        }
+    }
+    return out;
+}
+
+constexpr char kTagMarker[] = "/releases/tag/";
+
+} // namespace
+
+std::string downloadUrl(const std::string &tag, const std::string &file) {
+    return std::string(kRepoPage) + "/releases/download/" + urlPart(tag) + "/" + urlPart(file);
+}
+
+std::string tagPage(const std::string &tag) { return std::string(kRepoPage) + "/releases/tag/" + urlPart(tag); }
+
+std::optional<std::string> tagFromLatestUrl(const std::string &url) {
+    const std::size_t at = url.find(kTagMarker);
+    if (at == std::string::npos) {
+        return std::nullopt;
+    }
+    const std::size_t from = at + std::strlen(kTagMarker);
+    const std::string tag = tagAfter(url, from, "?#/");
+    // 和 Linux 一样：tag 要到地址末尾（…/releases/tag/v0.6.0/xxx 不认）
+    std::size_t end = from;
+    while (end < url.size() && !std::strchr("?#/", url[end])) {
+        ++end;
+    }
+    if (tag.empty() || (end < url.size() && url[end] == '/')) {
+        return std::nullopt;
+    }
+    return tag;
+}
+
+std::vector<std::string> webCandidates(const std::optional<std::string> &latest, const std::optional<std::string> &feed) {
+    std::vector<std::string> tags;
+    if (latest && isAppTag(*latest)) {
+        tags.push_back(*latest);
+    }
+    if (feed) {
+        std::size_t at = 0;
+        while ((at = feed->find(kTagMarker, at)) != std::string::npos) {
+            at += std::strlen(kTagMarker);
+            const std::string tag = tagAfter(*feed, at, "\"'<>/?#");
+            if (isAppTag(tag) && std::find(tags.begin(), tags.end(), tag) == tags.end()) {
+                tags.push_back(tag);
+            }
+        }
+    }
+    std::stable_sort(tags.begin(), tags.end(), [&](const std::string &a, const std::string &b) {
+        const int c = compareVersions(a, b);
+        if (c != 0) {
+            return c > 0;
+        }
+        return latest && a == *latest && b != *latest;
+    });
+    return tags;
+}
+
+std::vector<std::string> assetNames(const std::string &sums) {
+    std::vector<std::string> names;
+    const auto blank = [](char c) { return c == ' ' || c == '\t' || c == '\r'; };
+    std::size_t start = 0;
+    while (start <= sums.size()) {
+        std::size_t nl = sums.find('\n', start);
+        if (nl == std::string::npos) {
+            nl = sums.size();
+        }
+        std::string line = sums.substr(start, nl - start);
+        start = nl + 1;
+        std::size_t i = 0;
+        while (i < line.size() && blank(line[i])) {
+            ++i;
+        }
+        const std::size_t hashStart = i;
+        while (i < line.size() && !blank(line[i])) {
+            ++i;
+        }
+        const std::string hash = line.substr(hashStart, i - hashStart);
+        bool ok = hash.size() == 64;
+        for (const char c : hash) {
+            ok = ok && std::isxdigit(static_cast<unsigned char>(c));
+        }
+        while (i < line.size() && blank(line[i])) {
+            ++i;
+        }
+        std::string name = line.substr(i);
+        while (!name.empty() && blank(name.back())) {
+            name.pop_back();
+        }
+        if (!name.empty() && name.front() == '*') {
+            name.erase(0, 1);
+        }
+        if (ok && !name.empty() && name.find('/') == std::string::npos) {
+            names.push_back(name);
+        }
+        if (nl == sums.size()) {
+            break;
+        }
+    }
+    return names;
+}
+
+Release webRelease(const std::string &tag, const std::string &sums, bool prerelease) {
+    Release release;
+    release.tag = tag;
+    release.prerelease = prerelease;
+    release.assets[kChecksumFile] = downloadUrl(tag, kChecksumFile);
+    for (const auto &name : assetNames(sums)) {
+        release.assets[name] = downloadUrl(tag, name);
+    }
+    return release;
+}
+
+namespace {
+
+/// 不走接口（不登录时接口每个 IP 每小时只能问 60 次）：和 Linux 的 fetch_latest_web 一样
+std::optional<Release> fetchLatestWeb(const Fetch &get, bool beta, std::string *error) {
+    const HttpResult page = get(kLatestPage);
+    if (page.status != 200) {
+        *error = page.status == 0 ? page.error : "发布页回了 " + std::to_string(page.status);
+        return std::nullopt;
+    }
+    const std::optional<std::string> latest = tagFromLatestUrl(page.finalUrl);
+    std::optional<std::string> feed;
+    if (beta) {
+        const HttpResult atom = get(kAtomFeed);
+        if (atom.status != 200) {
+            *error = atom.status == 0 ? atom.error : "发布列表回了 " + std::to_string(atom.status);
+            return std::nullopt;
+        }
+        feed = atom.body;
+    }
+    for (const auto &tag : webCandidates(latest, feed)) {
+        const bool stable = latest && tag == *latest;
+        const HttpResult sums = get(downloadUrl(tag, kChecksumFile));
+        if (sums.status == 200) {
+            return webRelease(tag, sums.body, !stable);
+        }
+        // 只推了 tag、还没发出来（正在构建）的版本没有 SHA256SUMS：往下试；最新正式版没有就是出错了
+        if (sums.status != 404 || stable) {
+            *error = sums.status == 0 ? sums.error : "SHA256SUMS 回了 " + std::to_string(sums.status);
+            return std::nullopt;
+        }
+    }
+    *error = "GitHub 上找不到发布的版本";
+    return std::nullopt;
+}
+
+/// 问接口（和 Linux 的 fetch_latest_api 一样）：只在网页那条路走不通时用
+std::optional<Release> fetchLatestApi(const Fetch &get, bool beta, std::string *error) {
+    if (beta) {
+        const HttpResult list = get(kListApi);
+        if (list.status != 200) {
+            *error = list.status == 0 ? list.error : "接口回了 " + std::to_string(list.status);
+            return std::nullopt;
+        }
+        const auto releases = parseReleaseList(list.body);
+        if (const auto i = pickNewest(releases)) {
+            return releases[*i];
+        }
+    }
+    const HttpResult one = get(kLatestApi);
+    if (one.status != 200) {
+        *error = one.status == 0 ? one.error : "接口回了 " + std::to_string(one.status);
+        return std::nullopt;
+    }
+    auto release = parseRelease(one.body);
+    if (!release) {
+        *error = "发布页上的内容看不懂";
+    }
+    return release;
+}
+
+} // namespace
+
+std::string tagApi(const std::string &tag) {
+    return "https://api.github.com/repos/Gloridust/WowType/releases/tags/" + urlPart(tag);
+}
+
+std::string releaseNotes(const Fetch &get, const std::string &tag) {
+    const std::string fallback = "没取到更新说明，见发布页：" + tagPage(tag);
+    const HttpResult file = get(downloadUrl(tag, kNotesFile));
+    if (file.status == 200) {
+        return file.body;
+    }
+    if (file.status != 404) {
+        return fallback;
+    }
+    // 0.7.1 以前的版本没有这个文件：问一次接口
+    const HttpResult api = get(tagApi(tag));
+    if (api.status == 200) {
+        if (const auto release = parseRelease(api.body)) {
+            return release->notes;
+        }
+    }
+    return fallback;
+}
+
+std::optional<Release> fetchLatest(const Fetch &get, bool beta, const std::string &current, std::string *error) {
+    auto release = fetchLatestWeb(get, beta, error);
+    if (release) {
+        // 更新说明只在比现在装的新时才取（只有那时显示）；取不到不算检查失败
+        const auto v = version(release->tag);
+        if (v && isNewer(*v, current)) {
+            release->notes = releaseNotes(get, release->tag);
+        }
+        return release;
+    }
+    // 网页那条路走不通（GitHub 改了页面之类）：问接口；也不行时报网页那条路的错
+    std::string apiError;
+    if (auto fromApi = fetchLatestApi(get, beta, &apiError)) {
+        return fromApi;
+    }
+    return std::nullopt;
+}
+
+std::optional<ContentRange> parseContentRange(const std::string &header) {
+    // bytes <起点>-<终点>/<总长或 *>
+    std::size_t i = 0;
+    const auto skipSpaces = [&] {
+        while (i < header.size() && header[i] == ' ') {
+            ++i;
+        }
+    };
+    const auto number = [&]() -> std::optional<unsigned long long> {
+        const std::size_t from = i;
+        unsigned long long n = 0;
+        while (i < header.size() && std::isdigit(static_cast<unsigned char>(header[i]))) {
+            if (n > (~0ULL - 9) / 10) {
+                return std::nullopt;
+            }
+            n = n * 10 + static_cast<unsigned>(header[i] - '0');
+            ++i;
+        }
+        return i > from ? std::optional<unsigned long long>(n) : std::nullopt;
+    };
+    skipSpaces();
+    if (header.compare(i, 5, "bytes") != 0) {
+        return std::nullopt;
+    }
+    i += 5;
+    skipSpaces();
+    const auto start = number();
+    if (!start || i >= header.size() || header[i] != '-') {
+        return std::nullopt;
+    }
+    ++i;
+    const auto end = number();
+    if (!end || *end < *start || i >= header.size() || header[i] != '/') {
+        return std::nullopt;
+    }
+    ++i;
+    ContentRange range;
+    range.start = *start;
+    if (i < header.size() && header[i] == '*') {
+        ++i;
+    } else {
+        const auto total = number();
+        if (!total || *total <= *end) {
+            return std::nullopt;
+        }
+        range.total = *total;
+    }
+    skipSpaces();
+    return i == header.size() ? std::optional<ContentRange>(range) : std::nullopt;
+}
+
 std::optional<std::string> checksum(const std::string &sums, const std::string &name, std::string *error) {
     std::optional<std::string> found;
     std::size_t start = 0;
@@ -226,6 +528,14 @@ State State::parse(const std::string &text) {
             if (ok && value.size() < 19) {
                 state.checked = std::stoll(value);
             }
+        } else if (key == "tried") {
+            bool ok = !value.empty();
+            for (const char c : value) {
+                ok = ok && digit(c);
+            }
+            if (ok && value.size() < 19) {
+                state.tried = std::stoll(value);
+            }
         } else if (key == "latest" && version(value)) {
             state.latest = value;
         }
@@ -233,9 +543,15 @@ State State::parse(const std::string &text) {
     return state;
 }
 
-std::string State::text() const { return "checked=" + std::to_string(checked) + "\nlatest=" + latest + "\n"; }
+std::string State::text() const {
+    return "checked=" + std::to_string(checked) + "\nlatest=" + latest + "\ntried=" + std::to_string(tried) + "\n";
+}
 
-bool due(const State &state, int64_t now) { return now - state.checked >= kCheckInterval || now < state.checked; }
+bool due(const State &state, int64_t now) {
+    const bool stale = now - state.checked >= kCheckInterval || now < state.checked;
+    const bool rested = now - state.tried >= kRetryInterval || now < state.tried;
+    return stale && rested;
+}
 
 std::string highlights(const std::string &notes) {
     const std::string all = trimSpace(notes);
@@ -262,7 +578,9 @@ std::string highlights(const std::string &notes) {
     };
     for (std::size_t i = 0; i < lines.size(); ++i) {
         const std::string stripped = trimSpace(lines[i]);
-        if (stripped.rfind("##", 0) != 0 || trimSpace(stripped.substr(2)) != "这一版") {
+        // 「## 这一版」，发布任务写的是「## 这一版要注意」
+        const std::string title = stripped.rfind("##", 0) == 0 ? trimSpace(stripped.substr(2)) : "";
+        if (title != "这一版" && title != "这一版要注意") {
             continue;
         }
         std::string body;

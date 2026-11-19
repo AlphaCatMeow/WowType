@@ -100,7 +100,7 @@ add_executable(wowtype-settings WIN32 src/settings/settings_app.cpp src/win/upda
 # 自定义词页要核心整理编码、猜拼音（wowtype_custom_code、wowtype_guess_pinyin）
 target_compile_definitions(wowtype-settings PRIVATE "WOWTYPE_VERSION=\"${WOWTYPE_VERSION}\"")
 target_link_libraries(wowtype-settings PRIVATE wowtype_common "${WOWTYPE_CORE_LIB}" ${CORE_SYSTEM_LIBS}
-  comctl32 comdlg32 shell32 ole32 user32 gdi32 urlmon bcrypt advapi32 winhttp)
+  comctl32 comdlg32 shell32 ole32 user32 gdi32 bcrypt advapi32 winhttp)
 
 if(WOWTYPE_WINDOWS_TESTS)
   add_executable(wowtype-windows-harness tests/composer_test.cpp)
@@ -110,4 +110,7 @@ if(WOWTYPE_WINDOWS_TESTS)
   # 端到端打字测试：要先装好输入法（CI 装完安装程序以后跑）
   add_executable(wowtype-windows-typing-test tests/typing_test.cpp)
   target_link_libraries(wowtype-windows-typing-test PRIVATE ole32 uuid user32)
+  # 下载续传：配 tests/range_server.py（会掐断连接的服务器）跑
+  add_executable(wowtype-windows-download-test tests/download_test.cpp src/win/updater.cpp)
+  target_link_libraries(wowtype-windows-download-test PRIVATE wowtype_common bcrypt winhttp)
 endif()

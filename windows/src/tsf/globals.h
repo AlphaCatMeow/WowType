@@ -34,6 +34,9 @@ std::wstring moduleDir();
 
 /// 写一行日志到 %LOCALAPPDATA%\WowType\wowtype.log（超过 1 MB 从头写），也发给 OutputDebugString。
 void log(const std::wstring &line);
+/// 设了环境变量 WOWTYPE_DEBUG_KEYS 时才记的日志（按键回调、学习数据的合并和存盘这些很频繁的，CI 查问题时打开）。
+bool debugLogging();
+void trace(const std::wstring &line);
 
 std::wstring widen(const std::string &utf8);
 std::string narrow(const std::wstring &wide);

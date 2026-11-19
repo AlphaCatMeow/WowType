@@ -51,6 +51,17 @@ std::string narrow(const std::wstring &wide) {
     return utf16To8(std::u16string(wide.begin(), wide.end()));
 }
 
+bool debugLogging() {
+    static const bool on = GetEnvironmentVariableW(L"WOWTYPE_DEBUG_KEYS", nullptr, 0) > 0;
+    return on;
+}
+
+void trace(const std::wstring &line) {
+    if (debugLogging()) {
+        log(line);
+    }
+}
+
 void log(const std::wstring &line) {
     OutputDebugStringW((L"WowType: " + line + L"\n").c_str());
     static std::mutex mutex;

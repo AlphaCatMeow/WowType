@@ -5,6 +5,7 @@
 // pick_release 也是这套规矩）。网络、下载、运行安装程序在设置窗口和输入法里，这里不依赖 windows.h，测试在 Linux 上也跑。
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -16,6 +17,14 @@ inline constexpr char kReleasesPage[] = "https://github.com/Gloridust/WowType/re
 inline constexpr char kLatestApi[] = "https://api.github.com/repos/Gloridust/WowType/releases/latest";
 inline constexpr char kListApi[] = "https://api.github.com/repos/Gloridust/WowType/releases?per_page=30";
 inline constexpr char kChecksumFile[] = "SHA256SUMS";
+/// 发布任务把「这一版要注意」那一节单独传成这个文件（0.7.1 起），取更新说明也不用接口
+inline constexpr char kNotesFile[] = "RELEASE-NOTES.md";
+// 检查更新先走网页（接口不登录时每个 IP 每小时只能问 60 次：校园网、公司网、运营商 NAT 后面很多人共用一个 IP）：
+// releases/latest 跳到最新正式版的 tag 页，releases.atom 列着最近的发布，发布页的 SHA256SUMS 列着这一版的全部文件。
+// 这些都不算接口次数；网页那条路走不通时才问接口。和 Linux 设置的 fetch_latest、macOS 的 LexiconPackInstaller 一样
+inline constexpr char kRepoPage[] = "https://github.com/Gloridust/WowType";
+inline constexpr char kLatestPage[] = "https://github.com/Gloridust/WowType/releases/latest";
+inline constexpr char kAtomFeed[] = "https://github.com/Gloridust/WowType/releases.atom";
 /// 输入法最多隔这么久查一次（秒）：一天
 inline constexpr int64_t kCheckInterval = 24 * 3600;
 
@@ -46,18 +55,60 @@ std::vector<Release> parseReleaseList(const std::string &json);
 /// Beta 计划：列表里版本号最大的那个的下标，预发布也算，一样大时要正式版；只看 v 加数字的 tag，草稿不算。
 std::optional<std::size_t> pickNewest(const std::vector<Release> &releases);
 
+/// 发布页上 tag 这一版的文件 file 的下载地址、tag 页的地址
+std::string downloadUrl(const std::string &tag, const std::string &file);
+std::string tagPage(const std::string &tag);
+/// releases/latest 跳到的地址（…/releases/tag/v0.6.0）里的 tag；不是这个样子是 nullopt
+std::optional<std::string> tagFromLatestUrl(const std::string &url);
+/// 网页上要按顺序试的 tag：最新正式版，Beta 计划开着时加上 releases.atom（feed）里的版本；只要 v 加数字的，
+/// 版本号大的在前，一样大时正式版在前。atom 里也有只推了 tag、还没发出来的版本，调用方遇到 404 往下试
+std::vector<std::string> webCandidates(const std::optional<std::string> &latest, const std::optional<std::string> &feed);
+/// SHA256SUMS 里列的文件名（「64 位十六进制  文件名」，文件名前可以带 *，带 / 的不要）
+std::vector<std::string> assetNames(const std::string &sums);
+/// 不走接口拼出的一版：文件列表从 SHA256SUMS 来，下载地址按发布页的规则拼；更新说明留空（见 releaseNotes）
+Release webRelease(const std::string &tag, const std::string &sums, bool prerelease);
+/// 接口上 tag 这一版的地址（0.7.1 以前没有 RELEASE-NOTES.md，问它要说明）
+std::string tagApi(const std::string &tag);
+
+/// 一次 HTTP GET 的结果（联网在外面做）：status 0 是连不上（error 是原因）；finalUrl 是跟了跳转以后的地址
+struct HttpResult {
+    int status = 0;
+    std::string body;
+    std::string finalUrl;
+    std::string error;
+};
+using Fetch = std::function<HttpResult(const std::string &url)>;
+/// tag 这一版的更新说明：先下发布页上的 RELEASE-NOTES.md；404（更早的版本）问一次接口；都拿不到是一句「见发布页」
+std::string releaseNotes(const Fetch &get, const std::string &tag);
+/// 查发布页上的最新版（beta：Beta 计划，预发布也算）。先走网页，走不通（任何错）才问接口；两条都不通报网页那条的错。
+/// 比 current（现在装的版本）新时才取更新说明（releaseNotes），取不到不算失败。查不到是 nullopt，error 是给人看的原因
+std::optional<Release> fetchLatest(const Fetch &get, bool beta, const std::string &current, std::string *error);
+
 /// SHA256SUMS 里 name 的校验值（小写）；没有、重复、写坏了返回 nullopt，error 是原因。
 std::optional<std::string> checksum(const std::string &sums, const std::string &name, std::string *error = nullptr);
+
+/// 续传（下载断了从断的地方接着下）：服务器回 206 时 Content-Range 头（"bytes 100-199/1000"）里的起点和总长。
+/// 总长是 * 时 total 为 0。看不懂是 nullopt。
+struct ContentRange {
+    unsigned long long start = 0;
+    unsigned long long total = 0;
+};
+std::optional<ContentRange> parseContentRange(const std::string &header);
 
 /// 数据目录里 update-state 记的：上次查成功的时间（Unix 秒）、那时发布页上最新的 tag。输入法和设置窗口都读写它。
 struct State {
     int64_t checked = 0;
     std::string latest;
+    /// 上次试着查的时间（成没成都记）：Windows 上每个应用进程各有一个输入法，查不成时靠它让所有进程合起来
+    /// 一小时最多试一次，不会每个进程各问一遍
+    int64_t tried = 0;
     static State parse(const std::string &text);
     std::string text() const;
-    bool operator==(const State &o) const { return checked == o.checked && latest == o.latest; }
+    bool operator==(const State &o) const { return checked == o.checked && latest == o.latest && tried == o.tried; }
 };
-/// 该查了：上次查过一天了（时钟往回拨了也算）
+/// 查不成以后多久再试（秒）：一小时
+inline constexpr int64_t kRetryInterval = 3600;
+/// 该查了：上次查成功过了一天（时钟往回拨了也算），而且上次试着查过了一小时
 bool due(const State &state, int64_t now);
 
 /// 发布说明里只留「## 这一版」那一节；没有这一节就整个原样。
