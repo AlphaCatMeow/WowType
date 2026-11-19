@@ -2153,6 +2153,7 @@ do {
     check(AppUpdate.webCandidates(latest: "v0.6.0", feed: feed) == ["v0.8.0", "v0.7.0", "v0.6.0"],
           "网页：Beta 按版本号从大到小试，数据的发布不算、重复的去掉", AppUpdate.webCandidates(latest: "v0.6.0", feed: feed))
     let sha = String(repeating: "a", count: 64)
+    check(AppUpdate.highlights("## 这一版要注意\n\n- 甲\n\n## 安装\n\n乙") == "- 甲", "更新说明：发布任务写的「这一版要注意」那一节")
     check(AppUpdate.assetNames(sums: "\(sha)  WowType-0.6.0-macos.pkg\n\(sha) *wowtype_0.6.0_debian13_amd64.deb\nbad  x\n\(sha)  ../evil\n")
           == ["WowType-0.6.0-macos.pkg", "wowtype_0.6.0_debian13_amd64.deb"], "SHA256SUMS 里的文件名")
     check(!WowtypeConfig().betaUpdates && WowtypeConfig.parse("BetaUpdates=True\n").betaUpdates, "BetaUpdates 默认关、读得出来")

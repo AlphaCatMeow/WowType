@@ -2574,6 +2574,10 @@ RELEASES_PAGE = f"{HOMEPAGE}/releases"
 RELEASES_LATEST_PAGE = f"{HOMEPAGE}/releases/latest"
 RELEASES_ATOM = f"{HOMEPAGE}/releases.atom"
 RELEASES_DOWNLOAD = f"{HOMEPAGE}/releases/download"
+# 发布任务把「这一版要注意」那一节单独传成这个文件（0.7.1 起），取更新说明也不用接口
+RELEASE_NOTES_FILE = "RELEASE-NOTES.md"
+# 更早的版本没有这个文件：有新版时才问一次接口要说明
+RELEASE_TAG_API = f"https://api.github.com/repos/{REPO}/releases/tags/{{tag}}"
 CACHE_DIR = os.path.join(_xdg("XDG_CACHE_HOME", "~/.cache"), "wowtype")
 UPDATE_DIR = os.path.join(CACHE_DIR, "updates")
 UPDATE_STATE = os.path.join(CACHE_DIR, "update-check.json")
@@ -2755,13 +2759,13 @@ def _md_inline(text):
 
 
 def release_highlights(notes):
-    """发布说明里只留「## 这一版」那一节（去掉标题本身）；没有这一节就原样返回。
+    """发布说明里只留「## 这一版」（发布任务写的是「## 这一版要注意」）那一节（去掉标题本身）；没有这一节就原样返回。
 
     后面的安装步骤、自动生成的提交列表对已经装好的人没用，放进「更新内容」只会很长。
     """
     lines = notes.strip().splitlines()
     for i, line in enumerate(lines):
-        if re.match(r"^##\s*这一版\s*$", line.strip()):
+        if re.match(r"^##\s*这一版(要注意)?\s*$", line.strip()):
             body = []
             for rest in lines[i + 1:]:
                 if re.match(r"^#{1,2}\s", rest):
@@ -2845,21 +2849,28 @@ def beta_updates(values=None):
 def fetch_latest(beta=None):
     """GitHub 上最新的正式版；Beta 计划开着时是最新的版本（预发布也算）。beta 不给时按设置。
 
-    接口限流（403、429）时改走网页（fetch_latest_web），只是拿不到更新说明。"""
+    先走网页（fetch_latest_web，不算接口次数）；网页那条路走不通时（GitHub 改了页面之类）再问接口。"""
     if beta is None:
         beta = beta_updates()
     try:
-        if beta:
-            with http_open(RELEASES_API, timeout=20) as response:
-                picked = pick_release(json.load(response))
-            if picked:
-                return picked
-        with http_open(RELEASE_API, timeout=20) as response:
-            return release_info(json.load(response))
-    except urllib.error.HTTPError as e:
-        if e.code not in (403, 429):
-            raise
-    return fetch_latest_web(beta)
+        return fetch_latest_web(beta)
+    except OSError as web_error:
+        try:
+            return fetch_latest_api(beta)
+        except OSError:
+            raise web_error from None
+
+
+def fetch_latest_api(beta):
+    """问 GitHub 接口。不登录时每个 IP 每小时只能问 60 次（校园网、公司网、运营商 NAT 后面很多人共用一个 IP），
+    用完了回 403，所以只在网页那条路走不通时用。"""
+    if beta:
+        with http_open(RELEASES_API, timeout=20) as response:
+            picked = pick_release(json.load(response))
+        if picked:
+            return picked
+    with http_open(RELEASE_API, timeout=20) as response:
+        return release_info(json.load(response))
 
 
 APP_TAG = re.compile(r"[vV]\d+(\.\d+)*")
@@ -2893,7 +2904,8 @@ def fetch_latest_web(beta):
 
 
 def web_release(tag, prerelease=False):
-    """不走接口拼出 release_info 的样子：下载地址按发布页的规则拼，有哪些文件看 SHA256SUMS。"""
+    """不走接口拼出 release_info 的样子：下载地址按发布页的规则拼，有哪些文件看 SHA256SUMS。
+    更新说明只在比现在装的新时才取（只有那时显示），见 release_notes。"""
     base = f"{RELEASES_DOWNLOAD}/{urllib.parse.quote(tag)}"
     with http_open(f"{base}/SHA256SUMS", timeout=20) as response:
         sums = response.read().decode("utf-8", "replace")
@@ -2905,14 +2917,33 @@ def web_release(tag, prerelease=False):
             if name and "/" not in name:
                 assets[name] = f"{base}/{urllib.parse.quote(name)}"
     url = f"{HOMEPAGE}/releases/tag/{urllib.parse.quote(tag)}"
+    newer = parse_version(tag) > parse_version(current_version())
     return {
         "tag": tag,
         "version": tag.lstrip("vV"),
-        "notes": f"GitHub 接口这会儿访问次数到了上限，没取到更新说明，见[发布页]({url})。",
+        "notes": release_notes(tag, base, url) if newer else "",
         "url": url,
         "prerelease": prerelease,
         "assets": assets,
     }
+
+
+def release_notes(tag, base, url):
+    """这一版的更新说明：先下发布页上的 RELEASE-NOTES.md（不算接口次数）；更早的版本没有这个文件，问一次接口；
+    都拿不到时一句「见发布页」。拿不到说明不算检查失败。"""
+    try:
+        with http_open(f"{base}/{RELEASE_NOTES_FILE}", timeout=20) as response:
+            return response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            return f"没取到更新说明，见[发布页]({url})。"
+    except OSError:
+        return f"没取到更新说明，见[发布页]({url})。"
+    try:
+        with http_open(RELEASE_TAG_API.format(tag=urllib.parse.quote(tag)), timeout=20) as response:
+            return json.load(response).get("body") or ""
+    except (OSError, ValueError):
+        return f"没取到更新说明，见[发布页]({url})。"
 
 
 def is_newer(release):
