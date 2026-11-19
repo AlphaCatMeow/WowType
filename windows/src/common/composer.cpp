@@ -436,9 +436,11 @@ bool Composer::sendToSession(const KeyInput &key, uint32_t action) {
         raw.prev_char = previousCharacter();
         raw.hints |= WOWTYPE_KEY_HINT_NO_AUTO_SPACE;
     } else {
-        // 应用告诉的才给（自己猜的给 0）
-        raw.prev_char = reliablePreviousCharacter();
-        if (raw.prev_char != 0) {
+        // 应用告诉的才给（自己猜的给 0）。读得到周围文字时光标前没有字（输入框清空了、光标在开头）也报：
+        // 会话把自己记的上文清掉，和 fcitx5 一样；不报的话清空输入框以后还拿上一次上屏的字当上文
+        // （CI 的两个进程学习测试里，上文「你好」「时」带出的搭配把两个应用的排序弄得不一样）
+        if (client_ && client_->previousCharacterIsReliable()) {
+            raw.prev_char = client_->previousCharacter();
             raw.hints |= WOWTYPE_KEY_HINT_SURROUNDING;
         }
     }

@@ -489,15 +489,27 @@ int peerWait(const std::wstring &dir) {
 int peerLearn(const std::wstring &dir) {
     check(waitForFile(dir + L"\\ready", 120000), "A：等到 B 准备好");
     const std::wstring before = readFile(dir + L"\\ready");
-    // 连着选 shi 的第三个候选：学到它，排到前面
-    std::wstring picked;
-    for (int i = 0; i < 6; ++i) {
-        clear();
-        focus();
-        typeKeys("shi");
-        tap('3');
-        pump(300);
-        picked = text();
+    // 选一次 shi 的第三个候选，记下是哪个字；再选几次同一个字。它学了以后会往前挪：按 1、2、3 找，
+    // 选错的紧接着退格（应用删掉，核心把这次学到的退回去）。每次都在清空的输入框里打，上文是空的
+    clear();
+    focus();
+    typeKeys("shi");
+    tap('3');
+    pump(300);
+    const std::wstring picked = text();
+    for (int round = 0; round < 5; ++round) {
+        for (char index = '1'; index <= '3'; ++index) {
+            clear();
+            focus();
+            typeKeys("shi");
+            tap(index);
+            pump(300);
+            if (text() == picked) {
+                break;
+            }
+            tap(VK_BACK);
+            pump(200);
+        }
     }
     const std::wstring top = commitShi();
     check(picked.size() == 1 && picked != before, "A：选了 shi 的第三个候选", picked);
