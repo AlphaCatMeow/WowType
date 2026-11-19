@@ -103,6 +103,21 @@ struct Request {
         return utf16To8(std::u16string(w.begin(), w.end()));
     }
 
+    /// 跟了跳转以后的地址（releases/latest 跳到最新版的 tag 页）
+    std::string url() {
+        DWORD size = 0;
+        WinHttpQueryOption(request, WINHTTP_OPTION_URL, nullptr, &size);
+        if (size == 0) {
+            return {};
+        }
+        std::wstring buffer(size / sizeof(wchar_t) + 1, L'\0');
+        if (!WinHttpQueryOption(request, WINHTTP_OPTION_URL, buffer.data(), &size)) {
+            return {};
+        }
+        buffer.resize(wcslen(buffer.c_str()));
+        return utf16To8(std::u16string(buffer.begin(), buffer.end()));
+    }
+
     unsigned long long length() { return std::strtoull(header(WINHTTP_QUERY_CONTENT_LENGTH).c_str(), nullptr, 10); }
 
     /// 读一块；0 是读完了，-1 是出错。
@@ -136,28 +151,50 @@ const char *arch() {
 #endif
 }
 
-std::optional<std::string> httpGet(const std::wstring &url, std::string *error) {
+namespace {
+
+/// GET 一个小文件，连同状态码和跟了跳转以后的地址（update::fetchLatest 用）
+update::HttpResult fetch(const std::wstring &url) {
+    update::HttpResult out;
     Request r;
-    if (r.open(url, error) != 200) {
-        return std::nullopt;
+    const DWORD status = r.open(url, &out.error);
+    out.status = static_cast<int>(status);
+    if (status == 0) {
+        return out;
     }
-    std::string body;
+    out.finalUrl = r.url();
+    if (status != 200) {
+        return out;
+    }
     char buffer[16384];
     while (true) {
         const long n = r.read(buffer, sizeof buffer);
         if (n < 0) {
-            *error = "下载到一半断了";
-            return std::nullopt;
+            out.status = 0;
+            out.error = "下载到一半断了";
+            return out;
         }
         if (n == 0) {
-            return body;
+            return out;
         }
-        body.append(buffer, static_cast<std::size_t>(n));
-        if (body.size() > (8u << 20)) {
-            *error = "回的东西太大";
-            return std::nullopt;
+        out.body.append(buffer, static_cast<std::size_t>(n));
+        if (out.body.size() > (8u << 20)) {
+            out.status = 0;
+            out.error = "回的东西太大";
+            return out;
         }
     }
+}
+
+} // namespace
+
+std::optional<std::string> httpGet(const std::wstring &url, std::string *error) {
+    update::HttpResult r = fetch(url);
+    if (r.status != 200) {
+        *error = r.status == 0 ? r.error : "服务器回了 " + std::to_string(r.status);
+        return std::nullopt;
+    }
+    return std::move(r.body);
 }
 
 bool httpDownload(const std::wstring &url, const std::wstring &path,
@@ -258,26 +295,19 @@ void writeState(const std::wstring &dataDir, const update::State &state) {
 }
 
 std::optional<update::Release> fetchLatest(const std::wstring &dataDir, bool beta, std::string *error) {
-    std::optional<update::Release> release;
-    if (beta) {
-        const auto body = httpGet(widen(update::kListApi), error);
-        if (!body) {
-            return std::nullopt;
-        }
-        const auto list = update::parseReleaseList(*body);
-        if (const auto i = update::pickNewest(list)) {
-            release = list[*i];
-        }
-    } else if (const auto body = httpGet(widen(update::kLatestApi), error)) {
-        release = update::parseRelease(*body);
-    } else {
+    // 先问接口；接口限流（403、429）时改走网页（规矩在 update::fetchLatest，和 Linux、macOS 一样）
+    auto release = update::fetchLatest([](const std::string &url) { return fetch(widen(url)); }, beta, error);
+    if (!release) {
         return std::nullopt;
     }
-    if (!release || !update::version(release->tag)) {
+    if (!update::version(release->tag)) {
         *error = "发布页上的版本号看不懂";
         return std::nullopt;
     }
-    writeState(dataDir, update::State{static_cast<int64_t>(std::time(nullptr)), release->tag});
+    update::State state = readState(dataDir);
+    state.checked = static_cast<int64_t>(std::time(nullptr));
+    state.latest = release->tag;
+    writeState(dataDir, state);
     return release;
 }
 

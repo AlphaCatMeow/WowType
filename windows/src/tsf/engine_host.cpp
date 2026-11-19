@@ -397,9 +397,14 @@ void EngineHost::checkUpdateIfDue() {
     }
     nextUpdateLook_ = now + 3600 * 1000ULL;
     const std::wstring dir = dataDir();
-    if (!update::due(win::readState(dir), static_cast<int64_t>(std::time(nullptr)))) {
+    const auto nowSeconds = static_cast<int64_t>(std::time(nullptr));
+    update::State state = win::readState(dir);
+    if (!update::due(state, nowSeconds)) {
         return;
     }
+    // 先记下这次试过：每个应用进程各有一个输入法，查不成（断网、GitHub 出错）时别的进程看到它，一小时内不再各问一遍
+    state.tried = nowSeconds;
+    win::writeState(dir, state);
     updateChecking_ = true;
     const bool beta = config_.flag("BetaUpdates");
     std::thread([this, dir, beta] {

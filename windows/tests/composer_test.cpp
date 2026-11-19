@@ -453,6 +453,78 @@ int main(int argc, char **argv) {
         check(!due(state, 1700000000 + 3600) && due(state, 1700000000 + 86400) && due(state, 1600000000) &&
                   due(State{}, 1700000000),
               "一天查一次，时钟往回拨了也查");
+        {
+            State tried = state;
+            tried.tried = 1700000000 + 86400;
+            check(State::parse(tried.text()) == tried, "检查状态记上次试的时间");
+            check(!due(tried, 1700000000 + 86400 + 600) && due(tried, 1700000000 + 86400 + 3600),
+                  "查不成以后所有应用合起来一小时最多试一次");
+        }
+        // 接口限流时改走网页（和 Linux 的 fetch_latest_web、macOS 的 AppUpdate.webCandidates 一样）
+        check(tagFromLatestUrl("https://github.com/Gloridust/WowType/releases/tag/v0.6.0") == std::optional<std::string>("v0.6.0") &&
+                  !tagFromLatestUrl("https://github.com/Gloridust/WowType/releases"),
+              "releases/latest 跳到的地址里取 tag");
+        std::string feed;
+        for (const char *t : {"v0.8.0", "v0.7.0", "lm-2026.11.09", "v0.6.0", "v0.7.0"}) {
+            feed += std::string("<link href=\"https://github.com/Gloridust/WowType/releases/tag/") + t + "\"/>";
+        }
+        check(webCandidates(std::string("v0.6.0"), std::nullopt) == std::vector<std::string>{"v0.6.0"},
+              "网页：不开 Beta 只看最新正式版");
+        check(webCandidates(std::string("v0.6.0"), feed) == std::vector<std::string>{"v0.8.0", "v0.7.0", "v0.6.0"},
+              "网页：Beta 按版本号从大到小试，数据的发布不算、重复的去掉");
+        const std::string sha(64, 'a');
+        check(assetNames(sha + "  WowType-0.6.0-macos.pkg\n" + sha + " *wowtype_0.6.0_debian13_amd64.deb\nbad  x\n" + sha +
+                         "  ../evil\n") == std::vector<std::string>{"WowType-0.6.0-macos.pkg", "wowtype_0.6.0_debian13_amd64.deb"},
+              "SHA256SUMS 里的文件名");
+        {
+            // 接口回 403（限流）：releases/latest 的跳转、releases.atom、SHA256SUMS；v0.8.0 只推了 tag、还没发出来（404）
+            const std::string home = kRepoPage;
+            std::string atom;
+            for (const char *t : {"v0.8.0", "v0.7.0", "lm-2026.11.09", "v0.6.0"}) {
+                atom += "<link href=\"" + home + "/releases/tag/" + t + "\"/>";
+            }
+            std::vector<std::string> asked;
+            int limit = 403;
+            const Fetch fake = [&](const std::string &url) {
+                asked.push_back(url);
+                HttpResult r;
+                if (url.find("api.github.com") != std::string::npos) {
+                    r.status = limit;
+                } else if (url == kLatestPage) {
+                    r.status = 200;
+                    r.finalUrl = home + "/releases/tag/v0.6.0";
+                } else if (url == kAtomFeed) {
+                    r.status = 200;
+                    r.body = atom;
+                } else if (url == home + "/releases/download/v0.6.0/SHA256SUMS") {
+                    r.status = 200;
+                    r.body = sha + "  WowType-0.6.0-windows-x64-setup.exe\n" + sha + " *WowType-0.6.0-macos.pkg\n";
+                } else if (url == home + "/releases/download/v0.7.0/SHA256SUMS") {
+                    r.status = 200;
+                    r.body = sha + "  WowType-0.7.0-windows-x64-setup.exe\n";
+                } else {
+                    r.status = 404;
+                }
+                return r;
+            };
+            std::string error;
+            const auto stable = fetchLatest(fake, false, &error);
+            check(stable && stable->tag == "v0.6.0" && !stable->prerelease &&
+                      stable->assets.at("WowType-0.6.0-windows-x64-setup.exe") ==
+                          home + "/releases/download/v0.6.0/WowType-0.6.0-windows-x64-setup.exe" &&
+                      stable->assets.count("SHA256SUMS") && stable->notes.find("发布页") != std::string::npos,
+                  "接口限流：正式版从 releases/latest 的跳转和 SHA256SUMS 拼出来", error);
+            asked.clear();
+            limit = 429;
+            const auto beta = fetchLatest(fake, true, &error);
+            check(beta && beta->tag == "v0.7.0" && beta->prerelease && beta->assets.count("WowType-0.7.0-windows-x64-setup.exe"),
+                  "接口限流（429）：Beta 跳过还没发出来的 v0.8.0，用 v0.7.0", error);
+            check(std::count_if(asked.begin(), asked.end(),
+                                [](const std::string &u) { return u.find("api.github.com") != std::string::npos; }) == 1,
+                  "限流以后不再问接口");
+            limit = 500;
+            check(!fetchLatest(fake, false, &error) && error.find("500") != std::string::npos, "别的错照旧报", error);
+        }
         const auto release = parseRelease(R"({"tag_name":"v0.7.0","prerelease":false,"draft":false,"body":"## \u8fd9\u4e00\u7248\n- \u65b0",)"
                                           R"("assets":[{"name":"WowType-0.7.0-windows-x64-setup.exe","browser_download_url":"https://x/a.exe"},)"
                                           R"({"name":"SHA256SUMS","browser_download_url":"https://x/SHA256SUMS"}]})");
