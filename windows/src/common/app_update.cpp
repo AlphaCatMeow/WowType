@@ -299,7 +299,6 @@ Release webRelease(const std::string &tag, const std::string &sums, bool prerele
     Release release;
     release.tag = tag;
     release.prerelease = prerelease;
-    release.notes = "GitHub 接口这会儿访问次数到了上限，没取到更新说明，见发布页：" + tagPage(tag);
     release.assets[kChecksumFile] = downloadUrl(tag, kChecksumFile);
     for (const auto &name : assetNames(sums)) {
         release.assets[name] = downloadUrl(tag, name);
@@ -309,7 +308,7 @@ Release webRelease(const std::string &tag, const std::string &sums, bool prerele
 
 namespace {
 
-/// 接口限流时改走网页（和 Linux 的 fetch_latest_web 一样）
+/// 不走接口（不登录时接口每个 IP 每小时只能问 60 次）：和 Linux 的 fetch_latest_web 一样
 std::optional<Release> fetchLatestWeb(const Fetch &get, bool beta, std::string *error) {
     const HttpResult page = get(kLatestPage);
     if (page.status != 200) {
@@ -342,20 +341,13 @@ std::optional<Release> fetchLatestWeb(const Fetch &get, bool beta, std::string *
     return std::nullopt;
 }
 
-} // namespace
-
-std::optional<Release> fetchLatest(const Fetch &get, bool beta, std::string *error) {
-    const auto failed = [&](const HttpResult &r) {
-        *error = r.status == 0 ? r.error : "服务器回了 " + std::to_string(r.status);
-        return std::nullopt;
-    };
+/// 问接口（和 Linux 的 fetch_latest_api 一样）：只在网页那条路走不通时用
+std::optional<Release> fetchLatestApi(const Fetch &get, bool beta, std::string *error) {
     if (beta) {
         const HttpResult list = get(kListApi);
-        if (rateLimited(list.status)) {
-            return fetchLatestWeb(get, beta, error);
-        }
         if (list.status != 200) {
-            return failed(list);
+            *error = list.status == 0 ? list.error : "接口回了 " + std::to_string(list.status);
+            return std::nullopt;
         }
         const auto releases = parseReleaseList(list.body);
         if (const auto i = pickNewest(releases)) {
@@ -363,17 +355,58 @@ std::optional<Release> fetchLatest(const Fetch &get, bool beta, std::string *err
         }
     }
     const HttpResult one = get(kLatestApi);
-    if (rateLimited(one.status)) {
-        return fetchLatestWeb(get, beta, error);
-    }
     if (one.status != 200) {
-        return failed(one);
+        *error = one.status == 0 ? one.error : "接口回了 " + std::to_string(one.status);
+        return std::nullopt;
     }
     auto release = parseRelease(one.body);
     if (!release) {
         *error = "发布页上的内容看不懂";
     }
     return release;
+}
+
+} // namespace
+
+std::string tagApi(const std::string &tag) {
+    return "https://api.github.com/repos/Gloridust/WowType/releases/tags/" + urlPart(tag);
+}
+
+std::string releaseNotes(const Fetch &get, const std::string &tag) {
+    const std::string fallback = "没取到更新说明，见发布页：" + tagPage(tag);
+    const HttpResult file = get(downloadUrl(tag, kNotesFile));
+    if (file.status == 200) {
+        return file.body;
+    }
+    if (file.status != 404) {
+        return fallback;
+    }
+    // 0.7.1 以前的版本没有这个文件：问一次接口
+    const HttpResult api = get(tagApi(tag));
+    if (api.status == 200) {
+        if (const auto release = parseRelease(api.body)) {
+            return release->notes;
+        }
+    }
+    return fallback;
+}
+
+std::optional<Release> fetchLatest(const Fetch &get, bool beta, const std::string &current, std::string *error) {
+    auto release = fetchLatestWeb(get, beta, error);
+    if (release) {
+        // 更新说明只在比现在装的新时才取（只有那时显示）；取不到不算检查失败
+        const auto v = version(release->tag);
+        if (v && isNewer(*v, current)) {
+            release->notes = releaseNotes(get, release->tag);
+        }
+        return release;
+    }
+    // 网页那条路走不通（GitHub 改了页面之类）：问接口；也不行时报网页那条路的错
+    std::string apiError;
+    if (auto fromApi = fetchLatestApi(get, beta, &apiError)) {
+        return fromApi;
+    }
+    return std::nullopt;
 }
 
 std::optional<ContentRange> parseContentRange(const std::string &header) {
@@ -545,7 +578,9 @@ std::string highlights(const std::string &notes) {
     };
     for (std::size_t i = 0; i < lines.size(); ++i) {
         const std::string stripped = trimSpace(lines[i]);
-        if (stripped.rfind("##", 0) != 0 || trimSpace(stripped.substr(2)) != "这一版") {
+        // 「## 这一版」，发布任务写的是「## 这一版要注意」
+        const std::string title = stripped.rfind("##", 0) == 0 ? trimSpace(stripped.substr(2)) : "";
+        if (title != "这一版" && title != "这一版要注意") {
             continue;
         }
         std::string body;

@@ -1211,7 +1211,7 @@ void SettingsWindow::checkUpdate(bool thenInstall) {
     HWND window = hwnd_;
     std::thread([dir, beta, window] {
         std::string error;
-        auto release = win::fetchLatest(dir, beta, &error);
+        auto release = win::fetchLatest(dir, beta, WOWTYPE_VERSION, &error);
         auto *result = new std::pair<std::optional<update::Release>, std::string>(std::move(release), error);
         PostMessageW(window, kMessageUpdateChecked, 0, reinterpret_cast<LPARAM>(result));
     }).detach();

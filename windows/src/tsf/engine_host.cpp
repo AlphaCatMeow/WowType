@@ -409,7 +409,7 @@ void EngineHost::checkUpdateIfDue() {
     const bool beta = config_.flag("BetaUpdates");
     std::thread([this, dir, beta] {
         std::string error;
-        const auto release = win::fetchLatest(dir, beta, &error);
+        const auto release = win::fetchLatest(dir, beta, WOWTYPE_VERSION, &error);
         std::lock_guard<std::recursive_mutex> inner(mutex_);
         updateChecking_ = false;
         if (!release) {

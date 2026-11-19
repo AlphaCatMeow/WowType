@@ -26,8 +26,9 @@ std::optional<std::string> httpGet(const std::wstring &url, std::string *error);
 bool httpDownload(const std::wstring &url, const std::wstring &path,
                   const std::function<void(unsigned long long, unsigned long long)> &progress, std::string *error);
 
-/// 发布页上的最新版（beta：Beta 计划，预发布也算）。查到了顺手记进 update-state。
-std::optional<update::Release> fetchLatest(const std::wstring &dataDir, bool beta, std::string *error);
+/// 发布页上的最新版（beta：Beta 计划，预发布也算；current：现在装的版本，比它新才取更新说明）。查到了顺手记进 update-state。
+std::optional<update::Release> fetchLatest(const std::wstring &dataDir, bool beta, const std::string &current,
+                                           std::string *error);
 
 update::State readState(const std::wstring &dataDir);
 void writeState(const std::wstring &dataDir, const update::State &state);

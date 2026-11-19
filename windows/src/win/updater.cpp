@@ -294,9 +294,11 @@ void writeState(const std::wstring &dataDir, const update::State &state) {
     MoveFileExW(tmp.c_str(), statePath(dataDir).c_str(), MOVEFILE_REPLACE_EXISTING);
 }
 
-std::optional<update::Release> fetchLatest(const std::wstring &dataDir, bool beta, std::string *error) {
-    // 先问接口；接口限流（403、429）时改走网页（规矩在 update::fetchLatest，和 Linux、macOS 一样）
-    auto release = update::fetchLatest([](const std::string &url) { return fetch(widen(url)); }, beta, error);
+std::optional<update::Release> fetchLatest(const std::wstring &dataDir, bool beta, const std::string &current,
+                                           std::string *error) {
+    // 先走网页（不算接口次数），走不通才问接口；比现在装的新时才取更新说明（规矩在 update::fetchLatest，和 Linux、macOS 一样）
+    auto release =
+        update::fetchLatest([](const std::string &url) { return fetch(widen(url)); }, beta, current, error);
     if (!release) {
         return std::nullopt;
     }

@@ -17,9 +17,11 @@ inline constexpr char kReleasesPage[] = "https://github.com/Gloridust/WowType/re
 inline constexpr char kLatestApi[] = "https://api.github.com/repos/Gloridust/WowType/releases/latest";
 inline constexpr char kListApi[] = "https://api.github.com/repos/Gloridust/WowType/releases?per_page=30";
 inline constexpr char kChecksumFile[] = "SHA256SUMS";
-// 接口限流时（不登录每个 IP 每小时 60 次：校园网、公司网、运营商 NAT 后面很多人共用一个 IP）改走网页：
+/// 发布任务把「这一版要注意」那一节单独传成这个文件（0.7.1 起），取更新说明也不用接口
+inline constexpr char kNotesFile[] = "RELEASE-NOTES.md";
+// 检查更新先走网页（接口不登录时每个 IP 每小时只能问 60 次：校园网、公司网、运营商 NAT 后面很多人共用一个 IP）：
 // releases/latest 跳到最新正式版的 tag 页，releases.atom 列着最近的发布，发布页的 SHA256SUMS 列着这一版的全部文件。
-// 这些都不算接口次数。和 Linux 设置的 fetch_latest_web、macOS 的 AppUpdate.webCandidates 一样
+// 这些都不算接口次数；网页那条路走不通时才问接口。和 Linux 设置的 fetch_latest、macOS 的 LexiconPackInstaller 一样
 inline constexpr char kRepoPage[] = "https://github.com/Gloridust/WowType";
 inline constexpr char kLatestPage[] = "https://github.com/Gloridust/WowType/releases/latest";
 inline constexpr char kAtomFeed[] = "https://github.com/Gloridust/WowType/releases.atom";
@@ -63,8 +65,10 @@ std::optional<std::string> tagFromLatestUrl(const std::string &url);
 std::vector<std::string> webCandidates(const std::optional<std::string> &latest, const std::optional<std::string> &feed);
 /// SHA256SUMS 里列的文件名（「64 位十六进制  文件名」，文件名前可以带 *，带 / 的不要）
 std::vector<std::string> assetNames(const std::string &sums);
-/// 不走接口拼出的一版：文件列表从 SHA256SUMS 来，下载地址按发布页的规则拼，更新说明是一句「见发布页」
+/// 不走接口拼出的一版：文件列表从 SHA256SUMS 来，下载地址按发布页的规则拼；更新说明留空（见 releaseNotes）
 Release webRelease(const std::string &tag, const std::string &sums, bool prerelease);
+/// 接口上 tag 这一版的地址（0.7.1 以前没有 RELEASE-NOTES.md，问它要说明）
+std::string tagApi(const std::string &tag);
 
 /// 一次 HTTP GET 的结果（联网在外面做）：status 0 是连不上（error 是原因）；finalUrl 是跟了跳转以后的地址
 struct HttpResult {
@@ -74,11 +78,11 @@ struct HttpResult {
     std::string error;
 };
 using Fetch = std::function<HttpResult(const std::string &url)>;
-/// 接口限流：403、429
-inline bool rateLimited(int status) { return status == 403 || status == 429; }
-/// 查发布页上的最新版（beta：Beta 计划，预发布也算）。先问接口；接口限流时改走网页（只是拿不到更新说明），
-/// 别的错照旧报。查不到是 nullopt，error 是给人看的原因
-std::optional<Release> fetchLatest(const Fetch &get, bool beta, std::string *error);
+/// tag 这一版的更新说明：先下发布页上的 RELEASE-NOTES.md；404（更早的版本）问一次接口；都拿不到是一句「见发布页」
+std::string releaseNotes(const Fetch &get, const std::string &tag);
+/// 查发布页上的最新版（beta：Beta 计划，预发布也算）。先走网页，走不通（任何错）才问接口；两条都不通报网页那条的错。
+/// 比 current（现在装的版本）新时才取更新说明（releaseNotes），取不到不算失败。查不到是 nullopt，error 是给人看的原因
+std::optional<Release> fetchLatest(const Fetch &get, bool beta, const std::string &current, std::string *error);
 
 /// SHA256SUMS 里 name 的校验值（小写）；没有、重复、写坏了返回 nullopt，error 是原因。
 std::optional<std::string> checksum(const std::string &sums, const std::string &name, std::string *error = nullptr);
