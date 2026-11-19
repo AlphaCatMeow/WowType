@@ -2151,7 +2151,7 @@ do {
         .map { "<link href=\"https://github.com/Gloridust/WowType/releases/tag/\($0)\"/>" }.joined()
     check(AppUpdate.webCandidates(latest: "v0.6.0", feed: nil) == ["v0.6.0"], "网页：不开 Beta 只看最新正式版")
     check(AppUpdate.webCandidates(latest: "v0.6.0", feed: feed) == ["v0.8.0", "v0.7.0", "v0.6.0"],
-          "网页：Beta 按版本号从大到小试，数据的发布不算、重复的去掉", AppUpdate.webCandidates(latest: "v0.6.0", feed: feed))
+          "网页：Beta 按版本号从大到小试，数据的发布不算、重复的去掉", AppUpdate.webCandidates(latest: "v0.6.0", feed: feed).joined(separator: " "))
     let sha = String(repeating: "a", count: 64)
     check(AppUpdate.highlights("## 这一版要注意\n\n- 甲\n\n## 安装\n\n乙") == "- 甲", "更新说明：发布任务写的「这一版要注意」那一节")
     check(AppUpdate.assetNames(sums: "\(sha)  WowType-0.6.0-macos.pkg\n\(sha) *wowtype_0.6.0_debian13_amd64.deb\nbad  x\n\(sha)  ../evil\n")
