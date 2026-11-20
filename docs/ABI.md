@@ -28,6 +28,7 @@
 | 1.11 | 0.5.0 | `KEY_HINT_NO_LEARN`（1 << 4）：确定是密码框，选的词也不学（回车上屏的原始字母串哪里都不学）；加 `wowtype_nnlm_check`（只试着解析字级神经语言模型，不载入引擎，导入前用）；上屏以后的联想：`WowtypeSessionConfig` 末尾加 `association`（默认 0，外壳会画了才开），`WowtypeFrame.panel` 加 4（`WOWTYPE_PANEL_ASSOCIATION`），加 `wowtype_session_association`；`wowtype_engine_predict_next` 把学到的搭配排在模型的前面。退格把句首词退回编辑区、Esc 放弃、上屏后紧接着按退格时撤销学到的（会话里做，外壳不用改）；存盘挪出按键线程：加 `wowtype_engine_save_user_dict_async`、`_save_history_async`（锁里抄一份、引擎自己的线程写，连着的合并成一次）、`wowtype_engine_save_wait`（等写完，进程退出、外壳析构、换词库前调），同步的两个 save 照旧（先等后台排着的写完），`wowtype_engine_free` 也先写完 |
 | 1.12 | 0.6.0 | 中文标点自动配对：`WowtypeSessionConfig` 末尾加 `auto_pair_punct`（默认 0，外壳会挪光标、删字了才开），`WowtypeFrame` 末尾加 `cursor_delta`（commit 落到应用以后把光标挪几格，负数左移）、`delete_next`（这次没接的退格要连光标后的右标点一起删），`WowtypeKey` 末尾加 `next_char`（光标后一个字）和 `KEY_HINT_NEXT_CHAR`（1 << 5，`next_char` 为 0 是光标后确实没有字，有选区时别带）；打字统计（默认关）：加 `wowtype_stats_new`、`_free`、`_set_enabled`、`_enabled`、`_key`、`_commit`、`_flush`、`_wait`、`_clear`、`_now_ms`、`WOWTYPE_STATS_SENSITIVE`。记录器新建时关着（不读不建文件、不起线程），外壳按 `TypingStats` 打开；只记按天的聚合计数（字符数和类别、活跃毫秒、各键按下次数、模式和双拼方案的字数、候选位置），不记文字、拼音、按键顺序和时刻，带 `WOWTYPE_STATS_SENSITIVE`（密码框）的整个不算；按键和上屏只改内存，写文件在记录器自己的线程，`_free` 等写完。`WowtypeCandidateInfo` 末尾加 `index`（候选在列表里的位置，1 起），`WowtypeFrame` 末尾加 `choice_index`（这次上屏的候选位置，不是选候选为 0） |
 | 1.13 | 0.7.0 | 核心能在 Windows（MSVC）上编（`core/src/platform.rs`），接口不变；`wowtype_stats_key` 的 `platform` 加 2 = Windows（扫描码，扩展键或上 0xE000，只传按下）；`wowtype_engine_load_history` 和引擎里已有的合并（同一条留最近用过的），`wowtype_engine_load_user_dict` 已经有的词留大的频次，新建的引擎上读和以前一样 |
+| 1.14 | 下一版 | 双击 Shift 不切换（#253）：`WowtypeSessionConfig` 末尾加 `shift_double_tap`（默认 0）。开着时单按 Shift 先不切，`frame->wake_after_ms` 叫外壳过一会儿调 `_tick`；0.35 秒以内又单按一下两下都不算（模式不变，没有 `mode_changed`）。没等到第二下：按别的键（`KEY_ACTION_OBSERVE` 也算，这个键照切了以后的模式处理）、到了时间（`_tick`）、第二下没算成单按时切，这些 frame 都可能带 `mode_changed`（打到一半切英文时还有 `commit`），外壳要跟上；`_set_mode` 让等着的那一下作废 |
 
 ## 所有权和生命周期
 
@@ -86,7 +87,7 @@
 | 展开面板 | 6×6 一屏；方向键移光标，第一行再按上收起，PgUp / PgDn、`- =` 一次一屏，数字选光标那一行的第几个，空格选光标处，Esc 收起；别的键先收起再照常处理。收起后停在光标那一页 |
 | 标点、符号（1.10） | 打字途中：先上屏候选（光标在句首词上时接着选，直到整句上屏），再上屏它（全角样式下有中文标点的换成中文标点，数字写法里的符号保持英文）；没在打字：有中文标点的换成中文标点上屏，半角样式、数字写法里的符号、没有中文写法的（`/ + @`）交给应用。顿号、问号这类没有半角形态的数字后面照常换成中文标点（`1\` → `1、`）。引号左右交替的状态每个会话一份 |
 | 数字（没在打字，1.10） | 汉字后面要补空格（`auto_space`）时连空格一起上屏，否则交给应用 |
-| Shift（1.10） | 单按切换中 → 英 →（`translate_mode` 时）译 → 中，设了 `translate_key` 时只在中 ↔ 英之间切（在「译」里回中文）：按下时带 Ctrl / Alt / Super、开着面板不算；自动重复不重新计时；松开时按键码认；中间按了别的键（外壳自己处理掉的用 `KEY_ACTION_OBSERVE` 报）不算；按住超过 `shift_tap_ms` 不算。切英文时打到一半的原样上屏，离开「译」时原文原样上屏 |
+| Shift（1.10） | 单按切换中 → 英 →（`translate_mode` 时）译 → 中，设了 `translate_key` 时只在中 ↔ 英之间切（在「译」里回中文）：按下时带 Ctrl / Alt / Super、开着面板不算；自动重复不重新计时；松开时按键码认；中间按了别的键（外壳自己处理掉的用 `KEY_ACTION_OBSERVE` 报）不算；按住超过 `shift_tap_ms` 不算。切英文时打到一半的原样上屏，离开「译」时原文原样上屏。开着 `shift_double_tap`（1.14）时单按先等 0.35 秒（`SHIFT_DOUBLE_TAP_MS`）：这么久以内又按下 Shift 并单按，两下都不算（JetBrains 的双击 Shift）；按了别的键、到了时间（`_tick`）、第二下按晚了或没算成单按时第一下照切 |
 | 设置里的快捷键（1.10） | 外壳认出 ToggleKey、TranslateModeKey 后带上 `KEY_ACTION_TOGGLE_MODE` / `_TOGGLE_TRANSLATE` 交给 `_key`（开着面板时别带）。切换键：中 ↔ 英，在「译」里回中文；互译键：进「译」（打到一半的拼音带进去），在「译」里回到进来前的模式（翻译不能用了也回得去）；没有「译」或带 `KEY_HINT_NO_TRANSLATE` 时 `handled` 为 0，键交给应用 |
 | 英文模式（1.10） | 只管汉字后面打字母、数字时补空格，别的键交给应用 |
 | 互译（1.10） | 上屏的字攒成原文（`frame->translate_*`），0.5 秒没再打字（句末标点立刻）发请求，`frame->wake_after_ms` 时外壳调 `_tick`；没在打拼音时：回车上屏译文（没译完先记下，译好了在 `_tick` 的 commit 里）、Shift+回车上屏原文、空格上屏译文、Esc 清空、退格删原文、方向键吃掉、数字和符号进原文 |

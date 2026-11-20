@@ -146,6 +146,7 @@ bigram 格式（可选）：
 | `WOWTYPE_SHUANGPIN_SCHEME` | 双拼方案：`ziranma`、`xiaohe`、`microsoft`、`sogou`、`abc`、`ziguang`、`pinyinjiajia`；设了就打开双拼 |
 | `WOWTYPE_WUBI` | 五笔码表 `wubi86.tsv` 的路径（选了五笔时才载入），默认在用户数据目录、`/usr/share/wowtype` 里找 |
 | `WOWTYPE_SHIFT_TOGGLE` | 单按哪个 Shift 切英文：`both`（默认）、`left`、`right`、`off` |
+| `WOWTYPE_SHIFT_DOUBLE_TAP` | `0` 时单按 Shift 立刻切换（默认先等 0.35 秒，这么久以内再单按一下两下都不算，JetBrains 的双击 Shift 不会切中英文） |
 | `WOWTYPE_TRADITIONAL` / `WOWTYPE_S2T` | 繁体输出 / 简繁表路径 |
 | `WOWTYPE_VERTICAL` | `1` 候选竖排 |
 | `WOWTYPE_VOICE_KEY` | 语音键（fcitx5 键名），`none` 关掉语音 |
