@@ -146,6 +146,19 @@ def check_spec(spec, pack):
         check(policy.get(end) in ("default", "keep", "clamp"), f"规格：readRules.outOfRange 没写 {end} 或写错了",
               policy.get(end))
 
+    # 设置窗口的强调色：三端都用规格里的颜色，这里核对对比度（见 SettingsAccent 的 note）
+    for v in by_key["SettingsAccent"]["values"]:
+        colors = [v.get(name, "") for name in ("color", "strong", "light")]
+        if not check(all(re.fullmatch(r"#[0-9A-F]{6}", c) for c in colors),
+                     f"规格：强调色 {v['value']} 的颜色要写成 #RRGGBB（大写）", colors):
+            continue
+        check(contrast(v["strong"], "#FFFFFF") >= 4.7, f"规格：强调色 {v['value']} 的 strong 和白字的对比度不到 4.7",
+              f"{contrast(v['strong'], '#FFFFFF'):.2f}")
+        check(contrast(v["strong"], "#FAFAFB") >= 4.5,
+              f"规格：强调色 {v['value']} 的 strong 在浅色窗口底色上当字用，对比度不到 4.5", f"{contrast(v['strong'], '#FAFAFB'):.2f}")
+        check(contrast(v["light"], "#353539") >= 4.5,
+              f"规格：强调色 {v['value']} 的 light 在深色卡片上当字用，对比度不到 4.5", f"{contrast(v['light'], '#353539'):.2f}")
+
     bili = spec["translateBilibili"]
     ids = [m["id"] for m in bili["models"]]
     check(ids and ids[0] == bili["default"], "规格：translateBilibili.default 要是 models 的第一个", ids)
@@ -262,6 +275,10 @@ def check_settings(spec, wc, home):
          [(v["name"], v["value"]) for v in by_key["ShuangpinScheme"]["values"]], "设置界面：双拼方案的名字")
     same([(label, value) for label, value in wc.INPUT_SCHEMES],
          [(v["name"], v["value"]) for v in by_key["InputScheme"]["values"]], "设置界面：输入方案的名字")
+    same([tuple(item) for item in wc.SETTINGS_THEMES],
+         [(v["name"], v["value"]) for v in by_key["SettingsTheme"]["values"]], "设置界面：SETTINGS_THEMES")
+    same([tuple(item) for item in wc.SETTINGS_ACCENTS], accent_rows(by_key["SettingsAccent"]),
+         "设置界面：SETTINGS_ACCENTS")
     same([tuple(item) for item in wc.TRANSLATE_LANGUAGES],
          [(v["name"], v["value"], v["english"]) for v in by_key["TranslateTarget"]["values"]],
          "设置界面：TRANSLATE_LANGUAGES")
@@ -444,6 +461,25 @@ def check_settings_lexicon(pack, wc, home):
 # ---------------------------------------------------------------- fcitx5 插件（C++）
 
 
+def luminance(color):
+    """WCAG 的相对亮度，color 是 #RRGGBB。"""
+    def linear(c):
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (linear(int(color[i:i + 2], 16)) for i in (1, 3, 5))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast(first, second):
+    high, low = sorted((luminance(first), luminance(second)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def accent_rows(setting):
+    """强调色的表：(名字, 存盘名, color, strong, light)。"""
+    return [(v["name"], v["value"], v["color"], v["strong"], v["light"]) for v in setting["values"]]
+
+
 def run_dump(exe, *args):
     result = subprocess.run([exe, *args], capture_output=True, text=True, encoding="utf-8", timeout=30)
     if result.returncode != 0:
@@ -534,6 +570,12 @@ def check_windows(spec, exe):
         for case in missing["cases"] if missing else ():
             values = run_dump(exe, "--load", *(f"{k}={v}" for k, v in case["file"].items()))["values"]
             same(values.get(key), file_text(case["expect"]), f"windows：文件是 {case['file']} 时 {key}")
+    look = run_dump(exe, "--look")
+    by_key = {s["key"]: s for s in spec["settings"]}
+    same([(t["name"], t["value"]) for t in look["themes"]],
+         [(v["name"], v["value"]) for v in by_key["SettingsTheme"]["values"]], "windows：设置窗口主题的名字")
+    same([(a["name"], a["value"], a["color"], a["strong"], a["light"]) for a in look["accents"]],
+         accent_rows(by_key["SettingsAccent"]), "windows：强调色的表（look::accents）")
     policy = spec["readRules"]["outOfRange"]["windows"]
     for s in mine:
         if s["type"] == "int":

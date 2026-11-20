@@ -390,6 +390,9 @@ DEFAULTS = {
     "BetaUpdates": "False",
     # 打字统计默认关：关着时输入法什么都不记
     "TypingStats": "False",
+    # 设置窗口自己的主题和强调色（输入法不读），见 SETTINGS_THEMES、SETTINGS_ACCENTS
+    "SettingsTheme": "System",
+    "SettingsAccent": "Green",
     # 词库文件，留空用默认的雾凇；切到万象时是 WANXIANG_LEXICON
     "Lexicon": "",
 }
@@ -521,6 +524,23 @@ INITIAL_MODES = [
     ("和上次切走时一样", "Last"),
 ]
 
+# 设置窗口的主题：跟随系统，或者固定浅色 / 深色（「常规 → 设置窗口」，三端一样，见 spec/config.json 的 SettingsTheme）
+SETTINGS_THEMES = [
+    ("跟随系统", "System"),
+    ("浅色", "Light"),
+    ("深色", "Dark"),
+]
+
+# 设置窗口的强调色：(名字, 存盘名, 色板上的颜色, 放白字的底, 深色背景上当字用)。
+# 三端用同一张表（spec/config.json 的 SettingsAccent），颜色不自己算；对比度在 scripts/test-config-contract.py 核对
+SETTINGS_ACCENTS = [
+    ("绿色", "Green", "#0EAF76", "#0A8358", "#1AB37D"),
+    ("蓝色", "Blue", "#3584E4", "#2D70C2", "#68A3EB"),
+    ("紫色", "Purple", "#9141AC", "#9141AC", "#BD8DCD"),
+    ("橙色", "Orange", "#E66100", "#B84E00", "#EC8840"),
+    ("粉色", "Pink", "#D56199", "#AA4E7A", "#DD81AD"),
+]
+
 # 枚举项认哪些写法（区分大小写，认不出的读成默认值，和插件、macOS 一样，见 spec/config.json）
 ENUMS = {
     "CandidateLayout": ("Horizontal", "Vertical"),
@@ -532,6 +552,8 @@ ENUMS = {
     "PunctuationStyle": tuple(value for _label, value in PUNCT_STYLES),
     "SelectKeys": tuple(value for _label, value in SELECT_KEYS),
     "TranslateTarget": tuple(code for _label, code, _english in TRANSLATE_LANGUAGES),
+    "SettingsTheme": tuple(value for _label, value in SETTINGS_THEMES),
+    "SettingsAccent": tuple(value for _label, value, *_colors in SETTINGS_ACCENTS),
 }
 
 # 设置窗口的样式（照微信输入法：强调色渐变的侧栏、强调色的选中块、圆角卡片）。
@@ -588,15 +610,16 @@ STYLE = """
 .wt-swatch-4 { background: {strong}; }
 .wt-warning .subtitle { color: @warning_color; }
 """
-# 开关、单选框、主按钮换成强调色。上面放白字的地方用 strong（和白字的对比度至少 4.7:1）；
-# 旧版 libadwaita 用命名颜色，1.6 起用 CSS 变量，那时 --accent-color（强调色当字用）由 libadwaita 按浅色 / 深色自己算
+# 开关、单选框、主按钮换成强调色。上面放白字的地方用 strong（和白字的对比度至少 4.7:1），强调色当字用时
+# 浅色用 strong、深色用 light（--accent-color 要写明：Ubuntu 的 libadwaita 按系统的强调色算，不跟着 --accent-bg-color）。
+# 旧版 libadwaita 用命名颜色，1.6 起用 CSS 变量
 STYLE_ACCENT = """
 @define-color accent_bg_color {strong};
 @define-color accent_color {accent_text_hex};
 @define-color accent_fg_color #ffffff;
 """
 STYLE_ACCENT_VARS = """
-:root { --accent-bg-color: {strong}; --accent-fg-color: #ffffff; }
+:root { --accent-bg-color: {strong}; --accent-fg-color: #ffffff; --accent-color: {accent_text_hex}; }
 """
 # 次要文字的透明度：libadwaita 1.6 起是 --dim-opacity（高对比度时 90%），旧版直接写 opacity
 STYLE_DIM_VARS = """
@@ -610,17 +633,51 @@ STYLE_DIM_OLD = """
 .wt-content row label.subtitle, .wt-content .dim-label { opacity: 0.75; }
 .wt-sidebar .dim-label { opacity: 0.8; }
 """
-# 强调色：(名字, 存盘名, 色板上的颜色, 放白字的底, 深色背景上当字用)，和 spec/config.json 的 SettingsAccent 一样
-SETTINGS_ACCENTS = [
-    ("绿色", "Green", "#0EAF76", "#0A8358", "#1AB37D"),
-]
+# 主题固定成浅色 / 深色时（SettingsTheme 是 Light、Dark），窗口、卡片、弹出框这些底色和文字用 libadwaita 自己的
+# 那一套，优先级比 ~/.config/gtk-4.0/gtk.css（USER）还高一级：KDE 把系统的深色配色写在那里，不盖过它的话
+# 选了「浅色」照样是深色的。跟随系统时不加，系统主题写的颜色照用（底色、文字成对，看得清）。
+FORCED_COLORS = {
+    False: {"window": ("#fafafb", "rgba(0,0,6,0.8)"), "view": ("#ffffff", "rgba(0,0,6,0.8)"),
+            "headerbar": ("#ffffff", "rgba(0,0,6,0.8)"), "sidebar": ("#ebebed", "rgba(0,0,6,0.8)"),
+            "card": ("#ffffff", "rgba(0,0,6,0.8)"), "dialog": ("#fafafb", "rgba(0,0,6,0.8)"),
+            "popover": ("#ffffff", "rgba(0,0,6,0.8)")},
+    True: {"window": ("#222226", "#ffffff"), "view": ("#1d1d20", "#ffffff"),
+           "headerbar": ("#2e2e32", "#ffffff"), "sidebar": ("#2e2e32", "#ffffff"),
+           "card": ("rgba(255,255,255,0.08)", "#ffffff"), "dialog": ("#36363a", "#ffffff"),
+           "popover": ("#36363a", "#ffffff")},
+}
+
+
+def new_css_supported():
+    """libadwaita 1.6、GTK 4.16 起颜色是 CSS 变量（--window-bg-color 这些）。"""
+    return (Gtk.get_major_version(), Gtk.get_minor_version()) >= (4, 16) and Adw.get_minor_version() >= 6
+
+
+def accent_colors(accent):
+    """强调色的 (色板, 放白字的底, 深色背景上当字用)；认不出的用绿色。"""
+    _name, _value, color, strong, light = next(
+        (item for item in SETTINGS_ACCENTS if item[1] == accent), SETTINGS_ACCENTS[0])
+    return color, strong, light
+
+
+def forced_css(dark):
+    """主题固定时盖过系统主题颜色的那一段（见 FORCED_COLORS）。"""
+    lines = []
+    variables = []
+    for name, (bg, fg) in FORCED_COLORS[dark].items():
+        lines.append(f"@define-color {name}_bg_color {bg};")
+        lines.append(f"@define-color {name}_fg_color {fg};")
+        variables.append(f"--{name}-bg-color: {bg}; --{name}-fg-color: {fg};")
+    css = "\n".join(lines) + "\n"
+    if new_css_supported():
+        css += ":root { " + " ".join(variables) + " }\n"
+    return css
 
 
 def theme_css(dark, accent="Green"):
     """设置窗口的整段样式。dark 只决定旧版 libadwaita 上强调色当字用时的颜色，别的颜色都跟着主题。"""
-    _name, _value, color, strong, light = next(
-        (item for item in SETTINGS_ACCENTS if item[1] == accent), SETTINGS_ACCENTS[0])
-    new_css = (Gtk.get_major_version(), Gtk.get_minor_version()) >= (4, 16) and Adw.get_minor_version() >= 6
+    color, strong, light = accent_colors(accent)
+    new_css = new_css_supported()
     css = STYLE + STYLE_ACCENT
     if new_css:
         css += STYLE_ACCENT_VARS + STYLE_DIM_VARS
@@ -5553,8 +5610,9 @@ class SettingsWindow(Adw.ApplicationWindow):
             area = Gtk.DrawingArea()
             area.set_content_height(150)
             area.set_hexpand(True)
+            color = accent_colors(self.values.get("SettingsAccent"))[0]
             area.set_draw_func(lambda _area, cr, width, height:
-                               self.stats_draw_bars(cr, width, height, series))
+                               self.stats_draw_bars(cr, width, height, series, color))
             page.append(area)
         else:
             page.append(self.stats_empty("画图表要装 python3-gi-cairo（PyGObject 的 cairo 支持）。"))
@@ -5573,11 +5631,11 @@ class SettingsWindow(Adw.ApplicationWindow):
         page.append(note)
 
     @staticmethod
-    def stats_draw_bars(cr, width, height, series):
+    def stats_draw_bars(cr, width, height, series, color="#0EAF76"):
         maximum = max((count for _key, count in series), default=0) or 1
         gap = 3
         bar = max(1.0, (width - gap * (len(series) - 1)) / len(series))
-        cr.set_source_rgba(0.055, 0.686, 0.463, 0.9)
+        cr.set_source_rgba(*(int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)), 0.9)
         for index, (_key, count) in enumerate(series):
             if count <= 0:
                 continue
@@ -5797,6 +5855,26 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.font_handler = self.font_row.connect("notify::value", self.on_font_size_changed)
         look.add(self.font_row)
         page.add(look)
+
+        # 设置窗口自己的样子（不管候选框）。macOS、Windows 的设置窗口也有这两项，名字和选项一样
+        window_look = Adw.PreferencesGroup(title="设置窗口")
+        self.settings_theme_names = [value for _label, value in SETTINGS_THEMES]
+        self.settings_theme_row = Adw.ComboRow(
+            title="主题", subtitle="跟随系统，或者固定浅色 / 深色",
+            model=Gtk.StringList.new([label for label, _value in SETTINGS_THEMES]))
+        self.add_info(self.settings_theme_row,
+                      "只改这个设置窗口，不影响候选框。系统是深色、窗口却是浅色（或者反过来），"
+                      "字看不清时，固定成浅色或深色。")
+        self.settings_accent_names = [value for _label, value, *_colors in SETTINGS_ACCENTS]
+        self.settings_accent_row = Adw.ComboRow(
+            title="强调色", subtitle="选中的页面、按钮和开关的颜色",
+            model=Gtk.StringList.new([label for label, *_rest in SETTINGS_ACCENTS]))
+        self.refresh_window_look()
+        self.settings_theme_row.connect("notify::selected", self.on_window_look_changed)
+        self.settings_accent_row.connect("notify::selected", self.on_window_look_changed)
+        window_look.add(self.settings_theme_row)
+        window_look.add(self.settings_accent_row)
+        page.add(window_look)
 
         # 帮助：小技巧折起来；macOS 设置窗口的「帮助」和这里一样（打开数据目录代替导出日志）
         help_group = Adw.PreferencesGroup(title="帮助")
@@ -6356,6 +6434,23 @@ class SettingsWindow(Adw.ApplicationWindow):
             self.kimpanel.set_string(
                 "font", font_with_size(self.kimpanel.get_string("font") or KIMPANEL_DEFAULT_FONT, size))
         log(f"候选字号改成 {size:g}")
+
+    def refresh_window_look(self):
+        """「设置窗口」那一组对齐到 self.values（恢复默认、文件在别处改了以后）。"""
+        theme, accent = self.values["SettingsTheme"], self.values["SettingsAccent"]
+        self.settings_theme_row.set_selected(
+            self.settings_theme_names.index(theme) if theme in self.settings_theme_names else 0)
+        self.settings_accent_row.set_selected(
+            self.settings_accent_names.index(accent) if accent in self.settings_accent_names else 0)
+
+    def on_window_look_changed(self, *_args):
+        theme = self.settings_theme_names[self.settings_theme_row.get_selected()]
+        accent = self.settings_accent_names[self.settings_accent_row.get_selected()]
+        self.set_value("SettingsTheme", theme)
+        self.set_value("SettingsAccent", accent)
+        app = self.get_application()
+        if app is not None and hasattr(app, "set_look"):
+            app.set_look(theme, accent)
 
     def on_theme_toggled(self, row, _param):
         on = row.get_active()
@@ -7797,8 +7892,8 @@ class SettingsWindow(Adw.ApplicationWindow):
 
     def on_reset(self, *_args):
         dialog = AlertDialog(heading="恢复默认设置？",
-                                 body="排列方向、模糊音、语音键等回到默认值。自定义词和翻译服务"
-                                      "（地址、模型、Key）不受影响。")
+                                 body="排列方向、模糊音、语音键、设置窗口的主题和强调色等回到默认值。"
+                                      "自定义词和翻译服务（地址、模型、Key）不受影响。")
         dialog.add_response("cancel", "取消")
         dialog.add_response("reset", "恢复默认")
         dialog.set_response_appearance("reset", ResponseAppearance.DESTRUCTIVE)
@@ -7827,6 +7922,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             for key, row in self.key_rows.items():
                 row.set_selected(row.key_names.index(DEFAULTS[key]))
             self.target_row.set_selected(0)
+            self.refresh_window_look()
             self.toast("已恢复默认设置")
         dialog.connect("response", answered)
         dialog.present(self)
@@ -7897,10 +7993,16 @@ class SettingsApp(Adw.Application):
         settings = Gtk.Settings.get_default()
         settings.connect("notify::gtk-font-name", lambda *_: self.update_font_css())
         self.update_font_css()
-        # 微信输入法风格的配色，深色模式换一套
+        # 微信输入法风格的配色；主题、强调色在「常规 → 设置窗口」里改（SettingsTheme、SettingsAccent）
         self.style_css = Gtk.CssProvider()
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), self.style_css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        # 主题固定时盖过 ~/.config/gtk-4.0/gtk.css（USER 优先级）的颜色，见 FORCED_COLORS
+        self.forced_css = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), self.forced_css, Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
+        values = read_config()[0]
+        self.look = (values["SettingsTheme"], values["SettingsAccent"])
         manager = Adw.StyleManager.get_default()
         manager.connect("notify::dark", lambda *_: self.update_style_css())
         self.update_style_css()
@@ -7912,13 +8014,29 @@ class SettingsApp(Adw.Application):
         quoted = ", ".join('"' + f.replace('"', "") + '"' for f in families)
         css_load(self.font_css, f"window {{ font-family: {quoted}; }}")
 
+    def set_look(self, theme, accent):
+        """换设置窗口的主题、强调色（SettingsTheme、SettingsAccent 的值），马上生效。"""
+        if (theme, accent) != self.look:
+            self.look = (theme, accent)
+            self.update_style_css()
+
     def update_style_css(self):
+        theme, accent = self.look
+        manager = Adw.StyleManager.get_default()
+        scheme = {"Light": Adw.ColorScheme.FORCE_LIGHT, "Dark": Adw.ColorScheme.FORCE_DARK}.get(
+            theme, Adw.ColorScheme.DEFAULT)
+        if manager.get_color_scheme() != scheme:
+            manager.set_color_scheme(scheme)  # 会再发 notify::dark，再进来一次
         # 底色和文字都跟着主题（theme_css），dark 只管旧版 libadwaita 上强调色当字用时的颜色。
         # niri 等非 GNOME 桌面不一定把 color-scheme 报给 GTK，但用户可能选了深色 GTK 主题：主题名里带 dark 也按深色走。
-        settings = Gtk.Settings.get_default()
-        theme_name = (settings.props.gtk_theme_name or "").lower() if settings else ""
-        dark = Adw.StyleManager.get_default().get_dark() or "dark" in theme_name
-        css_load(self.style_css, theme_css(dark))
+        if theme in ("Light", "Dark"):
+            dark = theme == "Dark"
+        else:
+            settings = Gtk.Settings.get_default()
+            theme_name = (settings.props.gtk_theme_name or "").lower() if settings else ""
+            dark = manager.get_dark() or "dark" in theme_name
+        css_load(self.style_css, theme_css(dark, accent))
+        css_load(self.forced_css, forced_css(dark) if theme in ("Light", "Dark") else "")
 
     def do_command_line(self, command_line):
         options = command_line.get_options_dict().end().unpack()
