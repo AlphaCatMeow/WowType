@@ -4670,6 +4670,47 @@ mod tests {
     }
 
     #[test]
+    fn shuangpin_completed_syllable_does_not_expand() {
+        // 来自 #265（Kxuan）：pre-release 上已经由别的改动修好，留着测试防回退
+        // 双拼每个音节固定两个键：打满的音节就是完整的，不能再当「没打完」去补全。
+        // whlo（自然码）= wang'luo，l+o 同时是 luo 和 lo；以前第一个变体 wang'lo 又把
+        // lou、long 当补全放到了最前面（望楼、王龙），wang'luo 的词反而排到后面。
+        let lexicon: Arc<dyn Lexicon> = Arc::new(
+            MemoryLexicon::from_tsv_str(concat!(
+                "wang luo\t网络\t9000\n",
+                "wang luo\t网罗\t8000\n",
+                "wang lou\t望楼\t7000\n",
+                "wang long\t王龙\t6000\n",
+                "wang lo\t望咯\t5000\n",
+                "shuan guo\t涮锅\t4000\n",
+                "zhong guo\t中国\t8000\n",
+            ))
+            .unwrap(),
+        );
+        let lm: Arc<dyn LanguageModel> = Arc::new(BigramLm::default());
+        let mut e = Engine::new(lexicon, lm);
+        e.set_shuangpin(true);
+
+        let c = e.input("whlo");
+        assert_eq!(c[0].text, "网络", "{c:?}");
+        assert!(
+            c.iter().all(|x| x.pinyin != "wang lou" && x.pinyin != "wang long"),
+            "打满的音节不该补全出 lou/long：{c:?}"
+        );
+        // 重码的另一种读法（wang'lo 语气词）仍然查得到
+        assert!(c.iter().any(|x| x.pinyin == "wang lo"), "{c:?}");
+
+        // ud = shuang：不该补全成 shuan'guo（涮锅）
+        assert!(
+            e.input("ud").iter().all(|x| x.pinyin != "shuan guo"),
+            "ud 不该补全出 shuan guo"
+        );
+
+        // 最后单一个键仍是没打完的声母：补全照常（vsg = zhong'g -> 中国）
+        assert!(e.input("vsg").iter().any(|x| x.text == "中国"));
+    }
+
+    #[test]
     fn english_input_yields_raw_candidate() {
         let e = default_engine();
         let c = e.input("hello");
