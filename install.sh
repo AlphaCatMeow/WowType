@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# WowType 一键安装：Ubuntu / Debian、Fedora（x86_64、arm64），Arch Linux、deepin（x86_64），macOS 12 以上。
+# WowType 一键安装：Ubuntu / Debian、Fedora（x86_64、arm64），Arch Linux、deepin（x86_64），macOS 12 以上；
+# openSUSE Tumbleweed 没有预编译包，问过以后在本机从源码编译安装。
 #
 #   curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/main/install.sh | bash
 #
@@ -8,7 +9,8 @@
 #
 # 做这几件事：
 #   1. 从 GitHub Release 下载和你系统对应的最新安装包（词库已经在包里），按 SHA256SUMS 校验
-#   2. 用 apt-get / pacman / dnf 安装（含 fcitx5、GTK 4 / libadwaita）
+#   2. 用 apt-get / pacman / dnf 安装（含 fcitx5、GTK 4 / libadwaita）；
+#      openSUSE：用 zypper 装编译依赖，下载这一版的源码，用发布页的词库包按 docs/INSTALL.md 编译安装
 #   3. 输入法框架不是 fcitx5 时，用 im-config 切到 fcitx5（之后要注销重新登录一次）
 #   4. 把 WowType 加进 fcitx5 的输入法列表（fcitx5 正在运行时会先重启它一次）
 #   3、4 两步是 wowtype-config --setup 做的（直接装包的用户在「WowType 设置」第一页点「一键设置」也是它）
@@ -21,6 +23,7 @@
 #   WOWTYPE_NO_IM_CONFIG=1   不改输入法框架
 #   WOWTYPE_NO_RESTART=1     不重启 fcitx5（之后自己重启或注销再登录，再到设置里添加 WowType）
 #   WOWTYPE_YES=1            不问，直接按默认做
+#   WOWTYPE_SOURCE_URL=...   openSUSE 源码包地址（默认 GitHub 上这一版 tag 的源码，测试时可用 file:///...）
 set -euo pipefail
 
 REPO=${WOWTYPE_REPO:-Gloridust/WowType}
@@ -72,6 +75,7 @@ usage() {
 支持 Ubuntu 22.04 / 24.04 / 26.04、Debian 13 及有明确兼容基线的衍生版，deepin 23 / 25，
 Arch Linux / EndeavourOS / Garuda / CachyOS，Fedora；预编译包有 x86_64，
 Ubuntu、Debian 的 deb 和 rpm 另有 arm64（aarch64）。macOS 12 以上（Apple 芯片和 Intel）装 pkg。
+openSUSE Tumbleweed 没有预编译包：问过以后用 zypper 装编译依赖，在本机从源码编译安装。
 Manjaro 请在本机用 scripts/package-arch.sh 构建；NixOS 使用 flake。
 Fedora Atomic 桌面使用 rpm-ostree。其他发行版见 docs/INSTALL.md 的源码构建。
 
@@ -79,7 +83,8 @@ Fedora Atomic 桌面使用 rpm-ostree。其他发行版见 docs/INSTALL.md 的�
           WOWTYPE_NO_RESTART。
 测试夹具：WOWTYPE_SYSTEM 代替 uname -s（Linux / Darwin），
           WOWTYPE_OS_RELEASE 指定 os-release 文件，WOWTYPE_ARCH 指定机器架构，
-          WOWTYPE_BASE_URL 指定资产目录（可用 file:///...）。
+          WOWTYPE_BASE_URL 指定资产目录（可用 file:///...），
+          WOWTYPE_SOURCE_URL 指定 openSUSE 用的源码包（可用 file:///...）。
 EOF
 }
 
@@ -190,6 +195,8 @@ select_platform() {
   esac
   case "$ID" in
     nixos) source_install "NixOS 请使用仓库 flake 和 i18n.inputMethod.fcitx5.addons" ;;
+    # 没有预编译包：本机从源码编译（install_packages 的 zypper 一段）
+    opensuse-tumbleweed) distro=opensuse-tumbleweed; manager=zypper ;;
     ubuntu)
       case "$VERSION_ID" in
         22.04|24.04|26.04) distro="ubuntu$VERSION_ID"; manager=apt-get ;;
@@ -237,7 +244,17 @@ package_filename() {
     apt-get) printf 'wowtype_%s_%s_%s.deb\n' "$1" "$distro" "$deb_arch" ;;
     pacman) printf 'wowtype-%s-1-x86_64.pkg.tar.zst\n' "$1" ;;
     dnf) printf 'wowtype-%s-1.fc%s.%s.rpm\n' "$1" "$VERSION_ID" "$rpm_arch" ;;
+    zypper) printf 'WowType-%s 源码 + wowtype-data-rime-ice-<词库版本>.tar.gz（本机编译）\n' "$1" ;;
   esac
+}
+
+# openSUSE 的编译依赖，和 docs/INSTALL.md「openSUSE Tumbleweed」一节一样（源码用压缩包，不要 git）。
+# 已经有 cargo（比如 rustup）就不装 rust、cargo：openSUSE 的 rustup 和 rust 包互相冲突。
+zypper_deps() {
+  ZYPPER_DEPS=(gcc-c++ make cmake extra-cmake-modules pkgconf-pkg-config curl xz
+    fcitx5 fcitx5-devel fcitx5-configtool fcitx5-gtk3 fcitx5-gtk4 fcitx5-qt5 fcitx5-qt6 alsa-devel
+    python3 python3-gobject python3-gobject-Gdk typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1)
+  command -v cargo >/dev/null || ZYPPER_DEPS=(rust cargo "${ZYPPER_DEPS[@]}")
 }
 
 # 只提取选定文件的校验值；重复、缺失或无效条目一律拒绝。
@@ -293,6 +310,28 @@ install_packages() {
       "${SUDO[@]}" dnf install -y "${paths[@]}" \
         fcitx5-configtool fcitx5-gtk3 fcitx5-gtk4 fcitx5-qt5 fcitx5-qt6 fcitx5-autostart \
         python3-gobject gtk4 libadwaita gobject-introspection
+      ;;
+    zypper)
+      # 没有预编译包：装编译依赖，下载这一版 tag 的源码，词库用发布页上校验过的词库包（files[0]），
+      # 按 docs/INSTALL.md 第 4 节编译，cmake --install 装到 /usr（插件、设置界面、词库、自检工具）
+      local -a zy=()
+      [[ -n "${WOWTYPE_YES:-}" ]] && zy=(--non-interactive)
+      from_tty "${SUDO[@]}" zypper "${zy[@]}" refresh || warn "zypper refresh 失败，接着用现有的软件源安装"
+      from_tty "${SUDO[@]}" zypper "${zy[@]}" install -y "${ZYPPER_DEPS[@]}" ||
+        die "编译依赖装不上：先运行 sudo zypper dup 更新系统，再重新安装"
+      local src="$tmp/src"
+      mkdir -p "$src/dist/data"
+      say "下载 WowType $tag 的源码"
+      fetch "${WOWTYPE_SOURCE_URL:-https://github.com/$REPO/archive/refs/tags/$tag.tar.gz}" "$tmp/source.tar.gz" ||
+        die "下载 WowType $tag 的源码失败，请检查版本和网络"
+      tar -xzf "$tmp/source.tar.gz" -C "$src" --strip-components=1
+      tar -xzf "${paths[0]}" -C "$src/dist/data"
+      say "编译（要几分钟）"
+      (cd "$src" && cargo build --release --locked -p wowtype-core &&
+        cmake -S fcitx5-addon -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr &&
+        cmake --build build -j"$(nproc)") ||
+        die "编译失败。可以按 https://github.com/$REPO/blob/main/docs/INSTALL.md 手动构建"
+      "${SUDO[@]}" cmake --install "$src/build"
       ;;
   esac
 }
@@ -374,6 +413,10 @@ main() {
     printf '系统：%s %s\n包基线：%s\n包管理器：%s\n仓库：%s\n包文件：%s\n' \
       "$ID" "$VERSION_ID" "$distro" "$manager" "$REPO" \
       "$(package_filename "${requested#v}")"
+    if [[ "$manager" == zypper ]]; then
+      zypper_deps
+      printf '编译依赖：%s\n' "${ZYPPER_DEPS[*]}"
+    fi
     return
   fi
   if [[ $EUID -eq 0 ]]; then
@@ -400,23 +443,38 @@ main() {
   chmod 755 "$tmp"   # apt 用 _apt 用户读本地包
 
   say "WowType ${version}（$ID → ${distro}）"
+  if [[ "$manager" == zypper ]]; then
+    zypper_deps
+    say "$ID 没有预编译包，要在本机从源码编译（几分钟）。先用 zypper 安装这些编译依赖："
+    printf '    %s\n' "${ZYPPER_DEPS[*]}"
+    confirm "安装这些依赖，再下载 WowType $version 的源码和词库编译安装吗？" || die "已取消，什么都没装"
+  fi
   fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" 2>/dev/null ||
     die "下载 $base/SHA256SUMS 失败，请检查版本和网络；发布页：https://github.com/$REPO/releases"
-  manifest_hash "$package" "$tmp/SHA256SUMS" >/dev/null ||
-    source_install "WowType $version 没有 $distro 的有效安装包（${package}）"
-  files=("$package")
-  # 0.3.3 及以前的 deb 词库是单独的包；其他格式不安装 deb 数据包。
-  local hash filename data=
-  if [[ "$manager" == apt-get ]]; then
+  files=()
+  if [[ "$manager" != zypper ]]; then
+    manifest_hash "$package" "$tmp/SHA256SUMS" >/dev/null ||
+      source_install "WowType $version 没有 $distro 的有效安装包（${package}）"
+    files=("$package")
+  fi
+  # 0.3.3 及以前的 deb 词库是单独的包；openSUSE 源码编译用词库压缩包；其他格式不另装词库。
+  local hash filename data= pattern=
+  case "$manager" in
+    apt-get) pattern='^wowtype-data-rime-ice_[a-zA-Z0-9._+~^-]+_all\.deb$' ;;
+    zypper) pattern='^wowtype-data-rime-ice-[a-zA-Z0-9._+~^-]+\.tar\.gz$' ;;
+  esac
+  if [[ -n "$pattern" ]]; then
     while read -r hash filename || [[ -n "$hash" ]]; do
       filename=${filename#\*}
-      if [[ "$filename" =~ ^wowtype-data-rime-ice_[a-zA-Z0-9._+~^-]+_all\.deb$ ]]; then
+      if [[ "$filename" =~ $pattern ]]; then
         [[ -z "$data" ]] || die "SHA256SUMS 包含多个词库包"
         data=$filename
       fi
     done < "$tmp/SHA256SUMS"
     [[ -z "$data" ]] || files+=("$data")
   fi
+  [[ "$manager" != zypper || -n "$data" ]] ||
+    source_install "WowType $version 的发布页没有词库包（wowtype-data-rime-ice-*.tar.gz）"
   local f expected actual
   for f in "${files[@]}"; do
     expected=$(manifest_hash "$f" "$tmp/SHA256SUMS") || die "$f 缺少唯一且有效的 SHA256"
