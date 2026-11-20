@@ -94,6 +94,25 @@ func runKeyTests() {
         check(f.markedText == "ni", "右 Shift 也能切回中文", f.markedText)
     }
 
+    // #253：双击 Shift（JetBrains 的到处搜索）不切中英文，也不弹提示；Shift 的事件都交给应用
+    do {
+        let (c, f) = session()
+        check(doubleTapShift(c), "双击 Shift：按下、松开都交给应用")
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.5))
+        check(panel == nil, "双击 Shift 不弹「中 / 英」提示", "\(String(describing: panel?.aux))")
+        type(c, "ni")
+        check(f.markedText == "ni", "双击 Shift 不切，还是中文", f.markedText)
+        // 单按以后紧接着打字（不等）：先切英文，字母交给应用，弹「英」
+        press(c, .escape)
+        tapShift(c, wait: false)
+        type(c, "a")
+        check(f.text.hasSuffix("a") && f.markedText.isEmpty && panel?.aux == "英",
+              "单按以后接着打字：先切英文，a 交给应用", "\(f.text) \(String(describing: panel?.aux))")
+        tapShift(c)
+        type(c, "ni")
+        check(f.markedText == "ni", "单按回中文", f.markedText)
+    }
+
     do {
         let (c, f) = session(["ShiftToggle": "Left"])
         tapShift(c, right: true)

@@ -191,6 +191,10 @@ bool Composer::shiftChanged(bool down, bool otherModifiers, uint64_t nowMs, bool
     raw.modifiers = otherModifiers ? mod::control : 0;
     raw.time_ms = nowMs;
     const WowtypeFrame *frame = wowtype_session_key(session_, &raw);
+    if (frame && frame->wake_after_ms > 0 && onTranslatePoll) {
+        // 单按 Shift 等双击（#253）：到时间没有第二下，pollTranslation 里切
+        onTranslatePoll(frame->wake_after_ms);
+    }
     if (!frame || !frame->mode_changed) {
         return false;
     }
@@ -203,7 +207,7 @@ void Composer::otherModifierChanged() {
     WowtypeKey raw{};
     raw.size = sizeof(WowtypeKey);
     raw.action = WOWTYPE_KEY_ACTION_OBSERVE;
-    wowtype_session_key(session_, &raw);
+    followObserved(wowtype_session_key(session_, &raw));
 }
 
 void Composer::observe(const KeyInput &key) {
@@ -212,7 +216,14 @@ void Composer::observe(const KeyInput &key) {
     raw.keysym = key.keysym;
     raw.modifiers = key.modifiers;
     raw.action = WOWTYPE_KEY_ACTION_OBSERVE;
-    wowtype_session_key(session_, &raw);
+    followObserved(wowtype_session_key(session_, &raw));
+}
+
+void Composer::followObserved(const WowtypeFrame *frame) {
+    if (frame && frame->mode_changed) {
+        // 等双击的单按 Shift 被这个键打断（#253）：会话先切了（打到一半切英文时字母在 frame 里），这个键照新模式处理
+        applyFrame(frame);
+    }
 }
 
 std::optional<uint32_t> Composer::modeKeyAction(const KeyInput &key) const {
@@ -327,6 +338,8 @@ void Composer::configure() {
     c.auto_space = config_.autoSpaceFlags();
     c.shift_toggle = config_.shiftToggle();
     c.shift_tap_ms = 0;
+    // 双击 Shift 不切换（#253）：等着的单按在 pollTranslation、observe 的 frame 里切，都跟着 mode_changed
+    c.shift_double_tap = 1;
     c.translate_mode = translateAvailable();
     c.translate_key = config_.translateModeKey().has_value();
     c.toolbar = config_.flag("Toolbar");
@@ -626,7 +639,11 @@ uint32_t Composer::pollTranslation() {
         return 0;
     }
     const uint32_t wake = frame->wake_after_ms;
-    if (frame->commit) {
+    if (frame->mode_changed) {
+        // 单按 Shift 等双击等到了时间（#253）：现在切（打到一半切英文时字母在 frame 里）
+        translateDrawn_.clear();
+        applyFrame(frame);
+    } else if (frame->commit) {
         // 按过回车，译好了：上屏译文（正在打的拼音留着）
         translateDrawn_.clear();
         applyFrame(frame);

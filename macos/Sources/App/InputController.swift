@@ -20,10 +20,11 @@ class WowTypeInputController: IMKInputController {
     private var lastMarked = (text: "", cursor: 0)
     /// 最近上屏或交给应用的最后一个字。很多应用读不到光标前的字（attributedSubstring 返回 nil），用它兜底。
     private var lastInserted: UInt32 = 0
-    /// 上一次单按 Shift 切换时那个事件的时刻（NSEvent.timestamp）
+    /// 上一次松开 Shift 那个事件的时刻（NSEvent.timestamp）
     private var lastShiftTap: TimeInterval = -.infinity
-    /// 单按切换以后这么久以内又「按下」的 Shift 不算：Electron 的应用有时把一次按下松开报成两遍
-    /// （或者晚一点重发原来的事件），人连按两下没有这么快
+    /// 松开 Shift 以后这么久以内又「按下」的 Shift 不算：Electron 的应用有时把一次按下松开报成两遍
+    /// （或者晚一点重发原来的事件），人连按两下没有这么快。单按先等双击（#253）、松开时还没切，
+    /// 所以每次松开都记，不然重报的那一遍会被当成双击，单按就切不了
     static let shiftBounce: TimeInterval = 0.05
     /// 照哪一版设置配的会话（AppState.configGeneration）
     private var configGeneration = -1
@@ -56,10 +57,19 @@ class WowTypeInputController: IMKInputController {
     private func startTranslatePolling() {
         guard translateTimer == nil else { return }
         let timer = Timer(timeInterval: Self.translatePollInterval, repeats: true) { [weak self] timer in
-            guard let self, self.composer.pollTranslation() else {
+            guard let self else {
                 timer.invalidate()
-                self?.translateTimer = nil
                 return
+            }
+            let mode = self.composer.mode
+            let more = self.composer.pollTranslation()
+            if self.composer.mode != mode {
+                // 单按 Shift 等双击等到了时间（#253）：这时才切，弹「中 / 英」提示
+                self.showModeHint()
+            }
+            if !more {
+                timer.invalidate()
+                self.translateTimer = nil
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -223,7 +233,8 @@ class WowTypeInputController: IMKInputController {
         if down && event.timestamp - lastShiftTap < Self.shiftBounce {
             return
         }
-        if composer.shiftChanged(down: down, otherModifiers: flags & others != 0, now: composer.clock(), right: right) {
+        composer.shiftChanged(down: down, otherModifiers: flags & others != 0, now: composer.clock(), right: right)
+        if !down {
             lastShiftTap = event.timestamp
         }
     }

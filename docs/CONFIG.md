@@ -218,7 +218,7 @@ Lexicon=
 | `WubiHint` | 五笔的候选后面显示还要打的码（打 `wq` 时「您 in」「你好 vb」），默认 `True`。只在五笔时显示；`z` 临时拼音反查的五笔码总是显示 |
 | `ShuangpinScheme` | 双拼方案：`Ziranma` 自然码、`Xiaohe` 小鹤、`Microsoft` 微软、`Sogou` 搜狗、`ABC` 智能 ABC、`Ziguang` 紫光、`PinyinJiajia` 拼音加加 |
 | `ShuangpinShowKeys` | 双拼时编辑区显示打的键（`uivs`），不翻成全拼（`shi'zhong`），中英混打时看得出打了什么。默认 `False` |
-| `ShiftToggle` | 单按哪个 Shift 切中英文：`Both`、`Left`、`Right`、`Off`。fcitx5 自己的全局快捷键（「临时切换输入法」「切换输入法」「向前切换输入法」等任何一项）里用了同一个 Shift 时，fcitx5 先处理，WowType 收不到；设置界面「输入」页会提示，并能一键把 Shift 从 fcitx5 那边去掉（改的是 `~/.config/fcitx5/config`，关掉开关就还原；这个文件写不了时提示「只在这次有效」，NixOS 见[安装说明](INSTALL.md#单按-shift-在-nixos-上)） |
+| `ShiftToggle` | 单按哪个 Shift 切中英文：`Both`、`Left`、`Right`、`Off`。0.35 秒以内连按两下（双击）两下都不算，JetBrains 的双击 Shift 不会切中英文（#253）；单按以后接着打字照切了以后的模式打，不接着打时 0.35 秒后才切、弹提示。fcitx5 自己的全局快捷键（「临时切换输入法」「切换输入法」「向前切换输入法」等任何一项）里用了同一个 Shift 时，fcitx5 先处理，WowType 收不到；设置界面「输入」页会提示，并能一键把 Shift 从 fcitx5 那边去掉（改的是 `~/.config/fcitx5/config`，关掉开关就还原；这个文件写不了时提示「只在这次有效」，NixOS 见[安装说明](INSTALL.md#单按-shift-在-nixos-上)） |
 | `InitialMode` | 从别的输入法切到 WowType、开机后第一次用时的模式：`Chinese`（默认）、`English`、`Last`（和上次切走时一样）。换窗口不算，中英文照旧全局保持；关了 Shift 切换（`ShiftToggle=Off`）、也没另设切换键（`ToggleKey`）时总是中文（`TranslateModeKey` 只进出「译」，不算）。macOS 上每个应用记着自己的中英文：输入法停用以后系统现在用的不是 WowType（切到了别的输入法；密码框里系统临时换成英文键盘不算）就记一笔，之后每个应用第一次用到 WowType 时按这一项定一次，换应用、换窗口不动；`Last` 是每个应用和它上次一样 |
 | `VoiceKey` | fcitx5 的键名，如 `Alt_R`、`Control_R`、`Menu`、`F8` |
 | `ToggleKey` | 另设一个切换中 / 英文的快捷键（fcitx5 键名，如 `Control+Shift+space`），留空不用；单按 Shift 照常。在「译」里按回到中文。fcitx5 自己的全局快捷键先处理：`Control+space` 默认是 fcitx5「切换启用/禁用输入法」的键（macOS 上是系统「选择上一个输入法」的键），设成它 WowType 收不到，所以设置里不再列它；Linux 设置界面会提示被 fcitx5 占着的键 |

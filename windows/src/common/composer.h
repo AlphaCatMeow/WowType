@@ -106,7 +106,7 @@ public:
     std::function<void()> onForget;
     /// 打开工具栏的剪贴板页时调用：外壳看一眼系统剪贴板，有新的交给 wowtype_clipboard_remember。
     std::function<void()> sampleClipboard;
-    /// 会话要外壳过 ms 毫秒以后调 pollTranslation（互译去抖、等译文）。
+    /// 会话要外壳过 ms 毫秒以后调 pollTranslation（互译去抖、等译文、单按 Shift 等双击）。
     std::function<void(uint32_t ms)> onTranslatePoll;
     /// 单调时钟（毫秒），测试里换成假的。
     std::function<uint64_t()> clock;
@@ -139,9 +139,11 @@ public:
 
     /// 处理一次按下；返回 true 表示吃掉了这个键（不交给应用）。
     bool handle(const KeyInput &key);
-    /// Shift 的按下 / 松开。单按切中英文时返回 true。right 是右 Shift。nowMs 是单调时钟。
+    /// Shift 的按下 / 松开。这一下切了模式时返回 true。right 是右 Shift。nowMs 是单调时钟（和 clock 同一个）。
+    /// 单按先不切（双击 Shift 不切换，#253）：会话叫 onTranslatePoll 排定时器，到时间没有第二下在
+    /// pollTranslation 里切；之前按了别的键时在那个键里先切（mode() 变了，外壳照常更新提示）。
     bool shiftChanged(bool down, bool otherModifiers, uint64_t nowMs, bool right);
-    /// 别的修饰键按下了（Ctrl、Alt、Win）：这次 Shift 不算单按。
+    /// 别的修饰键按下了（Ctrl、Alt、Win）：这次 Shift 不算单按（等双击的那一下单按先切）。
     void otherModifierChanged();
     /// 切模式（菜单、外部命令）。
     void switchMode(Mode mode);
@@ -175,6 +177,8 @@ private:
     bool handleToolKey(const KeyInput &key);
     std::optional<uint32_t> modeKeyAction(const KeyInput &key) const;
     void observe(const KeyInput &key);
+    /// OBSERVE 的 frame 里切了模式（等双击的单按 Shift 被打断）：上屏、重画。
+    void followObserved(const WowtypeFrame *frame);
     bool sendToSession(const KeyInput &key, uint32_t action = WOWTYPE_KEY_ACTION_NONE);
     void applyFrame(const WowtypeFrame *frame);
     void drawTool();

@@ -169,11 +169,23 @@ void pairType(Composer &c, CaretClient &client, const std::string &keys) {
     }
 }
 
+/// 外壳的定时器在 at 毫秒时到了（单按 Shift 等双击，#253）：返回这一下切没切模式。
+bool settleShift(Composer &c, uint64_t at) {
+    const auto mode = c.mode();
+    const auto clock = c.clock;
+    c.clock = [at] { return at; };
+    c.pollTranslation();
+    c.clock = clock;
+    return c.mode() != mode;
+}
+
+/// 单按一下 Shift，等过双击间隔（定时器到了）。每次往后挪一秒，不会被当成双击或按住太久。
 uint64_t shiftClock = 100000;
 void tapShift(Composer &c) {
     shiftClock += 1000;
     c.shiftChanged(true, false, shiftClock, false);
     c.shiftChanged(false, false, shiftClock + 50, false);
+    settleShift(c, shiftClock + 500);
 }
 
 std::string writeTestLexicon(const std::filesystem::path &dir) {
@@ -762,23 +774,58 @@ int main(int argc, char **argv) {
         auto [c, client] = fresh();
         type(*c, "ni");
         check(!c->shiftChanged(true, false, 1000, false), "按下 Shift 不切");
-        check(c->shiftChanged(false, false, 1200, false), "0.2 秒内松开算单按");
-        check(c->mode() == Composer::Mode::English && client->committed == "ni", "切英文并上屏 ni",
-              client->committed);
+        check(!c->shiftChanged(false, false, 1200, false) && c->isComposing(),
+              "0.2 秒内松开算单按：先等双击（#253），拼音还在");
+        check(settleShift(*c, 1600) && c->mode() == Composer::Mode::English && client->committed == "ni",
+              "没有第二下：到时间切英文并上屏 ni", client->committed);
         check(!c->handle(KeyInput::character('a')), "英文模式字母交给应用");
         c->shiftChanged(true, false, 2000, false);
         c->handle(KeyInput::character('A', mod::shift));
-        check(!c->shiftChanged(false, false, 2100, false), "Shift+A 不算单按");
+        check(!c->shiftChanged(false, false, 2100, false) && !settleShift(*c, 2600), "Shift+A 不算单按");
         c->shiftChanged(true, false, 3000, false);
-        check(!c->shiftChanged(false, false, 3800, false), "按太久不算单按");
-        c->shiftChanged(true, false, 4000, true);
-        check(c->shiftChanged(false, false, 4100, true) && c->mode() == Composer::Mode::Chinese,
-              "右 Shift 单按切回中文");
+        check(!c->shiftChanged(false, false, 3800, false) && !settleShift(*c, 4300), "按太久不算单按");
+        c->shiftChanged(true, false, 5000, true);
+        c->shiftChanged(false, false, 5100, true);
+        check(settleShift(*c, 5500) && c->mode() == Composer::Mode::Chinese, "右 Shift 单按切回中文");
         Config left;
         left.setValue("ShiftToggle", "Left");
         c->apply(left);
-        c->shiftChanged(true, false, 5000, true);
-        check(!c->shiftChanged(false, false, 5100, true), "ShiftToggle=Left 时右 Shift 不切");
+        c->shiftChanged(true, false, 6000, true);
+        check(!c->shiftChanged(false, false, 6100, true) && !settleShift(*c, 6500), "ShiftToggle=Left 时右 Shift 不切");
+    }
+    {
+        // #253：双击 Shift（JetBrains 的到处搜索）不切中英文。单按先等双击间隔，外壳排定时器
+        auto [c, client] = fresh();
+        uint32_t polled = 0;
+        c->onTranslatePoll = [&polled](uint32_t ms) { polled = ms; };
+        type(*c, "ni");
+        c->shiftChanged(true, false, 1000, false);
+        check(!c->shiftChanged(false, false, 1080, false) && polled > 0 && polled <= 400,
+              "单按以后叫外壳排定时器", std::to_string(polled));
+        c->shiftChanged(true, false, 1250, false);
+        check(!c->shiftChanged(false, false, 1330, false), "间隔以内的第二下也不切");
+        check(!settleShift(*c, 3000) && c->mode() == Composer::Mode::Chinese && c->isComposing() &&
+                  client->committed.empty(),
+              "双击 Shift：过了时间也不切，拼音留着", client->committed);
+        // 单按以后接着按键：这个键之前先切（ni 原样上屏），键照英文交给应用
+        c->shiftChanged(true, false, 5000, false);
+        c->shiftChanged(false, false, 5080, false);
+        check(!c->handle(KeyInput::character('a')) && c->mode() == Composer::Mode::English &&
+                  client->committed == "ni",
+              "单按以后接着按键：先切英文，a 交给应用", client->committed);
+        // 按住 Shift 时按了 Ctrl（别的修饰键）：等着的那一下也先切
+        c->shiftChanged(true, false, 6000, false);
+        c->shiftChanged(false, false, 6080, false);
+        c->otherModifierChanged();
+        check(c->mode() == Composer::Mode::Chinese, "等双击时按了别的修饰键：先切回中文");
+        // 过了间隔才按第二下（定时器晚了）：第一下在按下时切，第二下自己再等
+        c->shiftChanged(true, false, 7000, false);
+        c->shiftChanged(false, false, 7080, false);
+        c->shiftChanged(true, false, 7600, false);
+        check(c->mode() == Composer::Mode::English, "过了间隔才按第二下：第一下照切");
+        c->shiftChanged(false, false, 7680, false);
+        check(c->mode() == Composer::Mode::English && settleShift(*c, 8100) && c->mode() == Composer::Mode::Chinese,
+              "第二下到时间也切");
     }
     {
         // 系统要结束组字：打的字母原样上屏，不带分音节的隔音符

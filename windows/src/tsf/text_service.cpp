@@ -503,13 +503,21 @@ bool TextService::processKeyDown(ITfContext *context, WPARAM wParam, LPARAM lPar
         if (!repeat) {
             composer_->shiftChanged(true, otherModifiersHeld(), monotonicMs(), isRightShift(wParam, lParam));
         }
+        if (composer_->mode() != modeBefore) {
+            // 过了双击间隔才按下 Shift（定时器晚了）：等着的那一下单按在这里切（#253）
+            modeChanged();
+        }
         flush(context);
         return false;
     }
     if (isModifierKey(virtualKey)) {
-        // 按住 Shift 时按了 Ctrl、Alt、Win：这次 Shift 不算单按
+        // 按住 Shift 时按了 Ctrl、Alt、Win：这次 Shift 不算单按（等双击的那一下单按先切，#253）
         if (virtualKey != VK_CAPITAL && virtualKey != VK_NUMLOCK && virtualKey != VK_SCROLL) {
             composer_->otherModifierChanged();
+        }
+        if (composer_->mode() != modeBefore) {
+            modeChanged();
+            flush(context);
         }
         return false;
     }
@@ -588,8 +596,12 @@ std::optional<bool> TextService::voiceKey(ITfContext *context, WPARAM wParam, LP
         }
     };
     if (down && key->modifier) {
-        // 和别的修饰键一样：按住 Shift 时按了它，这次 Shift 不算单按
+        // 和别的修饰键一样：按住 Shift 时按了它，这次 Shift 不算单按（等双击的那一下单按先切，#253）
+        const Composer::Mode modeBefore = composer_->mode();
         composer_->otherModifierChanged();
+        if (composer_->mode() != modeBefore) {
+            modeChanged();
+        }
     }
     const bool repeat = (lParam & (1 << 30)) != 0;
     const bool eaten = voice.press(down, down && repeat, composer_->isComposing(), this);
@@ -1136,7 +1148,12 @@ void TextService::onTimer(UINT_PTR id) {
             window_->killTimer(kTranslateTimer);
             return;
         }
+        const Composer::Mode modeBefore = composer_->mode();
         const uint32_t wake = composer_->pollTranslation();
+        if (composer_->mode() != modeBefore) {
+            // 单按 Shift 等双击等到了时间（#253）：这时才切，任务栏和提示跟上
+            modeChanged();
+        }
         flush(currentContext());
         if (wake == 0) {
             window_->killTimer(kTranslateTimer);

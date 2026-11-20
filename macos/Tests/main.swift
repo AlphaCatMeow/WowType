@@ -108,12 +108,25 @@ func fresh() -> (Composer, FakeClient) {
     return (Composer(engine: engine, client: client), client)
 }
 
-/// 单按一下 Shift（按下、松开，会话判断单按）。每次往后挪一秒，不会被当成按住太久。
+/// 外壳的轮询在 at 秒时到了（单按 Shift 等双击，#253）：返回这一下切没切模式。
+@discardableResult
+func settleShift(_ c: Composer, at: Double) -> Bool {
+    let mode = c.mode
+    let clock = c.clock
+    c.clock = { at }
+    c.pollTranslation()
+    c.clock = clock
+    return c.mode != mode
+}
+
+/// 单按一下 Shift（按下、松开，会话判断单按），再等过双击间隔（轮询到了时间）。
+/// 每次往后挪一秒，不会被当成双击或按住太久。
 var shiftClock = 100.0
 func tapShift(_ c: Composer) {
     shiftClock += 1
     _ = c.shiftChanged(down: true, otherModifiers: false, now: shiftClock)
     _ = c.shiftChanged(down: false, otherModifiers: false, now: shiftClock + 0.05)
+    settleShift(c, at: shiftClock + 0.5)
 }
 
 do {
@@ -336,16 +349,49 @@ do {
     type(c, "ni")
     // 单按 Shift：打到一半切英文，字母原样上屏
     check(c.shiftChanged(down: true, otherModifiers: false, now: 1.0) == false, "按下 Shift 不切")
-    check(c.shiftChanged(down: false, otherModifiers: false, now: 1.2), "0.2 秒内松开算单按")
-    check(c.mode == .english && client.committed == "ni", "切英文并上屏 ni", client.committed)
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 1.2) && c.isComposing,
+          "0.2 秒内松开算单按：先等双击（#253），拼音还在")
+    check(settleShift(c, at: 1.6) && c.mode == .english && client.committed == "ni",
+          "没有第二下：到时间切英文并上屏 ni", client.committed)
     check(!c.handle(.char("a")), "英文模式字母交给应用")
     _ = c.shiftChanged(down: true, otherModifiers: false, now: 2.0)
     _ = c.handle(.char("A", .shift))
-    check(!c.shiftChanged(down: false, otherModifiers: false, now: 2.1), "Shift+A 不算单按")
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 2.1) && !settleShift(c, at: 2.6), "Shift+A 不算单按")
     _ = c.shiftChanged(down: true, otherModifiers: false, now: 3.0)
-    check(!c.shiftChanged(down: false, otherModifiers: false, now: 3.8), "按太久不算单按")
-    _ = c.shiftChanged(down: true, otherModifiers: false, now: 4.0)
-    check(c.shiftChanged(down: false, otherModifiers: false, now: 4.1) && c.mode == .chinese, "再单按切回中文")
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 3.8) && !settleShift(c, at: 4.3), "按太久不算单按")
+    _ = c.shiftChanged(down: true, otherModifiers: false, now: 5.0)
+    _ = c.shiftChanged(down: false, otherModifiers: false, now: 5.1)
+    check(settleShift(c, at: 5.5) && c.mode == .chinese, "再单按切回中文")
+}
+
+do {
+    // #253：双击 Shift（JetBrains 的到处搜索）不切中英文。单按先等双击间隔，外壳开始轮询
+    let (c, client) = fresh()
+    var polled = 0
+    c.onTranslatePoll = { polled += 1 }
+    type(c, "ni")
+    _ = c.shiftChanged(down: true, otherModifiers: false, now: 1.0)
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 1.08) && polled > 0, "单按以后叫外壳开始轮询")
+    _ = c.shiftChanged(down: true, otherModifiers: false, now: 1.25)
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 1.33), "间隔以内的第二下也不切")
+    check(!settleShift(c, at: 3.0) && c.mode == .chinese && c.isComposing && client.committed.isEmpty,
+          "双击 Shift：过了时间也不切，拼音留着", client.committed)
+    // 单按以后接着按键：这个键之前先切（ni 原样上屏），键照英文交给应用
+    _ = c.shiftChanged(down: true, otherModifiers: false, now: 5.0)
+    _ = c.shiftChanged(down: false, otherModifiers: false, now: 5.08)
+    check(!c.handle(.char("a")) && c.mode == .english && client.committed == "ni",
+          "单按以后接着按键：先切英文，a 交给应用", client.committed)
+    // 按着 Shift 时按了 Command（别的修饰键）：等着的那一下也先切
+    _ = c.shiftChanged(down: true, otherModifiers: false, now: 6.0)
+    _ = c.shiftChanged(down: false, otherModifiers: false, now: 6.08)
+    c.otherModifierChanged()
+    check(c.mode == .chinese, "等双击时按了别的修饰键：先切回中文")
+    // 过了间隔才按第二下（轮询晚了）：第一下在按下时切，第二下自己再等
+    _ = c.shiftChanged(down: true, otherModifiers: false, now: 7.0)
+    _ = c.shiftChanged(down: false, otherModifiers: false, now: 7.08)
+    check(c.shiftChanged(down: true, otherModifiers: false, now: 7.6) && c.mode == .english, "过了间隔才按第二下：第一下照切")
+    _ = c.shiftChanged(down: false, otherModifiers: false, now: 7.68)
+    check(c.mode == .english && settleShift(c, at: 8.1) && c.mode == .chinese, "第二下到时间也切")
 }
 
 do {
@@ -738,15 +784,18 @@ withConfig({ $0.halfwidthPunct = true }) { c, client in
 
 withConfig({ $0.shiftToggle = .right }) { c, _ in
     _ = c.shiftChanged(down: true, otherModifiers: false, now: 1.0, right: false)
-    check(!c.shiftChanged(down: false, otherModifiers: false, now: 1.1, right: false) && c.mode == .chinese, "只用右 Shift：左 Shift 不切")
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 1.1, right: false) && !settleShift(c, at: 1.5)
+              && c.mode == .chinese, "只用右 Shift：左 Shift 不切")
     _ = c.shiftChanged(down: true, otherModifiers: false, now: 2.0, right: true)
-    check(c.shiftChanged(down: false, otherModifiers: false, now: 2.1, right: true) && c.mode == .english, "右 Shift 切英文")
+    _ = c.shiftChanged(down: false, otherModifiers: false, now: 2.1, right: true)
+    check(settleShift(c, at: 2.5) && c.mode == .english, "右 Shift 切英文")
     var off = c.config
     off.shiftToggle = .off
     c.apply(off)
     check(c.mode == .chinese, "关掉 Shift 切换时回到中文")
     _ = c.shiftChanged(down: true, otherModifiers: false, now: 3.0, right: true)
-    check(!c.shiftChanged(down: false, otherModifiers: false, now: 3.1, right: true), "关掉以后单按 Shift 不切")
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 3.1, right: true) && !settleShift(c, at: 3.5),
+          "关掉以后单按 Shift 不切")
 }
 
 withConfig({ $0.autoSpace = true }) { c, client in
@@ -759,6 +808,7 @@ withConfig({ $0.autoSpace = true }) { c, client in
     check(client.committed == "第 5章abc 你好", "自动加空格", client.committed)
     _ = c.shiftChanged(down: true, otherModifiers: false, now: 1.0)
     _ = c.shiftChanged(down: false, otherModifiers: false, now: 1.1)
+    // 单按以后紧接着打字母：先切英文（#253 等双击时也一样），x 照英文处理
     check(c.handle(.char("x")) && client.committed.hasSuffix("你好 x"), "英文模式汉字后面的字母补空格", client.committed)
     check(!c.handle(.char("y")), "字母后面的字母照常交给应用")
 }
@@ -1057,7 +1107,8 @@ withConfig({ _ in }) { c, client in
     check(client.page?.aux == "工具栏：数字键选择，Esc 关闭", "工具栏的提示", client.page?.aux ?? "nil")
     check(c.handle(.char("a")) && c.openPanel == .menu && client.committed.isEmpty, "别的键吃掉，不打进应用")
     _ = c.shiftChanged(down: true, otherModifiers: false, now: 1.0)
-    check(!c.shiftChanged(down: false, otherModifiers: false, now: 1.1) && c.mode == .chinese, "工具栏开着时单按 Shift 不切")
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 1.1) && !settleShift(c, at: 1.5) && c.mode == .chinese,
+          "工具栏开着时单按 Shift 不切")
     _ = c.handle(.key(Keysym.down))
     check(client.page?.cursor == 1, "下键移光标", "\(client.page?.cursor ?? -1)")
     _ = c.handle(.key(Keysym.backspace))
@@ -1459,7 +1510,14 @@ do {
     _ = r.c.shiftChanged(down: true, otherModifiers: false, now: 1.0)
     _ = r.c.shiftChanged(down: false, otherModifiers: false, now: 1.1)
     _ = r.c.shiftChanged(down: true, otherModifiers: false, now: 2.0)
-    check(r.c.shiftChanged(down: false, otherModifiers: false, now: 2.1) && r.c.mode == .translate, "单按两次 Shift 到译")
+    _ = r.c.shiftChanged(down: false, otherModifiers: false, now: 2.1)
+    check(settleShift(r.c, at: 2.5) && r.c.mode == .translate, "单按两次 Shift 到译（隔开一秒，不算双击）")
+    // #253：双击不进「译」，也不动
+    _ = r.c.shiftChanged(down: true, otherModifiers: false, now: 3.0)
+    _ = r.c.shiftChanged(down: false, otherModifiers: false, now: 3.08)
+    _ = r.c.shiftChanged(down: true, otherModifiers: false, now: 3.25)
+    _ = r.c.shiftChanged(down: false, otherModifiers: false, now: 3.33)
+    check(!settleShift(r.c, at: 4.0) && r.c.mode == .translate, "在「译」里双击 Shift 不动")
 
     r.t.isReady = false
     tapShift(r.c)
