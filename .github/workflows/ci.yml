@@ -768,6 +768,8 @@ jobs:
           if-no-files-found: error
 
   opensuse:
+    # 走 install.sh 的 openSUSE 路径：zypper 装编译依赖、解开源码包、用词库包编译安装、加进输入法列表。
+    # 源码包是这次提交的 git archive（发版时是 tag 的源码），词库包是 data 任务打的那个。
     name: 源码安装 · openSUSE Tumbleweed
     needs: data
     runs-on: ubuntu-24.04
@@ -776,26 +778,26 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: 系统依赖
+      - name: checkout 和 install.sh 自己要的工具
         run: |
           zypper --non-interactive refresh
-          zypper --non-interactive install --no-recommends \
-            rust cargo gcc-c++ make cmake extra-cmake-modules pkgconf-pkg-config \
-            fcitx5 fcitx5-devel alsa-devel python3 python3-gobject python3-gobject-Gdk \
-            typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1 git ca-certificates file findutils
+          zypper --non-interactive install --no-recommends git ca-certificates curl tar gzip file findutils
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: data
-          path: dist/data
-      - name: 编译并安装到系统 Fcitx 目录
+          name: pkg-data
+          path: dist/assets
+      - name: install.sh（本地源码包和词库包）
         run: |
-          cargo build --release --locked -p wowtype-core
-          cmake -S fcitx5-addon -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
-          cmake --build build -j"$(nproc)"
-          cmake --install build
-          install -m755 target/release/wowtype-check target/release/wowtype-show /usr/bin/
-          install -m644 dist/data/lexicon.tsv dist/data/english.txt dist/data/words.lm dist/data/wubi86.tsv /usr/share/wowtype/
+          git config --global --add safe.directory "$PWD"
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' core/Cargo.toml)
+          git archive --prefix="WowType-$version/" -o dist/source.tar.gz HEAD
+          (cd dist/assets && sha256sum -- *.tar.gz > SHA256SUMS && cat SHA256SUMS)
+          bash install.sh --print-plan
+          WOWTYPE_YES=1 WOWTYPE_VERSION="v$version" WOWTYPE_BASE_URL="file://$PWD/dist/assets" \
+            WOWTYPE_SOURCE_URL="file://$PWD/dist/source.tar.gz" bash install.sh
+          # fcitx5 没在跑：wowtype-config --setup 直接写进 fcitx5 的输入法列表
+          grep -qx 'Name=wowtype' "$HOME/.config/fcitx5/profile"
       - name: 插件路径、依赖、真实词库和设置界面
         run: |
           addon_dir="$(pkg-config --variable=libdir Fcitx5Core)/fcitx5"
@@ -894,7 +896,7 @@ jobs:
           Ubuntu / Debian 的 deb 和 Fedora RPM 有 x86_64（amd64）和 arm64（aarch64）两种，一键脚本按本机架构选；Arch 包和 deepin 包只有 x86_64。
           Arch Linux / EndeavourOS / Garuda / CachyOS：一键脚本用 pacman 安装对应包，不替你整机升级；依赖装不上时按提示先运行 \`sudo pacman -Syu\`。
           Fedora 43 / 44 / 45：自动选择与系统版本一致的 RPM。Debian 13、Ubuntu 22.04 / 24.04 / 26.04 及明确声明兼容基线的衍生版、deepin 23 / 25 使用对应 deb。
-          Manjaro：按安装说明在本机用 makepkg 打包；openSUSE Tumbleweed：按安装说明从源码构建。
+          Manjaro：按安装说明在本机用 makepkg 打包；openSUSE Tumbleweed：同一行命令会问过后用 zypper 装编译依赖，在本机从源码编译安装。
           NixOS（x86_64、aarch64）：flake 输入写 \`github:${GITHUB_REPOSITORY}/release\`（跟正式版）或 \`github:${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}\`（锁这一版），把 \`inputs.wowtype.packages.<system>.default\` 加进 \`i18n.inputMethod.fcitx5.addons\`，见[安装说明](https://github.com/${GITHUB_REPOSITORY}/blob/main/docs/INSTALL.md#nixos--nix)。
           完整步骤见 [README](https://github.com/${GITHUB_REPOSITORY}#安装)。
 
