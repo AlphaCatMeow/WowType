@@ -534,100 +534,108 @@ ENUMS = {
     "TranslateTarget": tuple(code for _label, code, _english in TRANSLATE_LANGUAGES),
 }
 
-# 设置窗口的样式（照微信输入法：薄荷绿渐变侧栏、绿色选中块、白色圆角卡片）
-GREEN = "#0EAF76"
-STYLE_LIGHT = """
-.wt-sidebar { background-image: linear-gradient(180deg, #d9f3e6 0%, #e9f8f0 40%, #f5fbf8 100%); }
-.wt-sidebar label, .wt-sidebar image { color: #2a332f; }
+# 设置窗口的样式（照微信输入法：强调色渐变的侧栏、强调色的选中块、圆角卡片）。
+#
+# 底色和文字一律用 libadwaita 的颜色（{window_bg}、{card_fg} 这些，见 theme_css），成对跟着主题走。以前内容区、卡片的
+# 底色写死成浅色或深色、文字却跟着系统主题：KDE 把深色配色写进 ~/.config/gtk-4.0/gtk.css，libadwaita 又认成浅色时，
+# 浅色的字画在写死的浅色底上，整页淡得看不清（#255）。侧栏只在窗口底色上叠一层半透明的强调色，文字照样是窗口的字色。
+# 次要文字（行的副标题、dim-label、统计的说明）的透明度从 libadwaita 的 55% 提到 75%（侧栏 80%）：浅色下和卡片的对比度
+# 约 5.7:1（原来约 3.2:1），深色下约 7.7:1，都过 WCAG AA 的 4.5:1。
+STYLE = """
+.wt-sidebar {
+  background-color: {window_bg};
+  background-image: linear-gradient(180deg, alpha({accent}, 0.16) 0%, alpha({accent}, 0.08) 40%, alpha({accent}, 0.02) 100%);
+  color: {window_fg};
+}
 .wt-sidebar headerbar { background: transparent; box-shadow: none; }
 .wt-brand { margin: 0 0 0 16px; }
 .wt-side-top { min-height: 47px; }
 .wt-brand-name { font-weight: 800; font-size: 12.5pt; }
 .wt-nav { margin-top: 6px; }
 .wt-header-title { font-weight: 700; }
-.wt-nav, .wt-nav row { background: transparent; }
+.wt-nav, .wt-nav row { background: transparent; color: inherit; }
 .wt-nav row { border-radius: 10px; margin: 2px 12px; padding: 9px 12px; }
-.wt-nav row:hover { background: alpha(#0EAF76, 0.10); }
-.wt-nav row:selected { background: #0EAF76; color: white; }
-.wt-nav row:selected image, .wt-nav row:selected label { color: white; }
-.wt-content, .wt-content headerbar { background: #f5f7f6; box-shadow: none; }
-.wt-content list.boxed-list { border-radius: 12px; background: white; box-shadow: 0 0 0 1px #e6eae8; }
-.wt-content preferencesgroup > box > box > label.heading { color: #6b7570; }
-.wt-stats-page { background-color: #f5f7f6; }
-.wt-stats-page stackswitcher button { color: #59635e; }
-.wt-stats-page stackswitcher button:checked { color: #0EAF76; }
-.wt-stats-card { background: white; border-radius: 12px; box-shadow: 0 0 0 1px #e6eae8; padding: 18px 20px; }
-.wt-stat-label { font-size: 9pt; color: #6b7570; }
-.wt-stat-value { font-size: 21pt; font-weight: 800; color: #0EAF76; }
-.wt-stat-unit { font-size: 9pt; color: #6b7570; }
-.wt-stat-note { font-size: 8pt; color: #8a938f; }
-.wt-stats-heading { font-weight: 700; font-size: 11pt; color: #3a453f; }
-.wt-stats-note { font-size: 8pt; color: #6b7570; }
+.wt-nav row:hover { background: alpha({accent}, 0.14); }
+.wt-nav row:selected { background: {strong}; color: #ffffff; }
+.wt-nav row:selected image, .wt-nav row:selected label { color: #ffffff; }
+.wt-content, .wt-content headerbar { background: {window_bg}; color: {window_fg}; box-shadow: none; }
+.wt-content list.boxed-list { border-radius: 12px; }
+.wt-content preferencesgroup > box > box > label.heading { opacity: 0.8; }
+.wt-stats-page { background-color: {window_bg}; color: {window_fg}; }
+.wt-stats-page stackswitcher button:checked { color: {accent_text}; }
+.wt-stats-card {
+  background: {card_bg}; color: {card_fg}; border-radius: 12px; box-shadow: 0 0 0 1px alpha(currentColor, 0.12);
+  padding: 18px 20px;
+}
+.wt-stat-label { font-size: 9pt; opacity: 0.75; }
+.wt-stat-value { font-size: 21pt; font-weight: 800; color: {accent_text}; }
+.wt-stat-unit { font-size: 9pt; opacity: 0.75; }
+.wt-stat-note { font-size: 8pt; opacity: 0.75; }
+.wt-stats-heading { font-weight: 700; font-size: 11pt; }
+.wt-stats-note { font-size: 8pt; opacity: 0.75; }
 .wt-stats-line { font-size: 9pt; }
-.wt-chip { border: 1px solid #dfe4e2; border-radius: 6px; padding: 3px 7px; }
+.wt-chip { border: 1px solid alpha(currentColor, 0.15); border-radius: 6px; padding: 3px 7px; }
 .wt-key { border-radius: 5px; font-size: 8pt; padding: 0 2px; }
-.wt-key-0 { background: #eef1f0; color: #6b7570; }
-.wt-key-1 { background: alpha(#0EAF76, 0.20); color: #0d6a4a; }
-.wt-key-2 { background: alpha(#0EAF76, 0.40); color: #0d6a4a; }
-.wt-key-3 { background: alpha(#0EAF76, 0.65); color: white; }
-.wt-key-4 { background: #0EAF76; color: white; }
-.wt-swatch-0 { background: #eef1f0; }
-.wt-swatch-1 { background: alpha(#0EAF76, 0.20); }
-.wt-swatch-2 { background: alpha(#0EAF76, 0.40); }
-.wt-swatch-3 { background: alpha(#0EAF76, 0.65); }
-.wt-swatch-4 { background: #0EAF76; }
-"""
-STYLE_DARK = """
-.wt-sidebar { background-image: linear-gradient(180deg, #17332a 0%, #1c2a25 45%, #202523 100%); }
-.wt-sidebar label, .wt-sidebar image { color: #e6ece9; }
-.wt-sidebar headerbar { background: transparent; box-shadow: none; }
-.wt-brand { margin: 0 0 0 16px; }
-.wt-side-top { min-height: 47px; }
-.wt-brand-name { font-weight: 800; font-size: 12.5pt; }
-.wt-nav { margin-top: 6px; }
-.wt-header-title { font-weight: 700; }
-.wt-nav, .wt-nav row { background: transparent; }
-.wt-nav row { border-radius: 10px; margin: 2px 12px; padding: 9px 12px; }
-.wt-nav row:hover { background: alpha(#3CCB93, 0.12); }
-.wt-nav row:selected { background: #0EAF76; color: white; }
-.wt-nav row:selected image, .wt-nav row:selected label { color: white; }
-.wt-content, .wt-content headerbar { background: #1d201f; box-shadow: none; }
-.wt-content list.boxed-list { border-radius: 12px; background: #282c2a; box-shadow: 0 0 0 1px #3b4144; }
-.wt-content preferencesgroup > box > box > label.heading { color: #a3aca8; }
-.wt-stats-page { background-color: #1d201f; }
-.wt-stats-page stackswitcher button { color: #b8c1bd; }
-.wt-stats-page stackswitcher button:checked { color: #3CCB93; }
-.wt-stats-card { background: #282c2a; border-radius: 12px; box-shadow: 0 0 0 1px #3b4144; padding: 18px 20px; }
-.wt-stat-label { font-size: 9pt; color: #a3aca8; }
-.wt-stat-value { font-size: 21pt; font-weight: 800; color: #3CCB93; }
-.wt-stat-unit { font-size: 9pt; color: #a3aca8; }
-.wt-stat-note { font-size: 8pt; color: #8a938f; }
-.wt-stats-heading { font-weight: 700; font-size: 11pt; color: #e6ece9; }
-.wt-stats-note { font-size: 8pt; color: #a3aca8; }
-.wt-stats-line { font-size: 9pt; }
-.wt-chip { border: 1px solid #3b4144; border-radius: 6px; padding: 3px 7px; }
-.wt-key { border-radius: 5px; font-size: 8pt; padding: 0 2px; }
-.wt-key-0 { background: #343a37; color: #a3aca8; }
-.wt-key-1 { background: alpha(#3CCB93, 0.22); color: #bfe9d8; }
-.wt-key-2 { background: alpha(#3CCB93, 0.42); color: #e6f7ef; }
-.wt-key-3 { background: alpha(#3CCB93, 0.68); color: #10241c; }
-.wt-key-4 { background: #3CCB93; color: #10241c; }
-.wt-swatch-0 { background: #343a37; }
-.wt-swatch-1 { background: alpha(#3CCB93, 0.22); }
-.wt-swatch-2 { background: alpha(#3CCB93, 0.42); }
-.wt-swatch-3 { background: alpha(#3CCB93, 0.68); }
-.wt-swatch-4 { background: #3CCB93; }
-"""
-# 开关、单选框、主按钮换成 WowType 绿（旧版 libadwaita 用命名颜色，1.6 起用 CSS 变量）
-STYLE_ACCENT = """
-@define-color accent_bg_color #0EAF76;
-@define-color accent_color %s;
-@define-color accent_fg_color #ffffff;
+.wt-key-0 { background: alpha(currentColor, 0.07); }
+.wt-key-1 { background: alpha({accent}, 0.20); }
+.wt-key-2 { background: alpha({accent}, 0.40); }
+.wt-key-3 { background: alpha({accent}, 0.60); }
+.wt-key-4 { background: {strong}; color: #ffffff; }
+.wt-swatch-0 { background: alpha(currentColor, 0.07); }
+.wt-swatch-1 { background: alpha({accent}, 0.20); }
+.wt-swatch-2 { background: alpha({accent}, 0.40); }
+.wt-swatch-3 { background: alpha({accent}, 0.60); }
+.wt-swatch-4 { background: {strong}; }
 .wt-warning .subtitle { color: @warning_color; }
 """
-STYLE_ACCENT_VARS = """
-:root { --accent-bg-color: #0EAF76; --accent-fg-color: #ffffff; --accent-color: %s; }
+# 开关、单选框、主按钮换成强调色。上面放白字的地方用 strong（和白字的对比度至少 4.7:1）；
+# 旧版 libadwaita 用命名颜色，1.6 起用 CSS 变量，那时 --accent-color（强调色当字用）由 libadwaita 按浅色 / 深色自己算
+STYLE_ACCENT = """
+@define-color accent_bg_color {strong};
+@define-color accent_color {accent_text_hex};
+@define-color accent_fg_color #ffffff;
 """
+STYLE_ACCENT_VARS = """
+:root { --accent-bg-color: {strong}; --accent-fg-color: #ffffff; }
+"""
+# 次要文字的透明度：libadwaita 1.6 起是 --dim-opacity（高对比度时 90%），旧版直接写 opacity
+STYLE_DIM_VARS = """
+.wt-content, .wt-sidebar, .wt-stats-page { --dim-opacity: 75%; }
+.wt-sidebar { --dim-opacity: 80%; }
+"""
+STYLE_DIM_HIGH_CONTRAST = """
+@media (prefers-contrast: more) { .wt-content, .wt-sidebar, .wt-stats-page { --dim-opacity: 90%; } }
+"""
+STYLE_DIM_OLD = """
+.wt-content row label.subtitle, .wt-content .dim-label { opacity: 0.75; }
+.wt-sidebar .dim-label { opacity: 0.8; }
+"""
+# 强调色：(名字, 存盘名, 色板上的颜色, 放白字的底, 深色背景上当字用)，和 spec/config.json 的 SettingsAccent 一样
+SETTINGS_ACCENTS = [
+    ("绿色", "Green", "#0EAF76", "#0A8358", "#1AB37D"),
+]
+
+
+def theme_css(dark, accent="Green"):
+    """设置窗口的整段样式。dark 只决定旧版 libadwaita 上强调色当字用时的颜色，别的颜色都跟着主题。"""
+    _name, _value, color, strong, light = next(
+        (item for item in SETTINGS_ACCENTS if item[1] == accent), SETTINGS_ACCENTS[0])
+    new_css = (Gtk.get_major_version(), Gtk.get_minor_version()) >= (4, 16) and Adw.get_minor_version() >= 6
+    css = STYLE + STYLE_ACCENT
+    if new_css:
+        css += STYLE_ACCENT_VARS + STYLE_DIM_VARS
+        if Gtk.get_minor_version() >= 20:
+            css += STYLE_DIM_HIGH_CONTRAST
+    else:
+        css += STYLE_DIM_OLD
+    named = {name: (f"var(--{name.replace('_', '-')}-color)" if new_css else f"@{name}_color")
+             for name in ("window_bg", "window_fg", "card_bg", "card_fg")}
+    accent_text = light if dark else strong
+    values = {**named, "accent": color, "strong": strong, "accent_text_hex": accent_text,
+              "accent_text": "var(--accent-color)" if new_css else accent_text}
+    for name, value in values.items():
+        css = css.replace("{" + name + "}", value)
+    return css
 
 
 # ---------------- 打字统计
@@ -7905,16 +7913,12 @@ class SettingsApp(Adw.Application):
         css_load(self.font_css, f"window {{ font-family: {quoted}; }}")
 
     def update_style_css(self):
-        # niri 等非 GNOME 桌面不一定把 color-scheme 报给 GTK，但用户可能选了深色 GTK 主题；
-        # 主题名里带 dark 也按深色走，否则深色主题的白色文字会画在浅色卡片上，整页发灰。
+        # 底色和文字都跟着主题（theme_css），dark 只管旧版 libadwaita 上强调色当字用时的颜色。
+        # niri 等非 GNOME 桌面不一定把 color-scheme 报给 GTK，但用户可能选了深色 GTK 主题：主题名里带 dark 也按深色走。
         settings = Gtk.Settings.get_default()
         theme_name = (settings.props.gtk_theme_name or "").lower() if settings else ""
         dark = Adw.StyleManager.get_default().get_dark() or "dark" in theme_name
-        accent_text = "#3CCB93" if dark else "#0a8a5c"
-        css = (STYLE_DARK if dark else STYLE_LIGHT) + STYLE_ACCENT % accent_text
-        if (Gtk.get_major_version(), Gtk.get_minor_version()) >= (4, 16):
-            css += STYLE_ACCENT_VARS % accent_text
-        css_load(self.style_css, css)
+        css_load(self.style_css, theme_css(dark))
 
     def do_command_line(self, command_line):
         options = command_line.get_options_dict().end().unpack()
