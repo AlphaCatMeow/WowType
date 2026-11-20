@@ -138,13 +138,13 @@ def run(app):
     step("方向键", arrow_keys)
 
     def input_scheme():
-        # 「输入方案」单选：双拼才出方案和显示打的键，五笔才出它的两个开关；双拼、五笔时计算器换大写 V、工具栏灰掉
+        # 「输入方案」单选：双拼才出方案、显示打的键和简拼，五笔才出它的两个开关；双拼、五笔时计算器换大写 V、工具栏灰掉
         def visible(rows):
             return [row.get_visible() for row in rows]
         win.scheme_checks["Wubi86"].set_active(True)
         pump(0.4)
         check(win.values["InputScheme"] == "Wubi86", "没存成五笔")
-        check(visible(win.scheme_rows["Wubi86"]) == [True, True] and visible(win.scheme_rows["Shuangpin"]) == [False, False],
+        check(visible(win.scheme_rows["Wubi86"]) == [True, True] and visible(win.scheme_rows["Shuangpin"]) == [False, False, False],
               "五笔时该只出五笔的两个开关")
         check(win.calc_row.get_subtitle().startswith("五笔时打大写 V") and not win.toolbar_row.get_sensitive(),
               "五笔时计算器、工具栏的说明不对")
@@ -155,8 +155,11 @@ def run(app):
         win.scheme_rows["Wubi86"][0].set_active(True)
         win.scheme_checks["Shuangpin"].set_active(True)
         pump(0.4)
-        check(visible(win.scheme_rows["Wubi86"]) == [False, False] and visible(win.scheme_rows["Shuangpin"]) == [True, True],
-              "双拼时该只出双拼的两项")
+        check(visible(win.scheme_rows["Wubi86"]) == [False, False] and visible(win.scheme_rows["Shuangpin"]) == [True, True, True],
+              "双拼时该只出双拼的三项")
+        win.scheme_rows["Shuangpin"][2].set_active(False)
+        check(win.values["ShuangpinAbbrev"] == "False", "双拼简拼没存上")
+        win.scheme_rows["Shuangpin"][2].set_active(True)
         text = open(ns["CONFIG_FILE"], encoding="utf-8").read()
         check("InputScheme=Shuangpin" in text and "\nShuangpin=" not in text, "双拼写进文件不对")
         win.scheme_checks["Quanpin"].set_active(True)

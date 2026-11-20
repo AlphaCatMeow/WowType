@@ -168,6 +168,7 @@ void EngineHost::applyEngineSettings(WowtypeEngineHandle *engine) {
         log(L"不认识双拼方案 " + widen(config_.value("ShuangpinScheme")) + L"，用自然码");
         wowtype_engine_set_shuangpin_scheme(engine, "ziranma");
     }
+    wowtype_engine_set_shuangpin_abbrev(engine, config_.flag("ShuangpinAbbrev"));
     wowtype_engine_set_typo_correction(engine, config_.flag("TypoCorrection"));
     wowtype_engine_set_rare_ext_chars(engine, config_.flag("RareExtChars"));
     if (config_.flag("Traditional") && !conversionLoaded_) {

@@ -504,6 +504,7 @@ do {
     check(d.horizontal && d.pageSize == 9 && d.pageKeys == 1, "默认横排、每页 9 个、- = 翻页")
     check(!d.fuzzy && d.fuzzyGroups == 1 | 2 | 4 | 64 | 128 | 256 | 512 | 1024, "默认模糊音关，分组同核心默认", "\(d.fuzzyGroups)")
     check(d.typoCorrection && !d.rareExtChars && !d.shuangpin && d.shuangpinScheme == "Ziranma", "默认纠错开、双拼关（自然码）")
+    check(d.shuangpinAbbrev && !WowtypeConfig.parse("ShuangpinAbbrev=False\n").shuangpinAbbrev, "双拼简拼默认开，写 False 关")
     check(d.shiftToggle == .both && !d.traditional && !d.halfwidthPunct && d.selectKeys == .off, "默认 Shift 切换、简体、全角标点")
     check(d.pickChar && d.dateTime && d.calculator && d.emojiSuggest && d.autoSpaceFlags == 0 && d.lexicon.isEmpty,
           "默认以词定字、日期、计算器、emoji 推荐开，自动空格关，自带词库")
@@ -563,6 +564,17 @@ withConfig({ $0.inputScheme = .shuangpin }) { c, client in
     // 默认方案自然码：hao = hk
     type(c, "nihk")
     check(client.page?.texts.first == "你好", "自然码 nihk 出你好", "\(client.page?.texts ?? [])")
+}
+
+withConfig({ $0.inputScheme = .shuangpin }) { c, client in
+    // #268：双拼简拼默认开，每个键都是声母（自然码 kx 读不通）时当成只打了声母
+    type(c, "kx")
+    check(client.page?.texts.first == "开心", "自然码简拼 kx 出开心", "\(client.page?.texts ?? [])")
+}
+
+withConfig({ $0.inputScheme = .shuangpin; $0.shuangpinAbbrev = false }) { c, client in
+    type(c, "kx")
+    check(!(client.page?.texts ?? []).contains("开心"), "关掉双拼简拼后 kx 没有开心", "\(client.page?.texts ?? [])")
 }
 
 do {

@@ -440,6 +440,9 @@ private struct InputPage: View {
                 RowDivider()
                 SwitchRow(title: "编辑区显示打的键", subtitle: "不翻成全拼，中英混打时看得出打了什么",
                           isOn: $model.config.shuangpinShowKeys)
+                RowDivider()
+                SwitchRow(title: "简拼", subtitle: "只打声母也出词，sm 出「什么」；按双拼读得通的排在前面",
+                          isOn: $model.config.shuangpinAbbrev)
             }
             RowDivider()
             RadioRow(title: WowtypeConfig.InputScheme.wubi86.name,

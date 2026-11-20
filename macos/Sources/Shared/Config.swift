@@ -182,6 +182,8 @@ public struct WowtypeConfig: Equatable {
     public var shuangpinScheme = "Ziranma"
     /// 双拼时编辑区显示打的键（uivs），不翻成全拼（#122）
     public var shuangpinShowKeys = false
+    /// 双拼的简拼：每个键都是声母时也当成只打了声母（sm -> 什么，#268）
+    public var shuangpinAbbrev = true
     /// 五笔打满四码、只有一个字词时直接上屏
     public var wubiAutoCommit = true
     /// 五笔候选后面显示还要打的码
@@ -359,7 +361,7 @@ public struct WowtypeConfig: Equatable {
         "FuzzyAn", "FuzzyEn", "FuzzyIn", "FuzzyIan", "FuzzyUan", "FuzzyUn",
         "FuzzyAnAi", "FuzzyHuangWang", "FuzzyUnIong", "FuzzyEngOng",
         "TypoCorrection", "RareExtChars", "InputScheme", "ShuangpinScheme", "ShuangpinShowKeys",
-        "WubiAutoCommit", "WubiHint", "ShiftToggle", "InitialMode",
+        "ShuangpinAbbrev", "WubiAutoCommit", "WubiHint", "ShiftToggle", "InitialMode",
         "Traditional",
         "PunctuationStyle", "AutoPairPunct", "DateTime", "Calculator", "EmojiSuggest", "AutoSpace", "AutoSpaceLetters",
         "AutoSpaceDigits", "Lexicon", "Toolbar", "ClipboardHistory", "Voice", "VoiceKey", "VoiceCopy", "EmojiKey",
@@ -378,7 +380,7 @@ public struct WowtypeConfig: Equatable {
         "FuzzyUn": \.fuzzyUn, "FuzzyAnAi": \.fuzzyAnAi, "FuzzyHuangWang": \.fuzzyHuangWang,
         "FuzzyUnIong": \.fuzzyUnIong, "FuzzyEngOng": \.fuzzyEngOng,
         "TypoCorrection": \.typoCorrection, "RareExtChars": \.rareExtChars,
-        "ShuangpinShowKeys": \.shuangpinShowKeys, "WubiAutoCommit": \.wubiAutoCommit, "WubiHint": \.wubiHint,
+        "ShuangpinShowKeys": \.shuangpinShowKeys, "ShuangpinAbbrev": \.shuangpinAbbrev, "WubiAutoCommit": \.wubiAutoCommit, "WubiHint": \.wubiHint,
         "Traditional": \.traditional, "AutoPairPunct": \.autoPairPunct, "PickChar": \.pickChar, "Association": \.association,
         "DateTime": \.dateTime, "Calculator": \.calculator, "EmojiSuggest": \.emojiSuggest,
         "AutoSpace": \.autoSpace, "AutoSpaceLetters": \.autoSpaceLetters, "AutoSpaceDigits": \.autoSpaceDigits,
@@ -662,6 +664,8 @@ public struct WowtypeConfig: Equatable {
         ShuangpinScheme=\(d.shuangpinScheme)
         # 双拼时编辑区显示打的键（不翻成全拼）
         ShuangpinShowKeys=\(b(d.shuangpinShowKeys))
+        # 双拼简拼：只打声母也出词（sm 出「什么」），按双拼读得通的排在前面
+        ShuangpinAbbrev=\(b(d.shuangpinAbbrev))
         # 五笔打满四码、只有一个字词时直接上屏
         WubiAutoCommit=\(b(d.wubiAutoCommit))
         # 五笔候选后面显示还要打的码

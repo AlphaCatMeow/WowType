@@ -1106,6 +1106,7 @@ void WowtypeEngine::applyConfig() {
     toolbar_ = envOr("WOWTYPE_TOOLBAR", *config_.toolbar);
     clipboardHistory_ = envOr("WOWTYPE_CLIPBOARD_HISTORY", *config_.clipboardHistory);
     shuangpinShowKeys_ = *config_.shuangpinShowKeys;
+    shuangpinAbbrev_ = envOr("WOWTYPE_SHUANGPIN_ABBREV", *config_.shuangpinAbbrev);
     if (!clipboardHistory_) {
         wowtype_clipboard_clear();
     }
@@ -1217,7 +1218,7 @@ void WowtypeEngine::applyConfig() {
     WLOG_I() << "WowType: 设置 " << (horizontal_ ? "横排" : "竖排")
              << (arrowKeys_ == WowtypeArrowKeys::Caret ? " 左右键移光标" : "") << " 每页" << pageSize_
              << " 模糊音=" << fuzzy_ << "(" << fuzzyGroups_ << ")" << " 纠错=" << typo_ << " 扩展区生僻字=" << rareExt_ << " 双拼=" << shuangpin_
-             << "(" << shuangpinScheme_ << ")" << " 五笔=" << wubi_ << " Shift切换=" << static_cast<int>(shiftToggle_)
+             << "(" << shuangpinScheme_ << (shuangpinAbbrev_ ? "，简拼" : "") << ")" << " 五笔=" << wubi_ << " Shift切换=" << static_cast<int>(shiftToggle_)
              << " 繁体=" << traditional_ << " 语音键=" << voiceKey_.toString()
              << " emoji推荐=" << emojiSuggest_ << " 表情键=" << emojiKey_.toString()
              << " 中英键=" << toggleKey_.toString() << " 互译键=" << translateModeKey_.toString()
@@ -1243,6 +1244,7 @@ void WowtypeEngine::applyCoreSettings() {
         WLOG_W() << "WowType: 不认识双拼方案 " << shuangpinScheme_ << "，用自然码";
         wowtype_engine_set_shuangpin_scheme(core_, "ziranma");
     }
+    wowtype_engine_set_shuangpin_abbrev(core_, shuangpinAbbrev_ ? 1 : 0);
     wowtype_engine_set_typo_correction(core_, typo_ ? 1 : 0);
     wowtype_engine_set_rare_ext_chars(core_, rareExt_ ? 1 : 0);
     if (traditional_ && !conversionLoaded_) {
