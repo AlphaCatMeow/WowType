@@ -129,6 +129,12 @@ fn main() {
         load,
         lexicon.len() as f64 / load.as_secs_f64() / 10_000.0
     );
+    let (heap, snapshot) = lexicon.memory_usage();
+    println!(
+        "词库内存：堆 {:.1} MB，快照 {:.1} MB",
+        heap as f64 / 1048576.0,
+        snapshot as f64 / 1048576.0
+    );
 
     let lm: Arc<dyn wowtype_core::LanguageModel> = match &lm_path {
         Some(path) => {

@@ -414,7 +414,7 @@ private struct InputPage: View {
     var body: some View {
         PrefGroup("词库", info: "换词库几秒后生效，自定义词和学到的习惯都会保留。\n\n"
                   + "雾凇拼音在安装包里，跟着 WowType 一起更新。\n\n"
-                  + "万象拼音词更多，比雾凇多占约 300 MB 内存；从 amzxyz/rime_wanxiang（CC BY 4.0）转换，只用了它的词条。"
+                  + "万象拼音词更多，比雾凇多占约 60 MB 内存；从 amzxyz/rime_wanxiang（CC BY 4.0）转换，只用了它的词条。"
                   + "装在 ~/Library/Application Support/WowType/dicts/wanxiang。",
                   links: [("万象拼音项目主页", URL(string: "https://github.com/amzxyz/rime_wanxiang")!)]) {
             RadioRow(title: "雾凇拼音（默认）", subtitle: "在安装包里，不用下载", selected: model.lexiconKind == .rimeIce) {
