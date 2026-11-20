@@ -577,6 +577,31 @@ def check_windows(spec, exe):
          [(v["name"], v["value"]) for v in by_key["SettingsTheme"]["values"]], "windows：设置窗口主题的名字")
     same([(a["name"], a["value"], a["color"], a["strong"], a["light"]) for a in look["accents"]],
          accent_rows(by_key["SettingsAccent"]), "windows：强调色的表（look::accents）")
+    # 设置窗口「翻译」页的「翻译引擎」（windows/src/common/translate_engine）：选项、说明、哔哩哔哩的地址和模型，
+    # 和按文件推出来的引擎都和设置界面的一样
+    check("windows" in spec["translateEngines"]["platforms"], "规格：translateEngines 的 platforms 要有 windows")
+    tr = run_dump(exe, "--translate")
+    same([(e["id"], e["name"], e["note"]) for e in tr["engines"]],
+         [(e["id"], e["name"], e["note"]) for e in spec["translateEngines"]["items"]], "windows：翻译引擎的选项和说明")
+    bili = spec["translateBilibili"]
+    same({k: tr["bilibili"][k] for k in ("url", "host", "modelPrefix", "default", "privacy")},
+         {k: bili[k] for k in ("url", "host", "modelPrefix", "default", "privacy")},
+         "windows：哔哩哔哩的地址、主机、模型前缀、默认模型、隐私说明")
+    same([(m["id"], m["name"]) for m in tr["bilibili"]["models"]], [(m["id"], m["name"]) for m in bili["models"]],
+         "windows：哔哩哔哩的模型")
+    for values, want in (({"TranslateLocal": "True", "TranslateBaseUrl": bili["url"]}, "local"),
+                         ({"TranslateLocal": "False", "TranslateBaseUrl": bili["url"]}, "bilibili"),
+                         ({"TranslateLocal": "False", "TranslateBaseUrl": bili["url"] + "/chat/completions"}, "bilibili"),
+                         ({"TranslateLocal": "False",
+                           "TranslateBaseUrl": "HTTPS://Index-Translate.Bilibili.com/v1/chat/completions"}, "bilibili"),
+                         ({"TranslateLocal": "False",
+                           "TranslateBaseUrl": "https://index-translate.bilibili.com.example.org/v1"}, "custom"),
+                         ({"TranslateLocal": "False", "TranslateBaseUrl": "https://api.deepseek.com/v1"}, "custom"),
+                         ({"TranslateLocal": "False", "TranslateBaseUrl": ""}, "custom"),
+                         ({"TranslateBaseUrl": bili["url"]}, "bilibili"),
+                         ({}, "local")):
+        same(run_dump(exe, "--engine", *(f"{k}={v}" for k, v in values.items()))["engine"], want,
+             f"windows：{values} 是「{want}」")
     policy = spec["readRules"]["outOfRange"]["windows"]
     for s in mine:
         if s["type"] == "int":
