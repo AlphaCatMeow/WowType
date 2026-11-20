@@ -125,6 +125,12 @@ curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/main/install.sh |
 > 想先看看脚本做了什么：[install.sh](install.sh)，或者 `bash install.sh --print-plan` 只看会装哪个包、不动系统。
 > 不想让它改输入法框架或重启 fcitx5，可以加环境变量，例如 `curl -fsSL … | WOWTYPE_NO_IM_CONFIG=1 WOWTYPE_NO_RESTART=1 bash`。
 >
+> **连不上 GitHub**（报 `curl: (35) Recv failure: 连接被对方重置`、`Connection reset by peer` 或超时，不是链接失效）：
+> 脚本可以从 jsDelivr 下载：`curl -fsSL https://cdn.jsdelivr.net/gh/Gloridust/WowType@main/install.sh | bash`。
+> 安装包也下不来时，可以自己选一个 GitHub 下载代理，加上 `WOWTYPE_GITHUB_MIRROR=https://<代理地址>/`：
+> 代理是第三方服务，WowType 不提供也不推荐具体哪个；安装包仍按 `SHA256SUMS` 校验。
+> 详见[安装说明的「连不上 GitHub」](docs/INSTALL.md#连不上-github)。
+>
 > GNOME（Ubuntu 默认桌面）在 Wayland 下，建议再装 GNOME Shell 扩展
 > [Input Method Panel](https://extensions.gnome.org/extension/261/kimpanel/)，
 > 活动概览的搜索框等地方才能显示候选框。
