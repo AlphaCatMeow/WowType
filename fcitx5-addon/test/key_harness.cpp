@@ -625,7 +625,7 @@ void runCases(Instance &instance) {
         }
     }
     check(layout() == CandidateLayoutHint::Vertical && !grid.empty() && firstPage.size() >= 8 &&
-              grid[0].rfind("\uFF11\u3014" + firstPage[0] + "\u3015", 0) == 0 &&
+              grid[0].rfind("\uFF11\u3010" + firstPage[0] + "\u3011", 0) == 0 &&
               grid[0].find(firstPage[5]) != std::string::npos &&
               grid[0].find(firstPage[6]) == std::string::npos,
           "下键展开：第一行 6 个、光标框住第一个：" + join(grid));
@@ -672,7 +672,7 @@ void runCases(Instance &instance) {
         const auto screen = page(ic.get());
         bool framed = false;
         for (const auto &row : screen) {
-            framed = framed || row.find("\u3014") != std::string::npos;
+            framed = framed || row.find("\u3010") != std::string::npos;
         }
         check(common() && common()->cursorIndex() >= 0 && common()->currentPage() == 1 && framed,
               "展开后下移 7 行：面板翻到第二屏，看得到光标：" + join(screen));
@@ -771,11 +771,11 @@ void runCases(Instance &instance) {
     }
     // 展开面板上点翻页按钮、滚滚轮（直接调列表的 next / prev）：会话的光标跟着到那一屏，
     // 看到的这一屏上框着的词就是空格选的，数字选的是光标那一行的
-    /// 一行里〔〕框着的词；没有框是空的
+    /// 一行里【】框着的词；没有框是空的
     auto framedIn = [](const std::vector<std::string> &rows) {
         for (const auto &row : rows) {
-            const auto open = row.find("\u3014");
-            const auto close = row.find("\u3015");
+            const auto open = row.find("\u3010");
+            const auto close = row.find("\u3011");
             if (open != std::string::npos && close != std::string::npos && close > open) {
                 return row.substr(open + 3, close - open - 3);
             }
@@ -786,7 +786,7 @@ void runCases(Instance &instance) {
     auto labelledIn = [](const std::vector<std::string> &rows, const std::string &label) {
         for (const auto &row : rows) {
             auto at = row.find(label + "\u3000");
-            if (row.find("\u3014") == std::string::npos || at == std::string::npos) {
+            if (row.find("\u3010") == std::string::npos || at == std::string::npos) {
                 continue;
             }
             at += label.size() + 3;
@@ -1212,7 +1212,7 @@ void runCases(Instance &instance) {
     // 上面刚选过 😊：最近用过的排最前。第二个是什么看前面的用例选过什么
     // （词库不同，前面翻页、展开时可能选到 🔟 这类按键 emoji；什么都没选过就是全部 emoji 的 😀）
     const std::string recentGrid = page(ic.get()).empty() ? std::string() : page(ic.get())[0];
-    check(recentGrid.find("〔😊〕") != std::string::npos && recentGrid.find("〔😊〕") < recentGrid.find("２"),
+    check(recentGrid.find("【😊】") != std::string::npos && recentGrid.find("【😊】") < recentGrid.find("２"),
           "最近用过的排最前：" + recentGrid);
     std::string recentSecond;
     if (auto at = recentGrid.find("２　"); at != std::string::npos) {

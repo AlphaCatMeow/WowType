@@ -1635,8 +1635,17 @@ void WowtypeEngine::sendAppKeys(fcitx::InputContext *ic, fcitx::KeySym sym, int 
     if (!ic || count <= 0) {
         return;
     }
-    // 只给 keysym、键码留 0（不同键盘、前端的键码不一样）：D-Bus 前端只传 keysym，要键码的前端按 keysym 找
-    const fcitx::Key key(sym);
+    // 带上 XKB 键码（evdev 的扫描码 + 8，Linux 上各种键盘布局都一样）：Electron、XWayland 这些前端
+    // 不认键码为 0 的键，挪光标、删字都没反应（#259）。D-Bus 前端只看 keysym，带不带都一样
+    int code = 0;
+    switch (sym) {
+    case FcitxKey_BackSpace: code = 22; break;
+    case FcitxKey_Left: code = 113; break;
+    case FcitxKey_Right: code = 114; break;
+    case FcitxKey_Delete: code = 119; break;
+    default: break;
+    }
+    const fcitx::Key key(sym, fcitx::KeyStates(), code);
     for (int i = 0; i < count; ++i) {
         ic->forwardKey(key, false);
         ic->forwardKey(key, true);
@@ -2065,7 +2074,8 @@ void WowtypeEngine::fillAssociation(fcitx::InputPanel &panel, WowtypeState *stat
 
 /// 展开的候选面板：竖排列表的每一项是一行（kGridCols 个词），一屏 kGridRows 行。
 ///
-/// 照微信输入法的样子：光标所在行标 １–６，光标处的词用〔〕框起来；同一屏里各列
+/// 照微信输入法的样子：光标所在行标 １–６，光标处的词用【】框起来（GNOME 的 kimpanel 只会把整行涂绿，
+/// 以前的〔〕太细，一行汉字里找不到光标在哪个词上，#270）；同一屏里各列
 /// 按最宽的词补齐，这样上下键在同一列里走。classic UI 和 kimpanel 都只会画一行或
 /// 一列，画不了真正的网格，所以用全角字符拼出来。
 void WowtypeEngine::fillGridPanel(fcitx::InputContext *ic, WowtypeState *state) {
@@ -2097,9 +2107,9 @@ void WowtypeEngine::fillGridPanel(fcitx::InputContext *ic, WowtypeState *state) 
                 const std::size_t index = r * kGridCols + c;
                 const bool here = index == state->gridCursor_;
                 const fcitx::Text shown = shownCandidate(all[index]);
-                std::string after = here ? "\u3015" : "";
+                std::string after = here ? "\u3011" : "";
                 padTo(after, displayWidth(shown.toString()), widths[c]);
-                line.append(std::string(r == cursorRow ? kLabels[c] : "\u3000") + (here ? "\u3014" : "\u3000"));
+                line.append(std::string(r == cursorRow ? kLabels[c] : "\u3000") + (here ? "\u3010" : "\u3000"));
                 for (std::size_t i = 0; i < shown.size(); ++i) {
                     line.append(shown.stringAt(i), shown.formatAt(i));
                 }

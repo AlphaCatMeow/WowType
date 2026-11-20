@@ -677,6 +677,9 @@ pub struct Session<'e> {
     /// 会话自己记的上一个字：上屏的最后一个字，或者交给应用的数字、标点。
     /// 外壳读不到周围文字时，标点看它（3.14 的点）。
     last_char: Option<char>,
+    /// 上一个键是交给应用的退格：那时外壳报的光标前的字（#260）。应用删字、再报新的周围文字是异步的，
+    /// 紧接着的下一个键报来的要是还和退格时一样，多半还是删之前的（删掉的那个数字），不能当真。
+    backspace_prev: Option<Option<char>>,
     /// 这次按键时外壳给的输入框情况（[`key_hints`]）。
     hints: u32,
     mode: Mode,
@@ -749,6 +752,7 @@ impl Default for Session<'_> {
             quotes: [false; 2],
             prev_char: None,
             last_char: None,
+            backspace_prev: None,
             hints: 0,
             mode: Mode::Chinese,
             mode_changed: false,
@@ -858,6 +862,23 @@ impl<'e> Session<'e> {
         if key.release {
             return self.frame(false);
         }
+        // 退格交给了应用以后，下一个键报来的光标前的字还和退格时一样：多半是应用还没报新的（删掉的数字还在），
+        // 当作不知道（#260：删掉数字以后标点还是半角）。连按两个一样的字再删一个（11 删成 1）也会这样当，
+        // 只是那一下标点按汉字后面的算，比一直半角好
+        let stale = !is_modifier_keysym(key.keysym)
+            && self.backspace_prev.take().is_some_and(|before| key.prev_char.is_some() && before == key.prev_char);
+        let key = &if stale {
+            Key {
+                prev_char: None,
+                hints: key.hints & !key_hints::SURROUNDING,
+                ..*key
+            }
+        } else {
+            *key
+        };
+        if stale {
+            self.last_char = None;
+        }
         self.prev_char = key.prev_char;
         self.next_char = key.next_char;
         self.hints = key.hints;
@@ -889,6 +910,10 @@ impl<'e> Session<'e> {
             }
             if !self.composing() {
                 self.set_context("");
+            }
+            if key.keysym == keysym::BACKSPACE && !self.composing() {
+                self.backspace_prev = Some(key.prev_char);
+                self.last_char = None;
             }
             self.pair_key_passed(key);
         }
@@ -1122,6 +1147,11 @@ impl<'e> Session<'e> {
         if (u32::from(b'a')..=u32::from(b'z')).contains(&sym)
             || (u32::from(b'A')..=u32::from(b'Z')).contains(&sym)
         {
+            // 开着大写锁定、没在打字时，字母照英文直接上屏（API、HTTP），不进拼音（#271、#264，和主流输入法一样）。
+            // 打字途中照旧进编辑区；Shift + 字母（Hello、iPhone）不受影响
+            if key.modifiers & modifier::CAPS != 0 && !self.composing() {
+                return self.english_key(key);
+            }
             let c = char::from(sym as u8);
             if self.wubi() && !self.temp_pinyin() {
                 self.wubi_letter(c);
@@ -3541,6 +3571,51 @@ mod tests {
         };
         assert!(!session.key(&release).handled);
         assert_eq!(session.input(), "ni");
+    }
+
+    #[test]
+    fn caps_lock_letters_go_straight_to_the_app() {
+        // #271、#264：开着大写锁定打 API，不进拼音编辑区，字母交给应用（或者自己上屏）
+        let mut session = Session::new();
+        for c in ['A', 'P', 'I'] {
+            let caps = Key {
+                keysym: c as u32,
+                modifiers: modifier::CAPS,
+                ..Key::default()
+            };
+            let frame = session.key(&caps);
+            assert!(!session.composing(), "{c} 进了编辑区");
+            assert!(!frame.handled || frame.commit.as_deref() == Some(&c.to_string()[..]), "{c}: {frame:?}");
+        }
+        // 打字途中照旧进编辑区；没开大写锁定时 Shift + 字母也照旧（Hello）
+        let mut session = typed("ni");
+        let caps_a = Key { keysym: u32::from(b'A'), modifiers: modifier::CAPS, ..Key::default() };
+        session.key(&caps_a);
+        assert_eq!(session.input(), "niA");
+        assert_eq!(typed("Hello").input(), "Hello");
+    }
+
+    #[test]
+    fn deleted_digit_does_not_keep_punctuation_half_width() {
+        // #260：打了 1、退格删掉，应用还没报新的周围文字（还说光标前是 1），接着打逗号要是中文逗号
+        let with_prev = |keysym: u32, prev: char| Key {
+            keysym,
+            prev_char: Some(prev),
+            hints: key_hints::SURROUNDING,
+            ..Key::default()
+        };
+        let mut session = Session::new();
+        session.key(&with_prev(u32::from(b'1'), '好'));
+        assert!(!session.key(&with_prev(keysym::BACKSPACE, '1')).handled);
+        let frame = session.key(&with_prev(u32::from(b','), '1'));
+        assert_eq!(frame.commit.as_deref(), Some("，"), "{frame:?}");
+        // 应用报了新的（光标前是「好」）：照常中文标点；真的在数字后面（没按退格）：照旧半角
+        let mut session = Session::new();
+        session.key(&with_prev(keysym::BACKSPACE, '1'));
+        assert_eq!(session.key(&with_prev(u32::from(b','), '好')).commit.as_deref(), Some("，"));
+        let mut session = Session::new();
+        let frame = session.key(&with_prev(u32::from(b','), '1'));
+        assert!(!frame.handled || frame.commit.as_deref() == Some(","), "{frame:?}");
     }
 
     #[test]

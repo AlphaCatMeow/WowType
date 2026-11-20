@@ -2787,9 +2787,15 @@ fn fewest_exact_syllables(candidates: &[Candidate]) -> Option<usize> {
 }
 
 /// 用户在设置里加的自定义词排最前（语言模型不认识它们，光靠词频排不上来）。
+///
+/// 纠错读出来的不提（#269）：导入的自定义词里常有词库本来就有的常用词（ji shi 及时），
+/// 打 `nishi` 时 n 当成按错的 j 读出「及时」，以前也被提到第一，把照着打的「你是」顶下去了。
+/// 纠错只能加候选，不能盖过照着打的（docs/ENGINE-INVARIANTS.md）。
 impl Engine {
     fn promote_custom(&self, candidates: &mut [Candidate]) {
-        let custom = |c: &Candidate| c.words.len() == 1 && self.lexicon.is_custom(&c.text);
+        let custom = |c: &Candidate| {
+            c.words.len() == 1 && c.features.typo_count == 0.0 && self.lexicon.is_custom(&c.text)
+        };
         if candidates.iter().any(custom) {
             // 稳定排序：自定义词之间、其余候选之间都保持原来的顺序
             candidates.sort_by_key(|c| !custom(c));
@@ -4215,6 +4221,22 @@ mod tests {
             e.input("sangdian").iter().any(|c| c.text == "商店"),
             "sang dian 应当匹配 shang dian"
         );
+    }
+
+    #[test]
+    fn typo_corrected_custom_word_is_not_promoted() {
+        // #269：导入的自定义词里有词库本来就有的「及时」，打 nishi（n 和 j 相邻）不能把它顶到第一
+        let e = engine(concat!(
+            "ni shi\t你是\t300000\n",
+            "ji shi\t及时\t900000\n",
+            "ni\t你\t9000000\n",
+            "shi\t是\t9000000\n",
+        ));
+        e.lexicon().set_custom_tsv("ji shi\t及时\n");
+        let texts: Vec<String> = e.input("nishi").into_iter().map(|c| c.text).collect();
+        assert_eq!(texts[0], "你是", "{texts:?}");
+        // 照着打就是自定义词时照常排第一
+        assert_eq!(e.input("jishi")[0].text, "及时");
     }
 
     #[test]
