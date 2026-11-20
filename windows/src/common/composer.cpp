@@ -270,6 +270,15 @@ void Composer::applyInitialMode() {
     }
 }
 
+void Composer::applyWindowMode() {
+    if (config_.is("WindowMode", "English")) {
+        switchMode(canToggleMode() ? Mode::English : Mode::Chinese);
+    } else if (config_.is("WindowMode", "Chinese")) {
+        switchMode(Mode::Chinese);
+    }
+    // Same（和认不出的值一样按默认）：不动，模式照旧
+}
+
 void Composer::commitComposition() {
     closeTool();
     if (hasPendingText()) {

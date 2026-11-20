@@ -137,6 +137,7 @@ const std::vector<SettingDef> &settingDefs() {
         {"WubiHint", T::Bool, "True"},
         {"ShiftToggle", T::Enum, "Both", 0, 0, {"Both", "Left", "Right", "Off"}},
         {"InitialMode", T::Enum, "Chinese", 0, 0, {"Chinese", "English", "Last"}},
+        {"WindowMode", T::Enum, "Same", 0, 0, {"Same", "Chinese", "English"}},
         {"Traditional", T::Bool, "False"},
         {"PunctuationStyle", T::Enum, "Fullwidth", 0, 0, {"Fullwidth", "Halfwidth"}},
         {"SelectKeys", T::Enum, "Off", 0, 0, {"Off", "Semicolon", "SemicolonQuote"}},
