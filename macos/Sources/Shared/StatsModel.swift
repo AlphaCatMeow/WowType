@@ -297,12 +297,15 @@ public enum StatsKeyboard {
 
     public static var rows: [[StatsKey]] {
         var rows: [[StatsKey]] = []
-        rows.append([StatsKey("Escape", "Esc", 1), StatsKey(nil, "", 1)]
-            + (1...4).map { StatsKey("F\($0)", "F\($0)", 1) }
-            + [StatsKey(nil, "", 0.5)]
-            + (5...8).map { StatsKey("F\($0)", "F\($0)", 1) }
-            + [StatsKey(nil, "", 0.5)]
-            + (9...12).map { StatsKey("F\($0)", "F\($0)", 1) })
+        // 分几步拼：一长串 + 在 Linux 的 swiftc 上类型推断超时
+        let fkeys: (ClosedRange<Int>) -> [StatsKey] = { range in range.map { StatsKey("F\($0)", "F\($0)", 1) } }
+        var top: [StatsKey] = [StatsKey("Escape", "Esc", 1), StatsKey(nil, "", 1)]
+        top += fkeys(1...4)
+        top.append(StatsKey(nil, "", 0.5))
+        top += fkeys(5...8)
+        top.append(StatsKey(nil, "", 0.5))
+        top += fkeys(9...12)
+        rows.append(top)
         rows.append([StatsKey("Backquote", "`", 1)]
             + (1...9).map { StatsKey("Digit\($0)", "\($0)", 1) }
             + [StatsKey("Digit0", "0", 1), StatsKey("Minus", "-", 1),
