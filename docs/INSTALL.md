@@ -58,6 +58,33 @@ WOWTYPE_NO_IM_CONFIG=1 WOWTYPE_NO_RESTART=1 bash install.sh
 `WOWTYPE_REPO=owner/repo` 可选择其他发布仓库；系统和版本的匹配规则仍然生效。
 对应发行版的 Release 资产不存在时，请从本仓库源码构建。
 
+### 连不上 GitHub
+
+在中国大陆等地，`raw.githubusercontent.com` 和 Release 下载常被重置或超时，第一行命令就会报
+`curl: (35) Recv failure: 连接被对方重置`、`Connection reset by peer` 或超时。这不是链接失效，是连不上 GitHub。
+
+脚本本身可以从 jsDelivr 下载（它镜像本仓库的文件，`@main` 可能比 GitHub 晚几个小时）：
+
+```bash
+curl -fsSL https://cdn.jsdelivr.net/gh/Gloridust/WowType@main/install.sh | bash
+```
+
+安装包、`SHA256SUMS`、查最新版本和 openSUSE 的源码包仍从 GitHub 下载。这些也连不上时，可以自己选一个
+GitHub 下载代理，用 `WOWTYPE_GITHUB_MIRROR` 告诉脚本：
+
+```bash
+curl -fsSL https://cdn.jsdelivr.net/gh/Gloridust/WowType@main/install.sh | WOWTYPE_GITHUB_MIRROR=https://<代理地址>/ bash
+```
+
+- 代理要支持「代理地址 + 完整 GitHub 地址」这种用法，例如 `https://<代理地址>/https://github.com/...`。
+  脚本给 github.com、raw.githubusercontent.com 和 Release 文件的地址都加上这个前缀，别的地址不动。
+  WowType 不提供、也不推荐具体的代理：这类服务都是第三方的，能看到你下载了什么，也可能停用。用哪个由你决定。
+- 设了代理，脚本会先说一句下载走第三方代理。`SHA256SUMS` 仍然先直接从 GitHub 下载，安装包按它校验；
+  直连失败才改从代理下载，这时脚本会说明：校验值也来自代理，只能发现下载损坏，发现不了代理改包。
+- 没设代理时下载遇到连接错误，脚本会提示上面这两种办法。
+- 用 `bash install.sh --print-plan` 可以确认代理前缀（会显示「GitHub 代理」一行）。
+- 只对 install.sh 有效：设置界面里的检查更新和 macOS 的检查更新不认这个变量，还是直连 GitHub。
+
 ## 从源码构建
 
 ### 1. 安装本发行版的依赖
