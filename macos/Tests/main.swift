@@ -842,6 +842,7 @@ do {
     all.translateLlamaServer = "/opt/homebrew/bin/llama-server"
     all.translateIdleMinutes = 30
     all.initialMode = .last
+    all.windowMode = .english
     check(WowtypeConfig.keys.allSatisfy { all.value(forKey: $0) != d.value(forKey: $0) }, "每一项都改了",
           "\(WowtypeConfig.keys.filter { all.value(forKey: $0) == d.value(forKey: $0) })")
     for (name, base) in [("模板", nil), ("空文件", ""), ("只有注释", "# 我的设置\n")] as [(String, String?)] {
@@ -2241,6 +2242,54 @@ withConfig({ $0.initialMode = .english; $0.shiftToggle = .off }) { c, _ in
 withConfig({ $0.initialMode = .english; $0.shiftToggle = .off; $0.toggleKey = Shortcut(name: "Control+Shift+space") }) { c, _ in
     c.applyInitialMode()
     check(c.mode == .english, "关了 Shift 切换、另设了切换键：照样进英文")
+}
+
+// MARK: 换到新窗口、新应用时（WindowMode，#254）
+
+do {
+    check(WowtypeConfig().windowMode == .same, "换窗口默认和上次一样")
+    check(WowtypeConfig.parse("WindowMode=English\n").windowMode == .english
+          && WowtypeConfig.parse("WindowMode=Chinese\n").windowMode == .chinese, "WindowMode 读得出来")
+    check(WowtypeConfig.parse("WindowMode=english\n").windowMode == .same, "WindowMode 大小写不对用默认")
+    var english = WowtypeConfig()
+    english.windowMode = .english
+    check(WowtypeConfig.parse(english.serialized(into: nil)).windowMode == .english, "WindowMode 写进文件再读一样")
+}
+
+do {
+    var focus = WindowFocus()
+    check(focus.moved(to: WindowFocus.key(app: "com.apple.TextEdit", window: 1)), "第一次用到算换了窗口")
+    check(!focus.moved(to: WindowFocus.key(app: "com.apple.TextEdit", window: 1)), "同一个窗口里换输入框不算")
+    check(focus.moved(to: WindowFocus.key(app: "com.apple.TextEdit", window: 2)), "同一个应用换了窗口算")
+    check(focus.moved(to: WindowFocus.key(app: "com.apple.Terminal", window: nil)), "换了应用算（问不到窗口号）")
+    check(!focus.moved(to: WindowFocus.key(app: "com.apple.Terminal", window: nil)), "问不到窗口号时同一个应用不算")
+}
+
+withConfig({ $0.windowMode = .english }) { c, _ in
+    c.applyWindowMode()
+    check(c.mode == .english, "WindowMode=English：换窗口后是英文")
+    tapShift(c)
+    check(c.mode == .chinese, "单按 Shift 还是能切回中文")
+    c.applyWindowMode()
+    check(c.mode == .english, "再换窗口又回到默认的英文")
+}
+
+withConfig({ $0.windowMode = .chinese }) { c, client in
+    tapShift(c)
+    check(c.mode == .english, "先切到英文")
+    c.applyWindowMode()
+    check(c.mode == .chinese && client.committed.isEmpty, "WindowMode=Chinese：换窗口后是中文")
+}
+
+withConfig({ _ in }) { c, _ in
+    tapShift(c)
+    c.applyWindowMode()
+    check(c.mode == .english, "WindowMode 默认 Same：换窗口还是英文")
+}
+
+withConfig({ $0.windowMode = .english; $0.shiftToggle = .off }) { c, _ in
+    c.applyWindowMode()
+    check(c.mode == .chinese, "WindowMode=English 但切不回中文：总是中文")
 }
 
 // MARK: 外部命令切模式（WowType --mode，和 Linux 的 org.wowtype.Input SetMode 一样）

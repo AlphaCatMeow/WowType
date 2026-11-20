@@ -23,6 +23,20 @@ namespace wowtype::tsf {
 
 namespace {
 
+/// 输入框所在的顶层窗口（WindowMode 看换没换窗口）：先问文档的视图，问不到看这个线程的键盘焦点。
+HWND topLevelWindow(ITfDocumentMgr *focus) {
+    HWND window = nullptr;
+    ComPtr<ITfContext> context;
+    ComPtr<ITfContextView> view;
+    if (focus && SUCCEEDED(focus->GetTop(&context)) && context && SUCCEEDED(context->GetActiveView(&view)) && view) {
+        view->GetWnd(&window);
+    }
+    if (!window) {
+        window = GetFocus();
+    }
+    return window ? GetAncestor(window, GA_ROOT) : nullptr;
+}
+
 constexpr UINT_PTR kTranslateTimer = 1;
 constexpr UINT_PTR kModeHintTimer = 2;
 constexpr UINT_PTR kVoiceTimer = 3;
@@ -288,6 +302,8 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr *threadMgr, TfClientId clientI
     if (SUCCEEDED(threadMgr_->GetFocus(&focus)) && focus) {
         focus->GetTop(&focusContext_);
     }
+    // 记下现在的窗口：切到 WowType 的这一下按上面的 InitialMode，之后换了窗口、应用再按 WindowMode（#254）
+    lastWindow_ = topLevelWindow(focus.Get());
     // 剪贴板历史（设置里打开时）：切到输入法时看一眼（和另两端一样）
     host.sampleClipboard();
     // 每天最多查一次有没有新版本（后台，有新版时任务栏菜单里多一项），和 macOS 一样
@@ -1047,11 +1063,38 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr *focus, ITfDocumentMgr *) {
     pendingDown_.reset();
     handledUp_.reset();
     EngineHost::instance().sampleClipboard();
+    // 换到别的窗口：设了「默认中/英文」就定一次（WindowMode，#254；同一个窗口里换输入框不算）
+    if (focus) {
+        noteWindow(topLevelWindow(focus), false);
+    }
     return S_OK;
+}
+
+void TextService::noteWindow(HWND window, bool appChanged) {
+    const bool moved = appChanged || (window && window != lastWindow_);
+    if (window) {
+        lastWindow_ = window;
+    }
+    // 打到一半切走又切回来（Alt+Tab）的接着打，不换模式
+    if (!moved || !composer_ || composer_->hasPendingText()) {
+        return;
+    }
+    sync();
+    const Composer::Mode before = composer_->mode();
+    composer_->applyWindowMode();
+    if (composer_->mode() != before && langBar_) {
+        langBar_->update();
+    }
+    flush(currentContext());
 }
 
 STDMETHODIMP TextService::OnSetThreadFocus() {
     std::lock_guard<std::recursive_mutex> lock(EngineHost::instance().mutex());
+    // 从别的应用切回来：设了「默认中/英文」就定一次（WindowMode，#254）
+    ComPtr<ITfDocumentMgr> focus;
+    if (threadMgr_ && SUCCEEDED(threadMgr_->GetFocus(&focus)) && focus) {
+        noteWindow(topLevelWindow(focus.Get()), true);
+    }
     if (window_ && page_ && composer_ && composer_->hasPendingText()) {
         window_->show(*page_, anchor_, EngineHost::instance().config().candidateFontSize());
     }

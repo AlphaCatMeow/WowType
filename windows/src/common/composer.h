@@ -149,6 +149,9 @@ public:
     bool setModeNamed(const std::string &name);
     /// 切到 WowType 时按设置里的 InitialMode 定中 / 英（换窗口不调）。
     void applyInitialMode();
+    /// 换到别的窗口、别的应用时按设置里的 WindowMode 定中 / 英（#254）：Same 不动；切不回中文时不进英文。
+    /// 外壳只在窗口、应用变了时调；切到 WowType 的那一下按 InitialMode，不调这个。
+    void applyWindowMode();
     /// 系统要结束组字（换输入框、点了别处、切走输入法）：已选的词 + 打的字母原样上屏。
     void commitComposition();
     /// 放弃正在打的。
