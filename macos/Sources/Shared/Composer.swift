@@ -587,6 +587,20 @@ public final class Composer {
         }
     }
 
+    /// 换到别的应用、别的窗口时（#254）按设置里的 WindowMode 定中 / 英，和 Linux 的 applyWindowMode 一样：
+    /// Same 不动（每个应用记着自己的模式）；切不回中文时不进英文；在「译」里的回到中文 / 英文。不弹提示。
+    /// 外壳负责只在应用、窗口变了时调；从别的输入法切回来的那一下按 InitialMode，不调这个。
+    public func applyWindowMode() {
+        switch config.windowMode {
+        case .same:
+            return
+        case .chinese:
+            switchMode(to: .chinese)
+        case .english:
+            switchMode(to: canToggleMode ? .english : .chinese)
+        }
+    }
+
     /// 系统要结束组字（换输入框、点了别处、切走输入法）：已选的词 + 打的字母原样上屏（和回车一样，
     /// 双拼是打的键、五笔是码，不带分音节的隔音符）；互译时拼音先进原文，原文再原样上屏。
     /// 工具栏、表情面板收起来，会话记的上文作废（回来时光标可能在别处）。
