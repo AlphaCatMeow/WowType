@@ -4,6 +4,7 @@
 // 窗口出了问题也不会带倒输入法。设置窗口只写 wowtype.conf / custom.tsv，输入法下一次按键时自己重新读。
 
 import AppKit
+import Combine
 import SwiftUI
 
 enum SettingsApp {
@@ -53,6 +54,7 @@ enum SettingsApp {
 final class SettingsAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let model: SettingsModel
     private var window: NSWindow!
+    private var themeObserver: AnyCancellable?
 
     init(page: SettingsPage) {
         model = SettingsModel(page: page)
@@ -70,6 +72,12 @@ final class SettingsAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         window.contentMinSize = NSSize(width: 640, height: 460)
         window.contentView = NSHostingView(rootView: SettingsView(model: model))
         window.delegate = self
+        // 设置窗口的主题（SettingsTheme）：换的是窗口的外观，SwiftUI 的 colorScheme 和系统画的控件（开关、下拉框）
+        // 都跟着它走。不用 .preferredColorScheme：NSHostingView 放在自己建的 NSWindow 里时它管不到窗口，
+        // 从固定深色换回 nil（跟随系统）也不一定退回去
+        themeObserver = model.$config.map(\.settingsTheme).removeDuplicates().sink { [weak self] theme in
+            self?.window.appearance = SettingsAppDelegate.appearance(for: theme)
+        }
         if !window.setFrameUsingName("WowTypeSettings") {
             window.center()
         }
@@ -81,6 +89,15 @@ final class SettingsAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             self, selector: #selector(showRequested(_:)), name: SettingsApp.showNotification, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(didBecomeActive(_:)), name: NSApplication.didBecomeActiveNotification, object: nil)
+    }
+
+    /// 跟随系统是 nil（用系统的浅色 / 深色）
+    static func appearance(for theme: WowtypeConfig.SettingsTheme) -> NSAppearance? {
+        switch theme {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

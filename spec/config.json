@@ -219,6 +219,24 @@
     {"key": "TypingStats", "type": "bool", "default": false,
      "platforms": ["fcitx5", "settings", "macos", "windows"],
      "note": "打字统计（设置的「统计」页）。默认关：关着时什么都不记、不建 stats.json。打开以后只在本机按天记聚合计数（字数、各类字符数、活跃时长、每个键按了几次、输入模式和双拼方案的字数、候选位置），不记打的内容、拼音、按键顺序和时刻，密码框里的不算。清空：设置里「清除统计」（stats.clear 里的整数加一、删掉 stats.json），见 docs/CONFIG.md「打字统计」"},
+    {"key": "SettingsTheme", "type": "enum", "default": "System",
+     "values": [
+       {"value": "System", "name": "跟随系统"},
+       {"value": "Light", "name": "浅色"},
+       {"value": "Dark", "name": "深色"}
+     ],
+     "platforms": ["settings", "macos", "windows"],
+     "note": "设置窗口的主题（「常规 → 设置窗口 → 主题」），只管设置窗口，不管候选框，输入法不读。System 跟着系统的浅色 / 深色；Light、Dark 固定一种（系统的深色认不出来、或者 KDE 写的 GTK 颜色和窗口对不上时用，#255）。name 三端都对照（设置界面的 SETTINGS_THEMES、macOS 的 WowtypeConfig.SettingsTheme、Windows 设置窗口的 valueName）"},
+    {"key": "SettingsAccent", "type": "enum", "default": "Green",
+     "values": [
+       {"value": "Green", "name": "绿色", "color": "#0EAF76", "strong": "#0A8358", "light": "#1AB37D"},
+       {"value": "Blue", "name": "蓝色", "color": "#3584E4", "strong": "#2D70C2", "light": "#68A3EB"},
+       {"value": "Purple", "name": "紫色", "color": "#9141AC", "strong": "#9141AC", "light": "#BD8DCD"},
+       {"value": "Orange", "name": "橙色", "color": "#E66100", "strong": "#B84E00", "light": "#EC8840"},
+       {"value": "Pink", "name": "粉色", "color": "#D56199", "strong": "#AA4E7A", "light": "#DD81AD"}
+     ],
+     "platforms": ["settings", "macos", "windows"],
+     "note": "设置窗口的强调色（「常规 → 设置窗口 → 强调色」），只管设置窗口，输入法不读。Green 是 WowType 绿。每种三个颜色，三端都用这张表、不自己算：color 是色板本身（侧栏的底色、悬停、统计的柱子和热力图）；strong 是上面放白字的底（选中的导航、主按钮、开关），和白色的对比度至少 4.7:1；light 是深色背景上当字用的颜色，和深色卡片 #353539 的对比度至少 4.5:1；浅色背景上当字用 strong。scripts/test-config-contract.py 核对对比度，设置界面（SETTINGS_ACCENTS）、macOS（WowtypeConfig.accentPresets）、Windows（look::accents）对照这张表"},
     {"key": "Translate", "type": "bool", "default": false,
      "platforms": ["fcitx5", "settings", "macos", "windows"], "note": "互译（单按 Shift 或 TranslateModeKey 切到「译」）"},
     {"key": "TranslateTarget", "type": "enum", "default": "en",
