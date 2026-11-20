@@ -895,6 +895,35 @@ int main(int argc, char **argv) {
         c->applyInitialMode();
         check(c->mode() == Composer::Mode::English, "InitialMode=English");
     }
+    {
+        // #254：换窗口、换应用时按 WindowMode 定中 / 英；默认 Same 不动
+        Config same;
+        auto [c, client] = fresh(same);
+        tapShift(*c);
+        c->applyWindowMode();
+        check(c->mode() == Composer::Mode::English, "WindowMode 默认 Same：换窗口还是英文");
+        Config english;
+        english.setValue("WindowMode", "English");
+        c->apply(english);
+        c->setModeNamed("zh");
+        c->applyWindowMode();
+        check(c->mode() == Composer::Mode::English, "WindowMode=English：换窗口后是英文");
+        tapShift(*c);
+        check(c->mode() == Composer::Mode::Chinese, "单按 Shift 还是能切回中文");
+        c->applyWindowMode();
+        check(c->mode() == Composer::Mode::English, "再换窗口又回到默认的英文");
+        Config chinese;
+        chinese.setValue("WindowMode", "Chinese");
+        c->apply(chinese);
+        c->applyWindowMode();
+        check(c->mode() == Composer::Mode::Chinese && client->committed.empty(), "WindowMode=Chinese：换窗口后是中文");
+        Config noWayBack;
+        noWayBack.setValue("WindowMode", "English");
+        noWayBack.setValue("ShiftToggle", "Off");
+        c->apply(noWayBack);
+        c->applyWindowMode();
+        check(c->mode() == Composer::Mode::Chinese, "WindowMode=English 但切不回中文：总是中文");
+    }
 
     // ---------------------------------------------------------------- 自动配对（和 macOS、fcitx5 的一样）
     const auto withPairing = [&](auto body) {

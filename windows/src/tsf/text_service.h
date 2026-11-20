@@ -147,6 +147,9 @@ private:
     void updateWindow(TfEditCookie ec, ITfContext *context);
     /// 结束组字：打的字母原样上屏（换输入框、点了别处、切走输入法），和 macOS 一样。
     void endComposition();
+    /// 换到别的窗口、别的应用（WindowMode，#254）：window 是现在输入框所在的顶层窗口，appChanged 是这个应用
+    /// 刚拿回焦点（从别的应用切回来）。换了就按 WindowMode 定一次中 / 英（不弹提示）；打到一半的不动。
+    void noteWindow(HWND window, bool appChanged);
     void modeChanged();
     void showModeHint();
     void onTimer(UINT_PTR id);
@@ -173,6 +176,8 @@ private:
     std::unique_ptr<CandidateWindow> window_;
     LangBarButton *langBar_ = nullptr;
     uint64_t configGeneration_ = 0;
+    /// 上一次用 WowType 的顶层窗口（WindowMode）；还没有是 nullptr
+    HWND lastWindow_ = nullptr;
 
     std::vector<Op> ops_;
     std::optional<CandidatePage> page_;

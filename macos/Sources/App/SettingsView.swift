@@ -483,6 +483,18 @@ private struct InputPage: View {
             }
         }
 
+        // 和 Linux 设置的「默认状态」一样（#254）：换到新窗口、新应用时的中 / 英，标点全角还是半角
+        PrefGroup("默认状态", info: "换到新窗口、新应用时用哪种模式。默认「和上次一样」，每个应用记着自己的中英文；"
+                  + "选了中文或英文，每次换到新窗口、新应用都先定成它。") {
+            PickerRow(title: "默认中/英文", subtitle: "换到新窗口、新应用时；和上次一样就不变",
+                      selection: $model.config.windowMode,
+                      options: [("和上次一样", .same), ("中文", .chinese), ("英文", .english)])
+            RowDivider()
+            PickerRow(title: "默认全角/半角", subtitle: "中文标点还是英文标点",
+                      info: "数字写法里的符号保持半角，比如 3.14、20:22；顿号、问号照常全角。",
+                      selection: $model.config.halfwidthPunct, options: [("全角 ，。", false), ("半角 , .", true)])
+        }
+
         PrefGroup("中英文切换", info: "单按一下 Shift 切到英文，字母和半角标点直接上屏，再按一下回到中文。"
                   + "打到一半切英文，已经打的字母原样上屏。") {
             // macOS 自己的切换：不经过输入法，哪个应用里都管用
@@ -510,7 +522,7 @@ private struct InputPage: View {
                       options: shortcutOptions([("不用", "")] + shortcuts(Array(Shortcut.translateModeKeyPresets.dropFirst())),
                                                current: model.config.translateModeKey?.name ?? ""))
             RowDivider()
-            PickerRow(title: "切到 WowType 时", subtitle: "从别的输入法切过来、开机后第一次用时；换窗口不变",
+            PickerRow(title: "切到 WowType 时", subtitle: "从别的输入法切过来、开机后第一次用时；换窗口见「默认中/英文」",
                       info: "「和上次切走时一样」：每个应用记着自己切走时是中文还是英文。"
                           + "关掉了单按 Shift、也没另设切换键时总是中文（切过去就切不回来了）。",
                       selection: $model.config.initialMode,
@@ -532,9 +544,6 @@ private struct InputPage: View {
             SwitchRow(title: "更多生僻字", subtitle: "要装能显示它们的字体，比如花园明朝",
                       info: "候选里也列出极少用的生僻字。系统自带的字体一般显示不了，会是方块。",
                       isOn: $model.config.rareExtChars)
-            RowDivider()
-            PickerRow(title: "标点样式", info: "数字写法里的符号保持半角，比如 3.14、20:22；顿号、问号照常全角。",
-                      selection: $model.config.halfwidthPunct, options: [("全角 ，。", false), ("半角 , .", true)])
             RowDivider()
             SwitchRow(title: "中文标点自动配对", subtitle: "打（【《「“‘ 时自动补上右半边",
                       info: "中文标点下打左括号、左引号，上屏成对的，光标放到中间；"
