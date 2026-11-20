@@ -353,6 +353,7 @@ DEFAULTS = {
     "InputScheme": "Quanpin",
     "ShuangpinScheme": "Ziranma",
     "ShuangpinShowKeys": "False",
+    "ShuangpinAbbrev": "True",
     "WubiAutoCommit": "True",
     "WubiHint": "True",
     "ShiftToggle": "Both",
@@ -6164,7 +6165,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         # 选了这个方案才出的设置
         self.scheme_rows = {
             "Shuangpin": [self.scheme_row, self.make_switch(
-                "ShuangpinShowKeys", "编辑区显示打的键", "不翻成全拼，中英混打时看得出打了什么")],
+                "ShuangpinShowKeys", "编辑区显示打的键", "不翻成全拼，中英混打时看得出打了什么"),
+                self.shuangpin_abbrev_row()],
             "Wubi86": [self.make_switch("WubiAutoCommit", "四码唯一自动上屏", "打满四码、只有一个字词时直接上屏"),
                        self.make_switch("WubiHint", "编码提示", "候选后面显示还要打的码")],
         }
@@ -6610,6 +6612,12 @@ class SettingsWindow(Adw.ApplicationWindow):
                     self.toast("没改成：fcitx5 没响应")
                 self.refresh_shift_conflict()
         self.fcitx.set_hotkeys(lists, done)
+
+    def shuangpin_abbrev_row(self):
+        row = self.make_switch("ShuangpinAbbrev", "简拼", "只打声母也出词，sm 出「什么」")
+        self.add_info(row, "每个键都是声母时也当成只打了声母（zh ch sh 用方案里的声母键，自然码、小鹤是 v i u）。"
+                      "同样的键按双拼也读得通时（小鹤的 zg 是 zeng），先出双拼读出来的字，简拼的词排在后面。")
+        return row
 
     def make_switch(self, key, title, subtitle):
         row = SwitchRow(title=title)

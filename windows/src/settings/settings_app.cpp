@@ -121,7 +121,7 @@ struct Page {
 
 const std::vector<Page> &pages() {
     static const std::vector<Page> p = {
-        {L"常规", {"InputScheme", "ShuangpinScheme", "ShuangpinShowKeys", "WubiAutoCommit", "WubiHint",
+        {L"常规", {"InputScheme", "ShuangpinScheme", "ShuangpinShowKeys", "ShuangpinAbbrev", "WubiAutoCommit", "WubiHint",
                    // 默认状态（和 Linux、macOS 设置一样，#254）：换窗口时的中 / 英、全角还是半角标点
                    "WindowMode", "PunctuationStyle", "InitialMode", "ShiftToggle", "ToggleKey", "Traditional",
                    "Lexicon", "TypingStats", "SettingsTheme", "SettingsAccent"}},
@@ -147,6 +147,7 @@ const std::map<std::string, std::wstring> &labels() {
         {"InputScheme", L"输入方案"},
         {"ShuangpinScheme", L"双拼方案"},
         {"ShuangpinShowKeys", L"双拼编辑区显示打的键（不翻成全拼）"},
+        {"ShuangpinAbbrev", L"双拼简拼（只打声母，sm 出「什么」）"},
         {"WubiAutoCommit", L"五笔四码唯一时自动上屏"},
         {"WubiHint", L"五笔候选后面显示还要打的码"},
         {"WindowMode", L"默认中/英文（换到新窗口、新应用时）"},

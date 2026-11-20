@@ -116,6 +116,7 @@ public final class Engine {
             problems.append("不认识双拼方案 \(config.shuangpinScheme)，用自然码")
             wowtype_engine_set_shuangpin_scheme(handle, "ziranma")
         }
+        wowtype_engine_set_shuangpin_abbrev(handle, config.shuangpinAbbrev ? 1 : 0)
         wowtype_engine_set_typo_correction(handle, config.typoCorrection ? 1 : 0)
         wowtype_engine_set_rare_ext_chars(handle, config.rareExtChars ? 1 : 0)
         if config.traditional && !conversionLoaded {

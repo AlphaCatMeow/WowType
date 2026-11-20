@@ -282,6 +282,9 @@ int main(int argc, char **argv) {
         check(!c.emojiKey(), "EmojiKey 留空是不用");
         check(c.value("TranslateBaseUrl") == "a b" && !c.flag("TranslateLocal"), "引号、TranslateLocal 跟着接口");
         check(c.shuangpin(), "旧的 Shuangpin=True 是双拼");
+        // #268：双拼的简拼默认开，文件里写 False 才关
+        check(d.flag("ShuangpinAbbrev") && c.flag("ShuangpinAbbrev"), "双拼简拼默认开");
+        check(!Config::parse("ShuangpinAbbrev=False\n").flag("ShuangpinAbbrev"), "ShuangpinAbbrev=False 关掉双拼简拼");
     }
 
     // ---------------------------------------------------------------- 设置窗口的主题和强调色（和 Linux、macOS 一样）

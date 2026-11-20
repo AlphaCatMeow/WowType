@@ -133,6 +133,7 @@ const std::vector<SettingDef> &settingDefs() {
         {"ShuangpinScheme", T::Enum, "Ziranma", 0, 0,
          {"Ziranma", "Xiaohe", "Microsoft", "Sogou", "ABC", "Ziguang", "PinyinJiajia"}},
         {"ShuangpinShowKeys", T::Bool, "False"},
+        {"ShuangpinAbbrev", T::Bool, "True"},
         {"WubiAutoCommit", T::Bool, "True"},
         {"WubiHint", T::Bool, "True"},
         {"ShiftToggle", T::Enum, "Both", 0, 0, {"Both", "Left", "Right", "Off"}},
