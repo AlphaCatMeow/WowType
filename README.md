@@ -336,7 +336,7 @@ wowtype-show  --lexicon /usr/share/wowtype/lexicon.tsv nihao
 
 设置文件里的键名两端一样（`ShiftToggle`、`ToggleKey`、`TranslateModeKey`，见 [docs/CONFIG.md](docs/CONFIG.md)）。系统自己的快捷键（fcitx5 的、macOS 的）先处理，设成它们 WowType 收不到。
 
-Linux 上想让**每个新窗口、新应用**都先回到中文或英文（比如每次切回终端都是英文，省得再按 Shift），在设置「输入 → 默认状态 → 默认中/英文」里选中文或英文；默认「和上次一样」，中英文在所有窗口里保持同一个（和以前一样）。见 [#254](https://github.com/Gloridust/WowType/issues/254)。
+想让**每个新窗口、新应用**都先回到中文或英文（比如每次切回终端都是英文，省得再按 Shift），在设置「输入 → 默认状态 → 默认中/英文」里选中文或英文；默认「和上次一样」（和以前一样：Linux 上所有窗口一个中英文，macOS、Windows 上每个应用记着自己的）。Linux、macOS、Windows 都有（Windows 设置窗口在「常规」页）。见 [#254](https://github.com/Gloridust/WowType/issues/254)。
 
 #### Shift 被 fcitx5 占了
 

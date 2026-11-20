@@ -6150,7 +6150,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.initial_names = [name for _, name in INITIAL_MODES]
         self.initial_row = Adw.ComboRow(
             title="切到 WowType 时",
-            subtitle="从别的输入法切过来、开机后第一次用时；换窗口不变",
+            subtitle="从别的输入法切过来、开机后第一次用时；换窗口见「默认中/英文」",
             model=Gtk.StringList.new([label for label, _ in INITIAL_MODES]))
         current = self.values.get("InitialMode", "Chinese")
         self.initial_row.set_selected(
