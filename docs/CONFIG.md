@@ -67,7 +67,7 @@ dbus-send --session --dest=org.fcitx.Fcitx5 /controller \
 | 引擎 | 配置文件里 | 说明 |
 |---|---|---|
 | 本地翻译（离线） | `TranslateLocal=True`（默认） | 见[本地模型](#本地模型离线) |
-| 哔哩哔哩（免费，不用 API Key） | `TranslateLocal=False`，`TranslateBaseUrl` 的主机是 `index-translate.bilibili.com` | 见[哔哩哔哩](#哔哩哔哩index-translate) |
+| 哔哩哔哩（免费） | `TranslateLocal=False`，`TranslateBaseUrl` 的主机是 `index-translate.bilibili.com` | 见[哔哩哔哩](#哔哩哔哩index-translate) |
 | 自定义翻译服务 | `TranslateLocal=False`，别的地址 | 服务商、地址、Key、模型，见上面 |
 
 在设置里换引擎时写上这个引擎的 `TranslateLocal`、`TranslateBaseUrl`、`TranslateModel`。从「自定义」换到哔哩哔哩再换回来，

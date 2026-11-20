@@ -129,7 +129,7 @@ public struct WowtypeConfig: Equatable {
         public var name: String {
             switch self {
             case .local: return "本地翻译（离线）"
-            case .bilibili: return "哔哩哔哩（免费，不用 API Key）"
+            case .bilibili: return "哔哩哔哩（免费）"
             case .custom: return "自定义翻译服务"
             }
         }
