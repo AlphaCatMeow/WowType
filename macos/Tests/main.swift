@@ -327,8 +327,9 @@ do {
     check(c.allCandidates().contains("Hello"), "Hello 有英文候选", "\(c.allCandidates().prefix(5))")
     _ = c.handle(.key(Keysym.returnKey))
     check(client.committed == "Hello", "回车上屏 Hello", client.committed)
-    _ = c.handle(.char("A", [.shift, .caps]))
-    check(c.input == "A", "Caps Lock 下的大写也进编辑区", c.input)
+    // 开着大写锁定、没在打字时，字母直接给应用（API、HTTP），不进编辑区（#271、#264，和 Linux、Windows 一样）
+    _ = c.handle(.char("A", [.caps]))
+    check(!c.isComposing && c.input.isEmpty, "Caps Lock 开着时字母不进编辑区", c.input)
 }
 
 do {
