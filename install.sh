@@ -318,7 +318,7 @@ install_packages() {
       [[ -n "${WOWTYPE_YES:-}" ]] && zy=(--non-interactive)
       from_tty "${SUDO[@]}" zypper "${zy[@]}" refresh || warn "zypper refresh 失败，接着用现有的软件源安装"
       from_tty "${SUDO[@]}" zypper "${zy[@]}" install -y "${ZYPPER_DEPS[@]}" ||
-        die "编译依赖装不上：先运行 sudo zypper dup 更新系统，再重新安装"
+        die "编译依赖装不上（软件源连不上，或者系统太旧？）：检查网络，或先运行 sudo zypper dup 更新系统，再重新安装"
       local src="$tmp/src"
       mkdir -p "$src/dist/data"
       say "下载 WowType $tag 的源码"
