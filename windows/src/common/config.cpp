@@ -164,6 +164,9 @@ const std::vector<SettingDef> &settingDefs() {
         {"CheckUpdate", T::Bool, "True"},
         {"BetaUpdates", T::Bool, "False"},
         {"TypingStats", T::Bool, "False"},
+        // 设置窗口自己的主题、强调色（输入法不读），可选值和名字见 look.h
+        {"SettingsTheme", T::Enum, "System", 0, 0, {"System", "Light", "Dark"}},
+        {"SettingsAccent", T::Enum, "Green", 0, 0, {"Green", "Blue", "Purple", "Orange", "Pink"}},
         {"Translate", T::Bool, "False"},
         {"TranslateTarget", T::Enum, "en", 0, 0,
          {"en", "ja", "ko", "fr", "de", "es", "ru", "pt", "it", "vi", "th", "id", "ar"}},

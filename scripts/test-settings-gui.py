@@ -137,6 +137,32 @@ def run(app):
         check(win.arrow_row.get_subtitle() == "← → 选词，↑ 上一页，↓ 展开更多候选", "横排的副标题不对")
     step("方向键", arrow_keys)
 
+    def window_look():
+        # 「设置窗口」的主题、强调色：存进 wowtype.conf，马上换上（主题固定时盖过系统主题的颜色）
+        manager = Adw.StyleManager.get_default()
+        check(win.values["SettingsTheme"] == "System" and win.values["SettingsAccent"] == "Green", "默认该是跟随系统、绿色")
+        check(manager.get_color_scheme() == Adw.ColorScheme.DEFAULT, "跟随系统时不该固定浅色 / 深色")
+        win.settings_theme_row.set_selected(win.settings_theme_names.index("Dark"))
+        win.settings_accent_row.set_selected(win.settings_accent_names.index("Blue"))
+        check(app.look == ("Dark", "Blue"), f"没换上：{app.look}")
+        check(manager.get_color_scheme() == Adw.ColorScheme.FORCE_DARK and manager.get_dark(), "固定深色没生效")
+        css = ns["theme_css"](True, "Blue")
+        check("#2D70C2" in css and "#0A8358" not in css, "蓝色的样式里还是绿色")
+        check("#222226" in ns["forced_css"](True) and "#fafafb" in ns["forced_css"](False), "固定主题的颜色不对")
+        pump(0.4)
+        text = open(ns["CONFIG_FILE"], encoding="utf-8").read()
+        check("SettingsTheme=Dark" in text and "SettingsAccent=Blue" in text, f"没写进文件：{text}")
+        win.settings_theme_row.set_selected(win.settings_theme_names.index("Light"))
+        check(manager.get_color_scheme() == Adw.ColorScheme.FORCE_LIGHT and not manager.get_dark(), "固定浅色没生效")
+        win.settings_theme_row.set_selected(0)
+        win.settings_accent_row.set_selected(0)
+        check(app.look == ("System", "Green") and manager.get_color_scheme() == Adw.ColorScheme.DEFAULT,
+              "换回跟随系统、绿色没生效")
+        pump(0.4)
+        text = open(ns["CONFIG_FILE"], encoding="utf-8").read()
+        check("SettingsTheme" not in text and "SettingsAccent" not in text, "默认值不该写进文件")
+    step("设置窗口的主题和强调色", window_look)
+
     def input_scheme():
         # 「输入方案」单选：双拼才出方案、显示打的键和简拼，五笔才出它的两个开关；双拼、五笔时计算器换大写 V、工具栏灰掉
         def visible(rows):

@@ -97,7 +97,7 @@
 ### 系统要求
 
 - Linux x86_64 或 arm64（aarch64），输入法框架 **fcitx5 5.0 或更新**。Arch 的安装包只有 x86_64
-- 有现成安装包的发行版：**Ubuntu 22.04 / 24.04 / 26.04、Debian 13、deepin 23 / 25**（deb）、**Arch Linux** 及 EndeavourOS / Garuda / CachyOS（pkg.tar.zst）、**Fedora**（[rpm](#fedora)）、**NixOS**（[flake](#nixos--nix)）。其他发行版请[从源码构建](docs/INSTALL.md)
+- 有现成安装包的发行版：**Ubuntu 22.04 / 24.04 / 26.04、Debian 13、deepin 23 / 25**（deb）、**Arch Linux** 及 EndeavourOS / Garuda / CachyOS（pkg.tar.zst）、**Fedora**（[rpm](#fedora)）、**NixOS**（[flake](#nixos--nix)）。**openSUSE Tumbleweed** 没有安装包，一行命令会在本机从源码编译安装。其他发行版请[从源码构建](docs/INSTALL.md)
 - Ubuntu 22.04 的 GNOME 是 42：绿色候选框主题和语音浮条（GNOME 扩展，要 GNOME 45+）用不了，见[安装说明](docs/INSTALL.md#ubuntu-2204fcitx5-50)
 - deepin 的安装包只有 x86_64
 - **macOS 12 或更新**（Apple 芯片和 Intel 都行），见下面的 [macOS](#macos)
@@ -105,7 +105,7 @@
 
 ### 一行命令安装（推荐）
 
-Ubuntu 22.04 / 24.04 / 26.04、Debian 13、deepin 23 / 25、Arch Linux（及衍生版）、Fedora、macOS 上，在终端里运行：
+Ubuntu 22.04 / 24.04 / 26.04、Debian 13、deepin 23 / 25、Arch Linux（及衍生版）、Fedora、openSUSE Tumbleweed、macOS 上，在终端里运行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/main/install.sh | bash
@@ -114,7 +114,7 @@ curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/main/install.sh |
 在 Linux 上它会（macOS 上见[下面](#macos)）：
 
 1. 下载和你系统对应的最新安装包（词库已经在包里，约 29 MB），按 `SHA256SUMS` 校验
-2. 用系统的包管理器（`apt-get`、`pacman`、`dnf`）装上，顺带装好 fcitx5 和设置界面要用的 GTK 4 / libadwaita。Arch 不会替你整机升级，提示依赖不满足时先 `sudo pacman -Syu`
+2. 用系统的包管理器（`apt-get`、`pacman`、`dnf`）装上，顺带装好 fcitx5 和设置界面要用的 GTK 4 / libadwaita。Arch 不会替你整机升级，提示依赖不满足时先 `sudo pacman -Syu`。openSUSE Tumbleweed 没有安装包：先列出要用 `zypper` 装的编译依赖问你一句，再下载这一版的源码和发布页上的词库包（校验 `SHA256SUMS`），在本机编译安装（要几分钟）
 3. 输入法框架还不是 fcitx5（Ubuntu 默认是 IBus）时，问你要不要用 `im-config` 切过去（deepin 默认就是 fcitx5，不动）
 4. 把 WowType 加进 fcitx5 的输入法列表；fcitx5 正在运行的话会先重启它一次（3、4 两步是 `wowtype-config --setup` 做的，直接装包的话在「WowType 设置」第一页点「一键设置」一样）
 5. GNOME 上软件源里有 Input Method Panel 扩展（Debian 13、Fedora 45 起）时，问你要不要装上并启用
@@ -302,7 +302,7 @@ wowtype-show  --lexicon /usr/share/wowtype/lexicon.tsv nihao
 | `'` | 分隔音节，比如 `xi'an` → 西安 |
 | `[` `]` | 以词定字：只上屏光标处候选的第一个、最后一个字（`nihao` `[` → 你）；设置里能关，翻页键设成 `[ ]` 时是翻页 |
 | `Super` + `.` | 表情面板：打拼音或英文搜 emoji 和符号，见下 |
-| 单按 `Shift` | 切到英文（字母、半角标点直接上屏），再按一下回中文；打了一半的字母原样上屏。左右 Shift 都行，设置里能改成只用一边或关掉。设置好[互译](#互译)后是 中 → 英 → 译 → 中（设了互译的快捷键时只切中英）。两个平台各自还有别的切法，见[中英文切换](#中英文切换)。要是按 Shift 只在 WowType 和 en 之间来回，见[下面](#shift-被-fcitx5-占了) |
+| 单按 `Shift` | 切到英文（字母、半角标点直接上屏），再按一下回中文；打了一半的字母原样上屏。左右 Shift 都行，设置里能改成只用一边或关掉。快速连按两下（双击）不切，JetBrains 的双击 Shift（到处搜索）照常用；为了认出双击，没接着打字时「中 / 英」提示晚 0.35 秒出来。设置好[互译](#互译)后是 中 → 英 → 译 → 中（设了互译的快捷键时只切中英）。两个平台各自还有别的切法，见[中英文切换](#中英文切换)。要是按 Shift 只在 WowType 和 en 之间来回，见[下面](#shift-被-fcitx5-占了) |
 | 右 `Alt` | 语音输入，见下 |
 | `v` + 空格 | 工具栏：剪贴板历史、常用语、符号、表情（数字键选，退格返回，`Esc` 关闭），见 [docs/CONFIG.md](docs/CONFIG.md#v--空格工具栏) |
 
@@ -487,7 +487,7 @@ vim.api.nvim_create_autocmd("InsertEnter", { callback = function() vim.fn.system
 
 | 页面 | 能改什么 |
 |---|---|
-| 常规 | 候选排列（横排 / 竖排）、每页个数（3–9）、WowType 绿色主题（见[主题](#主题)）、候选字号。还会检查 WowType 有没有加进 fcitx5 的输入法列表，没有的话一键添加；底下的「帮助」能[导出日志](#出问题时导出日志) |
+| 常规 | 候选排列（横排 / 竖排）、每页个数（3–9）、WowType 绿色主题（见[主题](#主题)）、候选字号、设置窗口自己的主题和强调色。还会检查 WowType 有没有加进 fcitx5 的输入法列表，没有的话一键添加；底下的「帮助」能[导出日志](#出问题时导出日志) |
 | 输入 | 词库（默认雾凇，可下载切换到[万象](docs/CONFIG.md#可选词库万象拼音)）、输入方案（拼音、双拼、五笔）、双拼方案（自然码、小鹤、微软、搜狗、智能 ABC、紫光、拼音加加）、五笔的四码唯一自动上屏和编码提示、默认中/英文（换到新窗口、新应用时用；默认和上次一样）、默认全角/半角、单按哪个 Shift 切中英文（和 fcitx5 抢 Shift 时提示并能一键让出）、另设一个切换中英文的快捷键、互译的快捷键、切到 WowType 时是中文还是英文、模糊音（16 组分别开关：z=zh、c=ch、s=sh、n=l、f=h、r=l、an=ang、an=ai、ian=iang、uan=uang、huang=wang、en=eng、eng=ong、in=ing、un=ong、un=iong）、按错键自动纠正、繁体字、中文标点自动配对、日期时间、计算器、v + 空格工具栏、剪贴板历史、联想、中英文之间自动加空格、分号引号选第 2/3 个候选 |
 | 表情 | 打字时推荐 emoji、表情面板快捷键 |
 | 语音 | 下载 / 删除识别模型（有进度、能取消）；下载好模型后才能打开语音输入；语音键（右 Alt / 右 Ctrl / 菜单键 / F8–F10）、识别结果同时复制到剪贴板 |
@@ -528,6 +528,9 @@ WowType 默认用自己的绿色主题：选中的词是图标里的那种绿，
   这个扩展同时画[语音浮条](#语音输入)，关掉绿色主题，语音提示也会回到候选框里的文字版。
 
 主题文件在 `themes/`：`themes/fcitx5/` 是经典界面主题，图片由 `themes/src/*.svg` 经 `themes/render.sh` 生成；`themes/gnome-shell/` 是 GNOME 扩展。
+
+**设置窗口自己也能换主题和颜色**（不影响候选框）：「WowType 设置 → 常规 → 设置窗口」里选「跟随系统 / 浅色 / 深色」和强调色，
+改完马上生效，macOS、Windows 的设置窗口也有。系统是深色、设置窗口却显示成浅色时，固定成深色就好，见 [docs/CONFIG.md](docs/CONFIG.md#设置窗口的主题和强调色)。
 
 ### 更新
 

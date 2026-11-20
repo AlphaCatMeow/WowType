@@ -689,7 +689,7 @@ pub unsafe extern "C" fn wowtype_engine_set_shuangpin_scheme(
     0
 }
 
-/// 双拼的简拼（ABI 1.14 起，默认开）：每个键都是声母时（`sm`）也当成只打了声母的简拼（什么）；
+/// 双拼的简拼（ABI 1.15 起，默认开）：每个键都是声母时（`sm`）也当成只打了声母的简拼（什么）；
 /// 同样的键按双拼读得通时双拼读出来的排在前面。返回 0 成功，-1 失败。
 #[no_mangle]
 pub unsafe extern "C" fn wowtype_engine_set_shuangpin_abbrev(
@@ -1245,7 +1245,7 @@ pub extern "C" fn wowtype_abi_version() -> c_int {
 
 /// C 接口版本，和 `wowtype_core.h` 里的 `WOWTYPE_ABI_VERSION_*` 一致（测试会比对）。
 pub const ABI_VERSION_MAJOR: c_int = 1;
-pub const ABI_VERSION_MINOR: c_int = 14;
+pub const ABI_VERSION_MINOR: c_int = 15;
 
 /// WowType 版本号字符串。
 #[no_mangle]
@@ -1302,7 +1302,7 @@ mod tests {
         };
         assert_eq!(read("WOWTYPE_ABI_VERSION_MAJOR"), ABI_VERSION_MAJOR);
         assert_eq!(read("WOWTYPE_ABI_VERSION_MINOR"), ABI_VERSION_MINOR);
-        assert_eq!(wowtype_abi_version(), 1014);
+        assert_eq!(wowtype_abi_version(), 1015);
     }
 
     #[test]

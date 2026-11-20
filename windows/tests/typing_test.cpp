@@ -742,8 +742,12 @@ int main(int argc, char **argv) {
     focus();
     check(langBarText() == L"中", "任务栏的输入指示器：中", langBarText());
     shootTaskbar(L"taskbar-zh");
+    // 单按先等 0.35 秒看是不是双击（#253）：没有第二下、也没接着打字时，到时间在定时器里切，
+    // 任务栏和光标下面的提示这时跟上
     tap(VK_LSHIFT);
-    pump(300);
+    pump(100);
+    check(langBarText() == L"中", "单按 Shift 先等双击：任务栏的输入指示器还是中", langBarText());
+    pump(500);
     shootWithCandidates(g_window, L"edit-mode-hint");
     check(langBarText() == L"英", "单按 Shift 以后任务栏的输入指示器：英", langBarText());
     shootTaskbar(L"taskbar-en");
@@ -756,6 +760,17 @@ int main(int argc, char **argv) {
     pump(300);
     check(text() == L"abc 你好", "再单按 Shift 切回中文", text());
     check(langBarText() == L"中", "切回来以后任务栏的输入指示器：中", langBarText());
+
+    // 双击 Shift（JetBrains 的到处搜索，#253）：不切，任务栏一直是中，接着打的还是中文
+    clear();
+    focus();
+    tap(VK_LSHIFT);
+    tap(VK_LSHIFT);
+    pump(600);
+    check(langBarText() == L"中", "双击 Shift 不切：任务栏的输入指示器还是中", langBarText());
+    typeKeys("nihao ");
+    pump(300);
+    check(text() == L"你好", "双击 Shift 以后还是中文", text());
 
     // 打到一半点了别处（失去焦点）：打的字母原样上屏（和 macOS 一样）
     clear();

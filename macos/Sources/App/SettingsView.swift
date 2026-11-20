@@ -4,7 +4,9 @@
 // build_voice / build_translate / build_words），名字和顺序两边一样，选项说明对得上 fcitx5-addon/src/wowtype_engine.h。macOS 还没有的功能
 // 不列出来，它们的键在 wowtype.conf 里原样留着。Linux 单独一页的「更新」在 macOS 是「常规」页里的一组。
 // 每行一个标题，副标题最多一行；说明、注意事项、例子、来源、许可放进 ⓘ（InfoButton）或「更多选项」折叠里。
-// 样子也照 Linux：薄荷绿渐变侧栏、绿色选中块、白色圆角卡片。
+// 样子也照 Linux：强调色渐变侧栏、强调色选中块、白色圆角卡片。主题（跟随系统 / 浅色 / 深色）和强调色在
+// 「常规 → 设置窗口」里改（SettingsTheme、SettingsAccent，三端一样）：主题由 SettingsAppDelegate 换窗口的外观，
+// 强调色用 WowtypeConfig.accentPresets 里的颜色，不自己算。
 
 import AppKit
 import AVFoundation
@@ -22,22 +24,31 @@ private extension Color {
 
 private struct Palette {
     let dark: Bool
-    static let green = Color(hex: 0x0EAF76)
+    var accent = WowtypeConfig.accentPresets[0]
+
+    /// 强调色本身：侧栏的底色、悬停、统计的图
+    var accentColor: Color { Color(hex: accent.color) }
+    /// 上面放白字的底（选中的导航、按钮、开关），和白字的对比度至少 4.7:1
+    var accentStrong: Color { Color(hex: accent.strong) }
+    /// 强调色当字用：浅色背景上用 strong，深色背景上用 light（对比度至少 4.5:1）
+    var accentText: Color { Color(hex: dark ? accent.light : accent.strong) }
 
     var sidebar: LinearGradient {
-        let stops: [Gradient.Stop] = dark
-            ? [.init(color: Color(hex: 0x17332A), location: 0), .init(color: Color(hex: 0x1C2A25), location: 0.45),
-               .init(color: Color(hex: 0x202523), location: 1)]
-            : [.init(color: Color(hex: 0xD9F3E6), location: 0), .init(color: Color(hex: 0xE9F8F0), location: 0.4),
-               .init(color: Color(hex: 0xF5FBF8), location: 1)]
+        // 叠在窗口底色（content）上的一层半透明强调色，和 Linux 一样（文字照样是系统的字色，看得清）
+        let stops: [Gradient.Stop] = [
+            .init(color: accentColor.opacity(dark ? 0.22 : 0.16), location: 0),
+            .init(color: accentColor.opacity(dark ? 0.12 : 0.08), location: 0.4),
+            .init(color: accentColor.opacity(0.02), location: 1),
+        ]
         return LinearGradient(gradient: Gradient(stops: stops), startPoint: .top, endPoint: .bottom)
     }
     var content: Color { dark ? Color(hex: 0x1D201F) : Color(hex: 0xF5F7F6) }
     var card: Color { dark ? Color(hex: 0x282C2A) : .white }
     var cardBorder: Color { dark ? Color(hex: 0x3B4144) : Color(hex: 0xE6EAE8) }
     var nested: Color { dark ? Color.white.opacity(0.03) : Color.black.opacity(0.025) }
-    var heading: Color { dark ? Color(hex: 0xA3ACA8) : Color(hex: 0x6B7570) }
-    var hover: Color { Palette.green.opacity(dark ? 0.12 : 0.10) }
+    // 分组标题：浅色下和底色 #F5F7F6 的对比度 5.2:1（原来的 #6B7570 是 4.4:1）
+    var heading: Color { dark ? Color(hex: 0xA3ACA8) : Color(hex: 0x5F6A65) }
+    var hover: Color { accentColor.opacity(dark ? 0.16 : 0.12) }
     var warning: Color { dark ? Color(hex: 0xF8C66D) : Color(hex: 0xB86E00) }
 }
 
@@ -59,7 +70,7 @@ struct SettingsView: View {
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        let palette = Palette(dark: scheme == .dark)
+        let palette = Palette(dark: scheme == .dark, accent: model.config.accent)
         HStack(spacing: 0) {
             Sidebar(model: model)
             Divider()
@@ -79,6 +90,7 @@ struct SettingsView: View {
             .overlay(alignment: .bottom) { ToastView(model: model) }
         }
         .environment(\.palette, palette)
+        .accentColor(palette.accentStrong)
         .frame(minWidth: 640, minHeight: 460)
         .ignoresSafeArea()
     }
@@ -122,6 +134,7 @@ private struct Sidebar: View {
         .frame(width: 210)
         .frame(maxHeight: .infinity)
         .background(palette.sidebar)
+        .background(palette.content)
     }
 }
 
@@ -180,7 +193,7 @@ private struct NavRow: View {
         .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(selected ? Palette.green : (hovering ? palette.hover : .clear))
+                .fill(selected ? palette.accentStrong : (hovering ? palette.hover : .clear))
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -259,6 +272,18 @@ private struct GeneralPage: View {
         }
         PrefGroup("外观") {
             StepperRow(title: "候选字号", value: $model.config.candidateFontSize, range: 10...40)
+        }
+        // 设置窗口自己的样子（不管候选框），和 Linux、Windows 的设置窗口一样
+        PrefGroup("设置窗口") {
+            PickerRow(title: "主题", subtitle: "跟随系统，或者固定浅色 / 深色",
+                      info: "只改这个设置窗口，不影响候选框。系统是深色、窗口却是浅色（或者反过来），"
+                          + "字看不清时，固定成浅色或深色。",
+                      selection: $model.config.settingsTheme,
+                      options: WowtypeConfig.SettingsTheme.allCases.map { ($0.name, $0) })
+            RowDivider()
+            PickerRow(title: "强调色", subtitle: "选中的页面、按钮和开关的颜色",
+                      selection: $model.config.settingsAccent,
+                      options: WowtypeConfig.accentPresets.map { ($0.name, $0.value) })
         }
         UpdateGroup(model: model, updater: model.updater)
         PrefGroup("帮助") {
@@ -1050,7 +1075,7 @@ private struct LocalModelRow: View {
                 Button("取消") { model.cancelLocalDownload() }
             } else if plan.ready {
                 Label("已就绪", systemImage: "checkmark.circle.fill")
-                    .foregroundColor(Palette.green)
+                    .foregroundColor(palette.accentText)
             } else if plan.canDownload {
                 Text((plan.llamaOutdated && !plan.wantModel ? "llama-server 要更新，" : "要下载 ")
                      + LocalModel.sizeText(plan.bytes))
@@ -1106,7 +1131,7 @@ private struct WordsPage: View {
                         .font(.system(size: 13, weight: .bold))
                         .foregroundColor(.white)
                         .frame(width: 26, height: 26)
-                        .background(Circle().fill(model.canAddWord ? Palette.green : Color.gray.opacity(0.4)))
+                        .background(Circle().fill(model.canAddWord ? palette.accentStrong : Color.gray.opacity(0.4)))
                 }
                 .buttonStyle(.plain)
                 .disabled(!model.canAddWord)
@@ -1359,6 +1384,7 @@ private struct SwitchRow: View {
     var info: String?
     @Binding var isOn: Bool
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.palette) private var palette
 
     var body: some View {
         HStack(spacing: 12) {
@@ -1367,7 +1393,7 @@ private struct SwitchRow: View {
             Toggle("", isOn: $isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
-                .tint(Palette.green)
+                .tint(palette.accentStrong)
         }
         .rowPadding()
         .contentShape(Rectangle())
@@ -1426,13 +1452,14 @@ private struct RadioRow<Trailing: View>: View {
     let selected: Bool
     let action: () -> Void
     @ViewBuilder var trailing: Trailing
+    @Environment(\.palette) private var palette
     @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: selected ? "largecircle.fill.circle" : "circle")
                 .font(.system(size: 16))
-                .foregroundColor(selected ? Palette.green : .secondary)
+                .foregroundColor(selected ? palette.accentStrong : .secondary)
             RowLabel(title: title, subtitle: subtitle, subtitleColor: subtitleColor)
             if let info { InfoButton(info) }
             trailing
@@ -1484,7 +1511,7 @@ private struct ExpanderRow<Content: View>: View {
                     }))
                     .labelsHidden()
                     .toggleStyle(.switch)
-                    .tint(Palette.green)
+                    .tint(palette.accentStrong)
                 }
                 Image(systemName: "chevron.right")
                     .font(.system(size: 12, weight: .semibold))
@@ -1657,7 +1684,7 @@ private struct StatsPage: View {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(value)
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundColor(Palette.green)
+                    .foregroundColor(palette.accentText)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                 if !unit.isEmpty {
@@ -1831,10 +1858,10 @@ private struct StatsPage: View {
     private func heatColor(_ level: Int) -> Color {
         switch level {
         case 0: return palette.dark ? Color.white.opacity(0.07) : Color.black.opacity(0.05)
-        case 1: return Palette.green.opacity(0.22)
-        case 2: return Palette.green.opacity(0.42)
-        case 3: return Palette.green.opacity(0.68)
-        default: return Palette.green
+        case 1: return palette.accentColor.opacity(0.20)
+        case 2: return palette.accentColor.opacity(0.40)
+        case 3: return palette.accentColor.opacity(0.60)
+        default: return palette.accentStrong
         }
     }
 
@@ -1850,6 +1877,7 @@ private struct StatsPage: View {
             if total == 0 {
                 empty("这 30 天还没有输入记录。")
             } else {
+                let barColor = palette.accentColor
                 Canvas { context, size in
                     let gap: CGFloat = 3
                     let bar = max(1, (size.width - gap * CGFloat(series.count - 1))
@@ -1860,7 +1888,7 @@ private struct StatsPage: View {
                         let rect = CGRect(x: CGFloat(index) * (bar + gap),
                                           y: size.height - height,
                                           width: bar, height: height)
-                        context.fill(Path(rect), with: .color(Palette.green))
+                        context.fill(Path(rect), with: .color(barColor))
                     }
                 }
                 .frame(height: 150)
@@ -1880,7 +1908,7 @@ private struct StatsPage: View {
     private var kindPage: some View {
         let totals = StatsStore.totals(document)
         let slices: [(String, Int, Color)] = [
-            ("汉字", totals.kinds["han"] ?? 0, Palette.green),
+            ("汉字", totals.kinds["han"] ?? 0, palette.accentColor),
             ("字母", totals.kinds["latin"] ?? 0, Color(hex: 0x4C9AFF)),
             ("数字", totals.kinds["number"] ?? 0, Color(hex: 0xF5A623)),
             ("标点", totals.kinds["punct"] ?? 0, Color(hex: 0x8A93A6)),
@@ -1894,7 +1922,7 @@ private struct StatsPage: View {
         let totals = StatsStore.totals(document)
         let names = [("quanpin", "拼音"), ("shuangpin", "双拼"),
                      ("english", "英文"), ("translate", "互译")]
-        let colors: [Color] = [Palette.green, Color(hex: 0x4C9AFF),
+        let colors: [Color] = [palette.accentColor, Color(hex: 0x4C9AFF),
                                Color(hex: 0xF5A623), Color(hex: 0xE86AA6)]
         var slices: [(String, Int, Color)] = []
         for (index, item) in names.enumerated() {

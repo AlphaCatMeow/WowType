@@ -3,6 +3,7 @@
 //   wowtype-windows-config-dump                     设置项表：{"settings": [{key, type, default, min, max, values}]}
 //   wowtype-windows-config-dump --load k=v ...      这几行当 wowtype.conf 读出来的值：{"values": {...}}
 //   wowtype-windows-config-dump --load-file <path>  读这个文件
+//   wowtype-windows-config-dump --look              设置窗口的主题、强调色：{"themes": [...], "accents": [...]}
 
 #include <cstdio>
 #include <fstream>
@@ -11,6 +12,7 @@
 #include <string>
 
 #include "config.h"
+#include "look.h"
 
 using namespace wowtype;
 
@@ -94,6 +96,22 @@ int main(int argc, char **argv) {
         dumpValues(Config::parse(text));
         return 0;
     }
+    if (mode == "--look") {
+        std::string out = "{\"themes\": [";
+        for (std::size_t i = 0; i < look::themes().size(); ++i) {
+            const auto &t = look::themes()[i];
+            out += std::string(i ? ", " : "") + "{\"value\": " + json(t.value) + ", \"name\": " + json(t.name) + "}";
+        }
+        out += "], \"accents\": [";
+        for (std::size_t i = 0; i < look::accents().size(); ++i) {
+            const auto &a = look::accents()[i];
+            out += std::string(i ? ", " : "") + "{\"value\": " + json(a.value) + ", \"name\": " + json(a.name) +
+                   ", \"color\": " + json(look::hex(a.color)) + ", \"strong\": " + json(look::hex(a.strong)) +
+                   ", \"light\": " + json(look::hex(a.light)) + "}";
+        }
+        std::printf("%s]}\n", out.c_str());
+        return 0;
+    }
     if (mode == "--load-file" && argc == 3) {
         std::ifstream in(argv[2], std::ios::binary);
         if (!in) {
@@ -104,6 +122,6 @@ int main(int argc, char **argv) {
         dumpValues(Config::parse(text));
         return 0;
     }
-    std::fprintf(stderr, "用法：wowtype-windows-config-dump [--load k=v ... | --load-file <path>]\n");
+    std::fprintf(stderr, "用法：wowtype-windows-config-dump [--load k=v ... | --load-file <path> | --look]\n");
     return 2;
 }

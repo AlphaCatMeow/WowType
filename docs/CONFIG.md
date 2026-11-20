@@ -197,6 +197,8 @@ TranslateIdleMinutes=5
 CheckUpdate=True
 BetaUpdates=False
 TypingStats=False
+SettingsTheme=System
+SettingsAccent=Green
 Lexicon=
 ```
 
@@ -213,6 +215,7 @@ Lexicon=
 | `RareExtChars` | 也出 CJK 扩展 B 区及以后的单字（比如 `hou` 的 𠯜），默认关：常见中文字体（Noto CJK、思源、苹方）都没有这些字，列出来是方块。打开前先装能显示它们的字体，比如 Ubuntu / Debian 的 `fonts-hanazono`。通用规范汉字表里的扩展区字（𬭩、𫚔，约 200 个，常见字体都有）和含这些字的词（𩽾𩾌）不受这个开关影响 |
 | `PickChar` | 以词定字：打拼音时 `[` 上屏光标处候选的第一个字、`]` 上屏最后一个字，默认开；翻页键设成 `[ ]` 时让给翻页 |
 | `Association` | 联想：选词、整句上屏以后给出一页常跟在后面的词（词级模型里的，加上自己用过的搭配）。按 `Tab` 进联想行，再用空格、回车、数字上屏，`Esc` 退出，也能用鼠标点；没按 `Tab` 时接着打字、数字、标点、空格、回车都照常（数字不选联想，中文后面常接着打数字）。五笔、互译、密码框里不出。默认关（0.5.0 预发布时默认开），在设置的「输入」页打开 |
+| `SettingsTheme`、`SettingsAccent` | 设置窗口自己的主题和强调色（「常规 → 设置窗口」），只管设置窗口，不管候选框，输入法不读；Linux、macOS、Windows 三端都有，选项一样，见下面的[设置窗口的主题和强调色](#设置窗口的主题和强调色) |
 | `TypingStats` | [打字统计](#打字统计)，默认关。关着时什么都不记、不建文件；打开以后只在本机记每天的聚合计数，不记打的内容。在设置的「统计」页打开、清除 |
 | `InputScheme` | 输入方案，设置界面里是「输入方案」的单选：`Quanpin` 拼音（默认）、`Shuangpin` 双拼、`Wubi86` 五笔 86。五笔要数据目录里有五笔码表 `wubi86.tsv`（安装包里带着，查找顺序和词库一样，环境变量是 `WOWTYPE_WUBI`）；没有时设置里「五笔输入」灰掉，配置文件里写了 `Wubi86` 的照全拼打，候选框上方提示没有码表。五笔怎么打见 [README 的五笔](../README.md#五笔) |
 | `Shuangpin` | 0.3.12 及以前的双拼开关，已经不是设置项。文件里没有 `InputScheme` 时，`Shuangpin=True` 读成 `InputScheme=Shuangpin`；有 `InputScheme` 时不看它。三端存盘时都不写它，下次存盘这一行就没了 |
@@ -221,7 +224,7 @@ Lexicon=
 | `ShuangpinScheme` | 双拼方案：`Ziranma` 自然码、`Xiaohe` 小鹤、`Microsoft` 微软、`Sogou` 搜狗、`ABC` 智能 ABC、`Ziguang` 紫光、`PinyinJiajia` 拼音加加 |
 | `ShuangpinShowKeys` | 双拼时编辑区显示打的键（`uivs`），不翻成全拼（`shi'zhong`），中英混打时看得出打了什么。默认 `False` |
 | `ShuangpinAbbrev` | 双拼的简拼（#268）：每个键都是声母时也当成只打了声母，`sm` 出「什么」（zh ch sh 用方案里的声母键，自然码、小鹤是 `v` `i` `u`；`s` 和全拼的简拼一样，s、sh 开头的都算）。同样的键按双拼也读得通、有词时（小鹤的 `zg` 是 zeng），双拼读出来的排在前面，简拼的词（词库里的整词）接在它的前五个后面，不顶掉双拼的字。默认 `True` |
-| `ShiftToggle` | 单按哪个 Shift 切中英文：`Both`、`Left`、`Right`、`Off`。fcitx5 自己的全局快捷键（「临时切换输入法」「切换输入法」「向前切换输入法」等任何一项）里用了同一个 Shift 时，fcitx5 先处理，WowType 收不到；设置界面「输入」页会提示，并能一键把 Shift 从 fcitx5 那边去掉（改的是 `~/.config/fcitx5/config`，关掉开关就还原；这个文件写不了时提示「只在这次有效」，NixOS 见[安装说明](INSTALL.md#单按-shift-在-nixos-上)） |
+| `ShiftToggle` | 单按哪个 Shift 切中英文：`Both`、`Left`、`Right`、`Off`。0.35 秒以内连按两下（双击）两下都不算，JetBrains 的双击 Shift 不会切中英文（#253）；单按以后接着打字照切了以后的模式打，不接着打时 0.35 秒后才切、弹提示。fcitx5 自己的全局快捷键（「临时切换输入法」「切换输入法」「向前切换输入法」等任何一项）里用了同一个 Shift 时，fcitx5 先处理，WowType 收不到；设置界面「输入」页会提示，并能一键把 Shift 从 fcitx5 那边去掉（改的是 `~/.config/fcitx5/config`，关掉开关就还原；这个文件写不了时提示「只在这次有效」，NixOS 见[安装说明](INSTALL.md#单按-shift-在-nixos-上)） |
 | `InitialMode` | 从别的输入法切到 WowType、开机后第一次用时的模式：`Chinese`（默认）、`English`、`Last`（和上次切走时一样）。换窗口不算，中英文照旧全局保持（要换窗口也定一次，见 `WindowMode`）；关了 Shift 切换（`ShiftToggle=Off`）、也没另设切换键（`ToggleKey`）时总是中文（`TranslateModeKey` 只进出「译」，不算）。macOS 上每个应用记着自己的中英文：输入法停用以后系统现在用的不是 WowType（切到了别的输入法；密码框里系统临时换成英文键盘不算）就记一笔，之后每个应用第一次用到 WowType 时按这一项定一次，换应用、换窗口不动；`Last` 是每个应用和它上次一样 |
 | `WindowMode` | 换到新窗口、新应用时的默认中 / 英（#254）：`Same`（默认，保持当前模式，和以前一样：Linux 上所有窗口一个，macOS、Windows 上每个应用记着自己的）、`Chinese`、`English`。选了中 / 英以后，每次切到一个窗口、应用都先定成它；在窗口里用 Shift 切了只算这一次，切走再回来又按这一项定。从别的输入法切回来的那一下按 `InitialMode`。关了 Shift 切换、也没另设切换键时总是中文（同 `InitialMode`）。Linux 上是输入框获得焦点时；macOS 上看应用和它最前面的窗口换没换，同一个窗口里换输入框不算；Windows 上看输入框所在的顶层窗口换没换、应用从别处切回来，打到一半切走又切回来的接着打、不换。设置界面「输入 → 默认状态 → 默认中/英文」（Windows 设置窗口在「常规」页） |
 | `PunctuationStyle` | 标点样式，设置界面「输入 → 默认状态 → 默认全角/半角」：`Fullwidth` 全角中文标点（默认）、`Halfwidth` 半角英文标点 |
@@ -299,7 +302,7 @@ macOS 还没有的功能不列；Linux 单独一页的「更新」在「常规�
 
 现在认的项：`CandidateLayout`、`ArrowKeys`、`PageSize`、`PageKeys*`、`SelectKeys`、`PickChar`、`Association`、`Fuzzy` 和 `Fuzzy*` 各组、`TypoCorrection`、`RareExtChars`、
 `InputScheme`、`ShuangpinScheme`、`ShuangpinShowKeys`、`ShuangpinAbbrev`、`WubiAutoCommit`、`WubiHint`、`ShiftToggle`、`InitialMode`、`WindowMode`、`Traditional`、`PunctuationStyle`、`AutoPairPunct`、`DateTime`、`Calculator`、`EmojiSuggest`、
-`AutoSpace*`、`Lexicon`、`Toolbar`、`ClipboardHistory`、`EmojiKey`、`ToggleKey`、`TranslateModeKey`、`Voice`、`VoiceKey`、`VoiceCopy`、`Translate` 和 `Translate*` 各项、`TypingStats`，另外有一项只有 macOS 有的 `CandidateFontSize`（候选字号，10–40 磅，默认 17；Linux 上字号跟着 fcitx5 主题）。
+`AutoSpace*`、`Lexicon`、`Toolbar`、`ClipboardHistory`、`EmojiKey`、`ToggleKey`、`TranslateModeKey`、`Voice`、`VoiceKey`、`VoiceCopy`、`Translate` 和 `Translate*` 各项、`TypingStats`、`SettingsTheme`、`SettingsAccent`，另外有一项只有 macOS 有的 `CandidateFontSize`（候选字号，10–40 磅，默认 17；Linux 上字号跟着 fcitx5 主题）。
 `CheckUpdate`（默认 `True`）：输入法每天最多查一次 GitHub 上的最新正式版（后台，不挡打字），有新版时菜单栏的输入法菜单里多一项
 「有新版本 …，下载并安装…」，点它打开设置窗口「常规」页；设置窗口打开时也查。不弹系统通知（输入法没有开发者签名，通知要先授权，打字时弹框也打扰人）。
 「下载并安装」下载 `WowType-<版本>-macos.pkg` 和同一页的 `SHA256SUMS`，校验后交给系统的 `installer` 只装给当前用户（不要密码，和一键安装脚本一样），
@@ -506,3 +509,20 @@ cargo run --release -p wowtype-core --bin wowtype-lmbuild -- \
 输入法写文件前看这个数：和开始攒这一批时不一样，就整批丢掉（里面有清除之前打的），不会把清掉的写回来；
 文件里的 `cleared` 和 `stats.clear` 对不上的，设置界面当作没有记录，输入法下次写时删掉。
 不用设置界面也可以：退出输入法（或先关掉统计）再删掉 `stats.json`。
+
+## 设置窗口的主题和强调色
+
+设置窗口「常规」页的「设置窗口」一组（Windows 在「常规」页最后两项），只改设置窗口自己，不影响候选框，输入法不读这两项：
+
+- **主题**（`SettingsTheme`）：`System` 跟随系统（默认）、`Light` 浅色、`Dark` 深色。
+  系统是深色、窗口却显示成浅色（或者反过来）时，固定成浅色或深色。
+  Linux 上固定以后连 `~/.config/gtk-4.0/gtk.css` 里系统主题写的颜色（KDE 会把它的配色写在那里）也不跟；
+  macOS 换的是窗口的外观（NSAppearance）；Windows 跟随系统时看「设置 → 个性化 → 颜色」里的应用模式。
+- **强调色**（`SettingsAccent`）：`Green` 绿色（默认，WowType 绿）、`Blue` 蓝色、`Purple` 紫色、`Orange` 橙色、`Pink` 粉色。
+  用在选中的页面、按钮、开关和统计的图上。三端用同一张颜色表（[`spec/config.json`](../spec/config.json) 的 `SettingsAccent`）：
+  每种颜色带一个放白字用的深一点的版本（和白字的对比度至少 4.7:1）、一个深色背景上当字用的浅一点的版本（至少 4.5:1）。
+
+不能自己写 CSS 换样式：macOS、Windows 的设置窗口不是用 CSS 画的，三端只做三端都有的选项。
+
+Linux 的设置窗口不管选哪个主题，底色和文字都用 libadwaita 的颜色、成对跟着主题走；次要文字（行的副标题、说明）比 libadwaita
+默认的深一些，浅色下和卡片的对比度约 5:1。以前底色写死、文字跟着系统主题，KDE 的深色配色下整页淡得看不清（#255）。

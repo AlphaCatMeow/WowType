@@ -43,7 +43,14 @@ case "$name" in
     [[ "${1:-}" != get ]] || printf '%s\n' "${FIXTURE_GSETTINGS:-@as []}"
     ;;
   im-config) [[ "${1:-}" != -m ]] || printf 'fcitx5\nfcitx5\n' ;;
-  apt-get|pacman|dnf|wowtype-config|installer)
+  # openSUSE 源码编译：cargo 要在解开的源码目录里跑，cmake --install 时词库要已经解到 dist/data
+  cargo) [[ -f fcitx5-addon/CMakeLists.txt ]] || { echo "cargo 不在源码目录里跑：$PWD" >&2; exit 1; } ;&
+  cmake)
+    if [[ "$name" == cmake && "${1:-}" == --install ]]; then
+      [[ -f "${2%/build}/dist/data/lexicon.tsv" ]] || { echo "词库没解到 dist/data" >&2; exit 1; }
+    fi
+    ;&
+  apt-get|pacman|dnf|zypper|wowtype-config|installer)
     printf '%s' "$name" >> "$FIXTURE_LOG"
     printf ' %q' "$@" >> "$FIXTURE_LOG"
     printf '\n' >> "$FIXTURE_LOG"
@@ -54,7 +61,7 @@ case "$name" in
 esac
 MOCK
 chmod +x "$work/bin/mock"
-for name in sudo curl apt-get pacman dnf pgrep im-config wowtype-config installer gnome-extensions apt-cache gsettings; do
+for name in sudo curl apt-get pacman dnf zypper cargo cmake pgrep im-config wowtype-config installer gnome-extensions apt-cache gsettings; do
   ln -s mock "$work/bin/$name"
 done
 
@@ -77,14 +84,14 @@ run() {
     FIXTURE_LOG="$work/commands" FIXTURE_FETCH_LOG="$work/fetches" \
     WOWTYPE_SYSTEM="$test_system" WOWTYPE_OS_RELEASE="$work/os-release" WOWTYPE_ARCH="$test_arch" \
     WOWTYPE_VERSION="$test_version" WOWTYPE_REPO=Gloridust/WowType \
-    WOWTYPE_BASE_URL="file://$work/assets" WOWTYPE_YES=1 \
+    WOWTYPE_BASE_URL="file://$work/assets" WOWTYPE_SOURCE_URL="file://$work/source.tar.gz" WOWTYPE_YES=1 \
     WOWTYPE_NO_IM_CONFIG="$test_no_switch" WOWTYPE_NO_RESTART="$test_no_switch" XDG_CURRENT_DESKTOP="$test_desktop" \
     bash "$root/install.sh" "$@"
 }
 reset() {
   : > "$work/commands"
   : > "$work/fetches"
-  rm -f "$work/assets/"*
+  rm -f "$work/assets/"* "$work/source.tar.gz"
   test_arch=x86_64
   test_version=v0.3.8
   test_system=Linux
@@ -115,7 +122,7 @@ rejected() {
 }
 assert_log() { grep -Fq -- "$1" "$work/commands" || fail "缺少命令：$1"; }
 assert_no_install() {
-  if grep -Eq '^(apt-get|pacman|dnf|installer) ' "$work/commands"; then fail '校验失败仍运行包管理器'; fi
+  if grep -Eq '^(apt-get|pacman|dnf|zypper|cargo|cmake|installer) ' "$work/commands"; then fail '校验失败仍运行包管理器'; fi
 }
 
 plan $'ID=ubuntu\nVERSION_ID="22.04"' wowtype_0.3.8_ubuntu22.04_amd64.deb apt-get 'Ubuntu 22.04'
@@ -142,7 +149,8 @@ rejected $'ID=example\nID_LIKE="arch manjaro"' 'package-arch.sh' 'Manjaro deriva
 rejected $'ID=fedora\nVERSION_ID=43\nVARIANT_ID=silverblue' 'rpm-ostree' 'Silverblue uses rpm-ostree'
 rejected $'ID=fedora\nVERSION_ID=43\nVARIANT_ID=sway-atomic' 'rpm-ostree' 'Fedora Atomic uses rpm-ostree'
 rejected 'ID=nixos' 'flake' 'NixOS uses flake'
-rejected $'ID=opensuse-tumbleweed\nID_LIKE=suse' '源码' 'openSUSE source guidance'
+plan $'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"\nVERSION_ID=20261120' 'WowType-0.3.8 源码' zypper 'openSUSE Tumbleweed builds from source'
+rejected $'ID=opensuse-leap\nID_LIKE="suse opensuse"\nVERSION_ID=16.0' '源码' 'openSUSE Leap source guidance'
 rejected $'ID=rocky\nID_LIKE="rhel centos fedora"\nVERSION_ID=9' '源码' 'RHEL derivative is not treated as Fedora'
 rejected 'ID=alpine' '源码' 'Alpine source guidance'
 
@@ -171,6 +179,12 @@ test_arch=aarch64
 if run --print-plan > "$work/output" 2>&1; then fail 'Unexpected aarch64 Arch binary'; fi
 grep -Fq 'package-arch.sh' "$work/output" || fail 'Missing Arch aarch64 guidance'
 pass 'Arch aarch64 builds locally'
+
+reset $'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"'
+result=$(run --print-plan) || fail 'openSUSE 计划失败'
+[[ "$result" == *'编译依赖：'*'fcitx5-devel'*'typelib-1_0-Adw-1'* ]] || fail "openSUSE 计划没列编译依赖：$result"
+[[ ! -s "$work/commands" && ! -s "$work/fetches" ]] || fail 'openSUSE --print-plan 有副作用'
+pass 'openSUSE plan lists zypper build dependencies'
 
 reset $'ID=ubuntu\nVERSION_ID="24.04"'
 test_arch=riscv64
@@ -291,6 +305,48 @@ assert_log 'dnf install -y'
 assert_log 'wowtype-0.3.8-1.fc43.x86_64.rpm'
 assert_log 'fcitx5-gtk3 fcitx5-gtk4 fcitx5-qt5 fcitx5-qt6'
 pass 'DNF installs exact Fedora RPM and GTK/Qt frontends'
+
+# openSUSE：zypper 装编译依赖，源码用这一版 tag 的压缩包，词库用发布页上校验过的词库包
+opensuse_assets() {
+  mkdir -p "$work/tree/WowType-0.3.8/fcitx5-addon" "$work/tree/data"
+  : > "$work/tree/WowType-0.3.8/fcitx5-addon/CMakeLists.txt"
+  printf '你好\tnihao\t1\n' > "$work/tree/data/lexicon.tsv"
+  tar -czf "$work/source.tar.gz" -C "$work/tree" WowType-0.3.8
+  tar -czf "$work/assets/wowtype-data-rime-ice-2026.1.1.1.tar.gz" -C "$work/tree/data" lexicon.tsv
+  (cd "$work/assets" && sha256sum wowtype-data-rime-ice-2026.1.1.1.tar.gz) >> "$work/assets/SHA256SUMS"
+  rm -rf "$work/tree"
+}
+reset $'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"'
+opensuse_assets
+asset wowtype-data-rime-ice_20260101_all.deb
+run > "$work/output" 2>&1 || fail "openSUSE install: $(cat "$work/output")"
+assert_log 'zypper --non-interactive refresh'
+assert_log 'zypper --non-interactive install -y'
+assert_log 'fcitx5-devel fcitx5-configtool fcitx5-gtk3 fcitx5-gtk4 fcitx5-qt5 fcitx5-qt6 alsa-devel'
+assert_log 'python3-gobject python3-gobject-Gdk typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1'
+assert_log 'cargo build --release --locked -p wowtype-core'
+assert_log 'cmake -S fcitx5-addon -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr'
+assert_log 'cmake --install'
+assert_log 'wowtype-config --setup --yes --no-im-config --no-restart'
+grep -Fq "curl file://$work/source.tar.gz" "$work/fetches" || fail 'openSUSE 没下载源码包'
+if grep -q 'wowtype-data-rime-ice_' "$work/fetches"; then fail 'openSUSE fetched a Debian data package'; fi
+[[ "$(grep -n '^zypper .*install' "$work/commands" | cut -d: -f1)" -lt "$(grep -n '^cargo ' "$work/commands" | cut -d: -f1)" ]] ||
+  fail '要先装依赖再编译'
+pass 'openSUSE installs build deps with zypper and builds the release source with its lexicon'
+
+reset $'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"'
+opensuse_assets
+printf 'corruption\n' >> "$work/assets/wowtype-data-rime-ice-2026.1.1.1.tar.gz"
+if run > "$work/output" 2>&1; then fail 'Corrupted openSUSE lexicon accepted'; fi
+assert_no_install
+pass 'openSUSE lexicon checksum mismatch prevents zypper and the build'
+
+reset $'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"'
+asset wowtype-0.3.8-1.fc43.x86_64.rpm
+if run > "$work/output" 2>&1; then fail 'openSUSE release without a lexicon tarball accepted'; fi
+grep -Fq '词库包' "$work/output" || fail "缺少词库包提示：$(cat "$work/output")"
+assert_no_install
+pass 'openSUSE release without a lexicon tarball fails before zypper'
 
 reset 'ID=arch'
 asset wowtype-0.3.8-1-x86_64.pkg.tar.zst
