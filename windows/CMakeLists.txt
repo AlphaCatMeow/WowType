@@ -74,6 +74,7 @@ add_library(wowtype_common STATIC
   src/common/look.cpp
   src/common/custom_words.cpp
   src/common/stats_view.cpp
+  src/common/translate_engine.cpp
   src/common/voice.cpp)
 target_include_directories(wowtype_common PUBLIC ${REPO}/core/include src/common)
 

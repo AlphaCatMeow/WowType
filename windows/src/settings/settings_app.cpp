@@ -38,6 +38,7 @@
 #include "custom_words.h"
 #include "look.h"
 #include "stats_view.h"
+#include "translate_engine.h"
 #include "utf.h"
 #include "wowtype_core.h"
 #include "../win/updater.h"
@@ -84,6 +85,15 @@ constexpr UINT kMessageUpdateChecked = WM_APP + 4;
 constexpr UINT kMessageUpdateDownloaded = WM_APP + 5;
 constexpr UINT kMessageStartUpdate = WM_APP + 6;
 constexpr UINT kMessageLocalDone = WM_APP + 2;
+// 「翻译」页的「翻译引擎」和它下面哔哩哔哩、自定义的几个控件（translate_engine.h）
+constexpr int kIdEngine = 122;
+constexpr int kIdBiliModel = 123;
+constexpr int kIdBiliTest = 124;
+constexpr int kIdCustomUrl = 125;
+constexpr int kIdCustomModel = 126;
+constexpr int kIdCustomTest = 127;
+constexpr UINT_PTR kTimerTranslateTest = 1;
+constexpr ULONGLONG kTranslateTestTimeoutMs = 45000;
 constexpr UINT kMessageProgress = WM_APP + 3;
 
 // 本地翻译模型（腾讯混元 HY-MT 1.5 1.8B，GGUF）和 llama.cpp 的 Windows 包：和 Linux 设置界面（settings/wowtype-config 的
@@ -134,9 +144,10 @@ const std::vector<Page> &pages() {
                      "FuzzyEngOng"}},
         {L"标点与表情", {"AutoPairPunct", "EmojiKey", "Toolbar", "ClipboardHistory"}},
         {L"语音", {"Voice", "VoiceKey", "VoiceCopy"}},
-        {L"翻译", {"Translate", "TranslateModeKey", "TranslateTarget", "TranslateLocal", "TranslateLocalModel",
-                   "TranslateLlamaServer", "TranslateIdleMinutes", "TranslateBaseUrl", "TranslateModel",
-                   "TranslateFormal"}},
+        // TranslateLocal、TranslateBaseUrl、TranslateModel 不单独列：「翻译引擎」下拉框和它下面的框写它们
+        // （translate::EngineChoice，和 Linux、macOS 一样）。本地模型的三项只在选了本地翻译时出现（isLocalTranslateKey）
+        {L"翻译", {"Translate", "TranslateModeKey", "TranslateTarget", "TranslateFormal", "TranslateLocalModel",
+                   "TranslateLlamaServer", "TranslateIdleMinutes"}},
     };
     return p;
 }
@@ -206,12 +217,9 @@ const std::map<std::string, std::wstring> &labels() {
         {"Translate", L"互译（Shift 在中 → 英 → 译之间切）"},
         {"TranslateModeKey", L"进出「译」的快捷键"},
         {"TranslateTarget", L"译成"},
-        {"TranslateLocal", L"用本地翻译模型（离线）"},
         {"TranslateLocalModel", L"本地模型文件（留空用数据目录里的）"},
         {"TranslateLlamaServer", L"llama-server（留空自己找）"},
         {"TranslateIdleMinutes", L"本地模型闲置几分钟后释放（0 不释放）"},
-        {"TranslateBaseUrl", L"翻译服务地址（OpenAI 格式）"},
-        {"TranslateModel", L"模型"},
         {"TranslateFormal", L"译文用正式语气"},
     };
     return l;
@@ -431,6 +439,11 @@ LRESULT CALLBACK chartProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
     return 0;
 }
 
+/// 「翻译」页里只属于本地翻译的项：选了别的引擎就不显示
+bool isLocalTranslateKey(const std::string &key) {
+    return key == "TranslateLocalModel" || key == "TranslateLlamaServer" || key == "TranslateIdleMinutes";
+}
+
 struct Row {
     const SettingDef *def;
     HWND label = nullptr;
@@ -488,6 +501,13 @@ private:
     void importVoiceModel();
     void downloadVoiceModel();
     void downloadLocalModel();
+    // 「翻译引擎」：选中哪个、下面出现哪个的设置（和 Linux 的 refresh_local_translate 一样）
+    void syncTranslateControls();
+    void refreshTranslate();
+    void testTranslate(bool bilibili);
+    void pollTranslateTest();
+    void finishTranslateTest(const std::string &message);
+    void stopTranslateTest();
     void showUpdateState();
     void checkUpdate(bool thenInstall);
     void installUpdate();
@@ -501,6 +521,27 @@ private:
     HWND tabs_ = nullptr;
     HWND apiKeyLabel_ = nullptr;
     HWND apiKey_ = nullptr;
+    HWND engineLabel_ = nullptr;
+    HWND engine_ = nullptr;
+    HWND engineNote_ = nullptr;
+    HWND biliModelLabel_ = nullptr;
+    HWND biliModel_ = nullptr;
+    HWND biliNote_ = nullptr;
+    HWND biliTest_ = nullptr;
+    HWND biliTestResult_ = nullptr;
+    HWND customUrlLabel_ = nullptr;
+    HWND customUrl_ = nullptr;
+    HWND customModelLabel_ = nullptr;
+    HWND customModel_ = nullptr;
+    HWND customTest_ = nullptr;
+    HWND customTestResult_ = nullptr;
+    translate::EngineChoice translate_;
+    bool syncingTranslate_ = false;
+    // 「测试连接」：核心的翻译器（和输入法同一套请求），测完就放掉
+    WowtypeTranslator *testTranslator_ = nullptr;
+    HWND testResult_ = nullptr;
+    ULONGLONG testStarted_ = 0;
+    std::wstring testKeyFile_;
     HWND save_ = nullptr;
     HWND close_ = nullptr;
     HWND custom_ = nullptr;
@@ -599,6 +640,15 @@ void SettingsWindow::build() {
             if (!def) {
                 continue;
             }
+            if (std::string(key) == "TranslateLocalModel") {
+                // 「翻译引擎」排在本地模型的几项前面（Tab 键也按这个顺序走）
+                engineLabel_ = child(L"STATIC", L"翻译引擎", SS_LEFT, 0);
+                engine_ = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, kIdEngine);
+                for (const auto &e : translate::engines()) {
+                    SendMessageW(engine_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(widen(e.name).c_str()));
+                }
+                engineNote_ = child(L"STATIC", L"", SS_LEFT, 0);
+            }
             Row row{def};
             row.page = static_cast<int>(p);
             const auto label = labels().count(key) ? labels().at(key) : widen(key);
@@ -626,8 +676,23 @@ void SettingsWindow::build() {
             rows_.push_back(row);
         }
     }
-    apiKeyLabel_ = child(L"STATIC", L"API Key（存在 translate.key，不写进设置文件）", SS_LEFT, 0);
+    // 哔哩哔哩：模型、隐私说明、测试连接（和 Linux 的 build_bilibili_translate 一样）
+    biliModelLabel_ = child(L"STATIC", L"模型", SS_LEFT, 0);
+    biliModel_ = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, kIdBiliModel);
+    biliNote_ = child(L"STATIC",
+                      (widen(translate::kBilibiliPrivacy) + L"。不用 API Key，也不会带上「自定义翻译服务」里存的 Key。").c_str(),
+                      SS_LEFT, 0);
+    biliTest_ = child(L"BUTTON", L"测试连接", BS_PUSHBUTTON | WS_TABSTOP, kIdBiliTest);
+    biliTestResult_ = child(L"STATIC", L"用「你好」试一下", SS_LEFT, 0);
+    // 自定义翻译服务：地址、API Key、模型、测试连接
+    customUrlLabel_ = child(L"STATIC", L"翻译服务地址（OpenAI 格式）", SS_LEFT, 0);
+    customUrl_ = child(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, kIdCustomUrl);
+    apiKeyLabel_ = child(L"STATIC", L"API Key（存在 translate.key，本机服务可以不填）", SS_LEFT, 0);
     apiKey_ = child(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_PASSWORD | WS_TABSTOP, kIdApiKey);
+    customModelLabel_ = child(L"STATIC", L"模型", SS_LEFT, 0);
+    customModel_ = child(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, kIdCustomModel);
+    customTest_ = child(L"BUTTON", L"测试连接", BS_PUSHBUTTON | WS_TABSTOP, kIdCustomTest);
+    customTestResult_ = child(L"STATIC", L"用「你好」试一下", SS_LEFT, 0);
     {
         TCITEMW item{};
         item.mask = TCIF_TEXT;
@@ -699,6 +764,9 @@ void SettingsWindow::layout() {
     int bottom = top;
     HWND themeControl = nullptr;
     for (auto &row : rows_) {
+        if (isLocalTranslateKey(row.def->key)) {
+            continue; // 排在「翻译引擎」下面，见后面
+        }
         int &at = y[static_cast<std::size_t>(row.page)];
         // 设置窗口的主题、强调色：两个下拉框排在同一行（「常规」页已经是最高的一页，不再加高）
         if (std::string(row.def->key) == "SettingsTheme") {
@@ -734,22 +802,60 @@ void SettingsWindow::layout() {
         at += rowHeight;
         bottom = std::max(bottom, at);
     }
+    // 「翻译」页：上面是互译的开关这些，接着「翻译引擎」和它的说明，下面三个引擎各自的设置排在同一块地方
+    // （只显示选中的那个，refreshTranslate）
+    {
+        const auto translatePage = static_cast<std::size_t>(pageNamed(L"翻译"));
+        const int fieldX = margin * 2 + scale(260);
+        const int fieldWidth = width - margin * 4 - scale(260);
+        const int full = width - margin * 4;
+        const auto labeled = [&](HWND label, HWND control, int &at, int height) {
+            MoveWindow(label, margin * 2, at + scale(4), scale(250), scale(22), FALSE);
+            MoveWindow(control, fieldX, at, fieldWidth, height, FALSE);
+            at += rowHeight;
+        };
+        const auto note = [&](HWND text, int &at) {
+            MoveWindow(text, margin * 2, at, full, scale(40), FALSE);
+            at += scale(44);
+        };
+        const auto testRow = [&](HWND button, HWND result, int &at) {
+            MoveWindow(button, margin * 2, at, scale(96), scale(26), FALSE);
+            MoveWindow(result, margin * 2 + scale(106), at + scale(4), full - scale(106), scale(40), FALSE);
+            at += scale(48);
+        };
+        int at = y[translatePage];
+        labeled(engineLabel_, engine_, at, scale(300));
+        note(engineNote_, at);
+        int local = at;
+        for (const auto &row : rows_) {
+            if (isLocalTranslateKey(row.def->key)) {
+                labeled(row.label, row.control, local, scale(24));
+            }
+        }
+        MoveWindow(localModel_, margin * 2, local + scale(6), full, scale(28), FALSE);
+        local += rowHeight + scale(6);
+        int bili = at;
+        labeled(biliModelLabel_, biliModel_, bili, scale(300));
+        note(biliNote_, bili);
+        testRow(biliTest_, biliTestResult_, bili);
+        int custom = at;
+        labeled(customUrlLabel_, customUrl_, custom, scale(24));
+        labeled(apiKeyLabel_, apiKey_, custom, scale(24));
+        labeled(customModelLabel_, customModel_, custom, scale(24));
+        testRow(customTest_, customTestResult_, custom);
+        y[translatePage] = std::max({local, bili, custom});
+        bottom = std::max(bottom, y[translatePage]);
+    }
     // 输入页、语音页最后各有一个导入模型的按钮
     using ButtonOnPage = std::pair<HWND, const wchar_t *>;
     for (const auto &[button, title] :
          {ButtonOnPage{nnlm_, L"输入"}, ButtonOnPage{voiceDownload_, L"语音"}, ButtonOnPage{voiceModel_, L"语音"},
-          ButtonOnPage{localModel_, L"翻译"},
           ButtonOnPage{updateCheck_, L"常规"}, ButtonOnPage{updateInstall_, L"常规"}, ButtonOnPage{diagnostics_, L"常规"}}) {
         const auto page = static_cast<std::size_t>(pageNamed(title));
         MoveWindow(button, margin * 2, y[page] + scale(6), width - margin * 4, scale(28), FALSE);
         y[page] += rowHeight + scale(6);
         bottom = std::max(bottom, y[page]);
     }
-    // 翻译页最后加 API Key
-    const std::size_t translatePage = pages().size() - 1;
-    MoveWindow(apiKeyLabel_, margin * 2, y[translatePage] + scale(4), scale(250), scale(22), FALSE);
-    MoveWindow(apiKey_, margin * 2 + scale(260), y[translatePage], width - margin * 4 - scale(260), scale(24), FALSE);
-    bottom = std::max(bottom, y[translatePage] + rowHeight);
     // 自定义词页：上面是列表，下面是加词的两个框和按钮
     // 1366×768 的屏幕上也要放得下（CI 的截图里 500 太高，下面的按钮被任务栏挡住）
     bottom = std::max(bottom, top + scale(420));
@@ -806,9 +912,7 @@ void SettingsWindow::showPage(int page) {
             ShowWindow(row.label, show);
         }
     }
-    const int translate = static_cast<int>(pages().size()) - 1;
-    ShowWindow(apiKeyLabel_, page == translate ? SW_SHOW : SW_HIDE);
-    ShowWindow(apiKey_, page == translate ? SW_SHOW : SW_HIDE);
+    refreshTranslate();
     ShowWindow(nnlm_, page == pageNamed(L"输入") ? SW_SHOW : SW_HIDE);
     ShowWindow(diagnostics_, page == pageNamed(L"常规") ? SW_SHOW : SW_HIDE);
     ShowWindow(updateCheck_, page == pageNamed(L"常规") ? SW_SHOW : SW_HIDE);
@@ -821,7 +925,6 @@ void SettingsWindow::showPage(int page) {
     }
     ShowWindow(voiceModel_, page == pageNamed(L"语音") ? SW_SHOW : SW_HIDE);
     ShowWindow(voiceDownload_, page == pageNamed(L"语音") ? SW_SHOW : SW_HIDE);
-    ShowWindow(localModel_, page == pageNamed(L"翻译") ? SW_SHOW : SW_HIDE);
     for (HWND h : {wordList_, wordLabel_, word_, codeLabel_, code_, addWord_, removeWord_, importWords_, custom_}) {
         ShowWindow(h, page == customPage() ? SW_SHOW : SW_HIDE);
     }
@@ -855,6 +958,8 @@ void SettingsWindow::load() {
         apiKeyLoaded_.pop_back();
     }
     SetWindowTextW(apiKey_, widen(apiKeyLoaded_).c_str());
+    translate_.load(base_);
+    syncTranslateControls();
     if (!lookApplied_.empty()) {
         applyLook(fromControls());  // 文件在别处改了主题、强调色
     }
@@ -883,7 +988,152 @@ Config SettingsWindow::fromControls() const {
         }
         }
     }
+    // TranslateLocal、TranslateBaseUrl、TranslateModel：「翻译引擎」和它下面的框（自定义的两个框改了就记进 translate_）
+    translate_.apply(config);
     return config;
+}
+
+void SettingsWindow::syncTranslateControls() {
+    syncingTranslate_ = true;
+    SendMessageW(engine_, CB_SETCURSEL, static_cast<WPARAM>(translate_.engine()), 0);
+    SetWindowTextW(customUrl_, widen(translate_.customUrl()).c_str());
+    SetWindowTextW(customModel_, widen(translate_.customModel()).c_str());
+    SendMessageW(biliModel_, CB_RESETCONTENT, 0, 0);
+    for (const auto &option : translate_.bilibiliOptions()) {
+        SendMessageW(biliModel_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(widen(option.second).c_str()));
+    }
+    SendMessageW(biliModel_, CB_SETCURSEL, static_cast<WPARAM>(translate_.bilibiliIndex()), 0);
+    syncingTranslate_ = false;
+    refreshTranslate();
+}
+
+void SettingsWindow::refreshTranslate() {
+    const bool here = page_ == pageNamed(L"翻译");
+    const translate::Engine engine = translate_.engine();
+    const auto show = [](HWND h, bool visible) { ShowWindow(h, visible ? SW_SHOW : SW_HIDE); };
+    for (HWND h : {engineLabel_, engine_, engineNote_}) {
+        show(h, here);
+    }
+    const bool local = here && engine == translate::Engine::Local;
+    for (const auto &row : rows_) {
+        if (isLocalTranslateKey(row.def->key)) {
+            show(row.control, local);
+            show(row.label, local);
+        }
+    }
+    show(localModel_, local);
+    for (HWND h : {biliModelLabel_, biliModel_, biliNote_, biliTest_, biliTestResult_}) {
+        show(h, here && engine == translate::Engine::Bilibili);
+    }
+    for (HWND h : {customUrlLabel_, customUrl_, apiKeyLabel_, apiKey_, customModelLabel_, customModel_, customTest_,
+                   customTestResult_}) {
+        show(h, here && engine == translate::Engine::Custom);
+    }
+    SetWindowTextW(engineNote_, widen(translate::engines()[static_cast<std::size_t>(engine)].note).c_str());
+}
+
+void SettingsWindow::testTranslate(bool bilibili) {
+    // 和 Linux 的 on_test_translate、macOS 的 testTranslate 一样：用「你好」试一下，跟着「译成」和「正式语气」
+    stopTranslateTest();
+    const Config config = fromControls();
+    HWND result = bilibili ? biliTestResult_ : customTestResult_;
+    std::string base;
+    std::string model;
+    std::string keyFile;
+    if (bilibili) {
+        // 哔哩哔哩不带 Key（核心看到它的地址也不带）
+        base = translate::kBilibiliUrl;
+        model = translate_.bilibiliSelected();
+    } else {
+        base = config.value("TranslateBaseUrl");
+        model = config.value("TranslateModel");
+        if (base.empty() || model.empty()) {
+            SetWindowTextW(result, L"先填接口地址和模型");
+            return;
+        }
+        // 用框里的 Key：没保存过（和 translate.key 不一样）时先写进一个临时文件，测完删掉
+        wchar_t buffer[1024] = {};
+        GetWindowTextW(apiKey_, buffer, 1024);
+        const std::string key = narrow(buffer);
+        if (key == apiKeyLoaded_) {
+            keyFile = key.empty() ? std::string() : narrow(dataDir() + L"\\translate.key");
+        } else if (!key.empty()) {
+            CreateDirectoryW(dataDir().c_str(), nullptr);
+            testKeyFile_ = dataDir() + L"\\translate.key.test";
+            if (!writeFile(testKeyFile_, key + "\n")) {
+                testKeyFile_.clear();
+                SetWindowTextW(result, L"✗ 写不了临时的 Key 文件");
+                return;
+            }
+            keyFile = narrow(testKeyFile_);
+        }
+    }
+    testTranslator_ = wowtype_translate_new();
+    wowtype_translate_configure(testTranslator_, base.c_str(), model.c_str(), config.value("TranslateTarget").c_str(),
+                                config.flag("TranslateFormal"), keyFile.empty() ? nullptr : keyFile.c_str());
+    wowtype_translate_configure_local(testTranslator_, "", "", 0);
+    if (!wowtype_translate_ready(testTranslator_)) {
+        stopTranslateTest();
+        SetWindowTextW(result, L"先填接口地址和模型");
+        return;
+    }
+    testResult_ = result;
+    testStarted_ = GetTickCount64();
+    EnableWindow(biliTest_, FALSE);
+    EnableWindow(customTest_, FALSE);
+    SetWindowTextW(result, L"正在连接…");
+    wowtype_translate_start(testTranslator_, "你好");
+    SetTimer(hwnd_, kTimerTranslateTest, 100, nullptr);
+}
+
+void SettingsWindow::pollTranslateTest() {
+    if (!testTranslator_) {
+        stopTranslateTest();
+        return;
+    }
+    const ULONGLONG elapsed = GetTickCount64() - testStarted_;
+    switch (wowtype_translate_poll(testTranslator_)) {
+    case WOWTYPE_TRANSLATE_DONE: {
+        const char *text = wowtype_translate_text(testTranslator_);
+        finishTranslateTest(text && *text ? translate::testSummary(text, static_cast<double>(elapsed) / 1000.0)
+                                          : std::string("✗ 服务返回了空的译文"));
+        break;
+    }
+    case WOWTYPE_TRANSLATE_ERROR: {
+        const char *error = wowtype_translate_error(testTranslator_);
+        finishTranslateTest("✗ " + std::string(error && *error ? error : "出错了"));
+        break;
+    }
+    default:
+        if (elapsed > kTranslateTestTimeoutMs) {
+            wowtype_translate_cancel(testTranslator_);
+            finishTranslateTest("✗ 请求超时");
+        }
+        break;
+    }
+}
+
+void SettingsWindow::finishTranslateTest(const std::string &message) {
+    HWND result = testResult_;
+    stopTranslateTest();
+    if (result) {
+        SetWindowTextW(result, widen(message).c_str());
+    }
+}
+
+void SettingsWindow::stopTranslateTest() {
+    KillTimer(hwnd_, kTimerTranslateTest);
+    if (testTranslator_) {
+        wowtype_translate_free(testTranslator_);
+        testTranslator_ = nullptr;
+    }
+    if (!testKeyFile_.empty()) {
+        DeleteFileW(testKeyFile_.c_str());
+        testKeyFile_.clear();
+    }
+    testResult_ = nullptr;
+    EnableWindow(biliTest_, TRUE);
+    EnableWindow(customTest_, TRUE);
 }
 
 bool SettingsWindow::save() {
@@ -1177,7 +1427,7 @@ void SettingsWindow::downloadLocalModel() {
     const bool needLlama = !llamaServerFound(dir, config.value("TranslateLlamaServer"));
     HWND window = hwnd_;
     std::thread([dir, model, needLlama, window] {
-        auto *result = new std::wstring(L"本地翻译模型装好了，在这一页打开「互译」和「用本地翻译模型」就能用");
+        auto *result = new std::wstring(L"本地翻译模型装好了，在这一页打开「互译」、翻译引擎选「本地翻译（离线）」就能用");
         CreateDirectoryW(dir.c_str(), nullptr);
         if (GetFileAttributesW(model.c_str()) == INVALID_FILE_ATTRIBUTES) {
             const auto slash = model.find_last_of(L"\\/");
@@ -1740,6 +1990,43 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
         case kIdLocalModel:
             downloadLocalModel();
             return 0;
+        case kIdEngine:
+            // 换引擎：写上这个引擎的地址和模型（存盘还是点「保存」），下面换成它的设置
+            if (HIWORD(wParam) == CBN_SELCHANGE && !syncingTranslate_) {
+                const LRESULT i = SendMessageW(engine_, CB_GETCURSEL, 0, 0);
+                if (i >= 0 && static_cast<std::size_t>(i) < translate::engines().size()) {
+                    stopTranslateTest();
+                    SetWindowTextW(biliTestResult_, L"用「你好」试一下");
+                    SetWindowTextW(customTestResult_, L"用「你好」试一下");
+                    translate_.select(translate::engines()[static_cast<std::size_t>(i)].engine);
+                    refreshTranslate();
+                }
+            }
+            return 0;
+        case kIdBiliModel:
+            if (HIWORD(wParam) == CBN_SELCHANGE && !syncingTranslate_) {
+                translate_.pickBilibili(static_cast<int>(SendMessageW(biliModel_, CB_GETCURSEL, 0, 0)));
+            }
+            return 0;
+        case kIdCustomUrl:
+        case kIdCustomModel:
+            if (HIWORD(wParam) == EN_CHANGE && !syncingTranslate_) {
+                HWND edit = LOWORD(wParam) == kIdCustomUrl ? customUrl_ : customModel_;
+                std::wstring text(static_cast<std::size_t>(GetWindowTextLengthW(edit)) + 1, L'\0');
+                text.resize(static_cast<std::size_t>(GetWindowTextW(edit, text.data(), static_cast<int>(text.size()))));
+                if (LOWORD(wParam) == kIdCustomUrl) {
+                    translate_.setCustomUrl(narrow(text));
+                } else {
+                    translate_.setCustomModel(narrow(text));
+                }
+            }
+            return 0;
+        case kIdBiliTest:
+            testTranslate(true);
+            return 0;
+        case kIdCustomTest:
+            testTranslate(false);
+            return 0;
         case kIdVoiceDownload:
             downloadVoiceModel();
             return 0;
@@ -1790,6 +2077,12 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
         // 切回窗口时别处改了文件（记事本、另一个设置窗口）：没改过的控件跟上文件
         if (LOWORD(wParam) != WA_INACTIVE && fromControls() == base_) {
             load();
+        }
+        break;
+    case WM_TIMER:
+        if (wParam == kTimerTranslateTest) {
+            pollTranslateTest();
+            return 0;
         }
         break;
     case kMessageProgress: {
@@ -1855,6 +2148,7 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     case WM_DESTROY:
+        stopTranslateTest();
         if (backgroundBrush_) {
             DeleteObject(backgroundBrush_);
         }

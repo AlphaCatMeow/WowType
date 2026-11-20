@@ -4,6 +4,8 @@
 //   wowtype-windows-config-dump --load k=v ...      这几行当 wowtype.conf 读出来的值：{"values": {...}}
 //   wowtype-windows-config-dump --load-file <path>  读这个文件
 //   wowtype-windows-config-dump --look              设置窗口的主题、强调色：{"themes": [...], "accents": [...]}
+//   wowtype-windows-config-dump --translate         「翻译引擎」的选项和哔哩哔哩的地址、模型：{"engines": [...], "bilibili": {...}}
+//   wowtype-windows-config-dump --engine k=v ...    这几行当 wowtype.conf 读出来时选中的引擎：{"engine": "local"}
 
 #include <cstdio>
 #include <fstream>
@@ -13,6 +15,7 @@
 
 #include "config.h"
 #include "look.h"
+#include "translate_engine.h"
 
 using namespace wowtype;
 
@@ -112,6 +115,33 @@ int main(int argc, char **argv) {
         std::printf("%s]}\n", out.c_str());
         return 0;
     }
+    if (mode == "--translate") {
+        std::string out = "{\"engines\": [";
+        for (std::size_t i = 0; i < translate::engines().size(); ++i) {
+            const auto &e = translate::engines()[i];
+            out += std::string(i ? ", " : "") + "{\"id\": " + json(e.id) + ", \"name\": " + json(e.name) +
+                   ", \"note\": " + json(e.note) + "}";
+        }
+        out += "], \"bilibili\": {\"url\": " + json(translate::kBilibiliUrl) + ", \"host\": " +
+               json(translate::kBilibiliHost) + ", \"modelPrefix\": " + json(translate::kBilibiliModelPrefix) +
+               ", \"default\": " + json(translate::kBilibiliDefaultModel) + ", \"privacy\": " +
+               json(translate::kBilibiliPrivacy) + ", \"models\": [";
+        for (std::size_t i = 0; i < translate::bilibiliModels().size(); ++i) {
+            const auto &m = translate::bilibiliModels()[i];
+            out += std::string(i ? ", " : "") + "{\"id\": " + json(m.id) + ", \"name\": " + json(m.name) + "}";
+        }
+        std::printf("%s]}}\n", out.c_str());
+        return 0;
+    }
+    if (mode == "--engine") {
+        std::string text;
+        for (int i = 2; i < argc; ++i) {
+            text += std::string(argv[i]) + "\n";
+        }
+        const auto engine = translate::engineOf(Config::parse(text));
+        std::printf("{\"engine\": %s}\n", json(translate::engines()[static_cast<std::size_t>(engine)].id).c_str());
+        return 0;
+    }
     if (mode == "--load-file" && argc == 3) {
         std::ifstream in(argv[2], std::ios::binary);
         if (!in) {
@@ -122,6 +152,6 @@ int main(int argc, char **argv) {
         dumpValues(Config::parse(text));
         return 0;
     }
-    std::fprintf(stderr, "用法：wowtype-windows-config-dump [--load k=v ... | --load-file <path> | --look]\n");
+    std::fprintf(stderr, "用法：wowtype-windows-config-dump [--load k=v ... | --load-file <path> | --look | --translate | --engine k=v ...]\n");
     return 2;
 }

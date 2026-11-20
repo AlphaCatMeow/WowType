@@ -21,7 +21,7 @@ FLAGS=(-std=c++17 -O1 -Wall -Wextra -Icore/include -Iwindows/src/common)
 "$CXX" "${FLAGS[@]}" windows/src/common/*.cpp windows/tests/composer_test.cpp "$LIB" -lpthread -ldl -lm \
   -o "$OUT/wowtype-windows-harness"
 "$CXX" "${FLAGS[@]}" windows/src/common/config.cpp windows/src/common/keys.cpp windows/src/common/look.cpp \
-  windows/tests/config_dump.cpp \
+  windows/src/common/translate_engine.cpp windows/tests/config_dump.cpp \
   -o "$OUT/wowtype-windows-config-dump"
 
 # 设置窗口下载的语音包（地址、大小、MD5）和核心的 voice/src/wtlocal/pack.rs 一样
