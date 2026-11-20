@@ -71,6 +71,7 @@ add_library(wowtype_common STATIC
   src/common/composer.cpp
   src/common/config.cpp
   src/common/keys.cpp
+  src/common/look.cpp
   src/common/custom_words.cpp
   src/common/stats_view.cpp
   src/common/voice.cpp)
@@ -100,7 +101,7 @@ add_executable(wowtype-settings WIN32 src/settings/settings_app.cpp src/win/upda
 # 自定义词页要核心整理编码、猜拼音（wowtype_custom_code、wowtype_guess_pinyin）
 target_compile_definitions(wowtype-settings PRIVATE "WOWTYPE_VERSION=\"${WOWTYPE_VERSION}\"")
 target_link_libraries(wowtype-settings PRIVATE wowtype_common "${WOWTYPE_CORE_LIB}" ${CORE_SYSTEM_LIBS}
-  comctl32 comdlg32 shell32 ole32 user32 gdi32 bcrypt advapi32 winhttp)
+  comctl32 comdlg32 shell32 ole32 user32 gdi32 bcrypt advapi32 winhttp dwmapi uxtheme)
 
 if(WOWTYPE_WINDOWS_TESTS)
   add_executable(wowtype-windows-harness tests/composer_test.cpp)

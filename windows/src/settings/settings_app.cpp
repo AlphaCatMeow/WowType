@@ -4,6 +4,8 @@
 // 设置项表生成（开关是勾选框、枚举是下拉框、数字和字符串是输入框），所以 spec/config.json 里 Windows 认的项这里都能改。
 // 保存时只写改过的键（Config::merged：窗口开着时别处改了文件，别处改的留着），注释、不认识的键原样留着，
 // 输入法下一次按键时自己重新读。互译的 API Key 存在同一个目录的 translate.key，不写进 wowtype.conf。
+// 窗口的主题（跟随系统 / 浅色 / 深色）和强调色是「常规」页的 SettingsTheme、SettingsAccent，选了马上换（applyLook），
+// 和 Linux、macOS 的设置窗口一样；颜色表在 common/look.h。
 
 #include <windows.h>
 
@@ -11,9 +13,11 @@
 
 #include <commctrl.h>
 #include <commdlg.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <uxtheme.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -32,6 +36,7 @@
 #include "app_update.h"
 #include "config.h"
 #include "custom_words.h"
+#include "look.h"
 #include "stats_view.h"
 #include "utf.h"
 #include "wowtype_core.h"
@@ -117,7 +122,8 @@ struct Page {
 const std::vector<Page> &pages() {
     static const std::vector<Page> p = {
         {L"常规", {"InputScheme", "ShuangpinScheme", "ShuangpinShowKeys", "WubiAutoCommit", "WubiHint", "InitialMode",
-                   "ShiftToggle", "ToggleKey", "Traditional", "Lexicon", "TypingStats"}},
+                   "ShiftToggle", "ToggleKey", "Traditional", "Lexicon", "TypingStats", "SettingsTheme",
+                   "SettingsAccent"}},
         {L"候选", {"CandidateLayout", "PageSize", "CandidateFontSize", "ArrowKeys", "PageKeysMinusEqual",
                    "PageKeysBracket", "PageKeysCommaPeriod", "PageKeysTab", "SelectKeys", "PickChar", "Association"}},
         {L"输入", {"TypoCorrection", "RareExtChars", "DateTime", "Calculator", "AutoSpace", "AutoSpaceLetters",
@@ -148,6 +154,8 @@ const std::map<std::string, std::wstring> &labels() {
         {"Traditional", L"输出繁体字"},
         {"Lexicon", L"词库文件（留空用自带的）"},
         {"TypingStats", L"打字统计（只在本机记计数，不记内容）"},
+        // 主题、强调色两个下拉框排在同一行（layout），强调色那一行不另写名字
+        {"SettingsTheme", L"设置窗口的主题、强调色"},
         {"CandidateLayout", L"候选排列"},
         {"PageSize", L"每页候选个数（3–9）"},
         {"CandidateFontSize", L"候选字号（10–40）"},
@@ -208,6 +216,17 @@ const std::map<std::string, std::wstring> &labels() {
 
 /// 枚举值的叫法；没列的照原样显示。
 std::wstring valueName(const std::string &key, const std::string &value) {
+    // 设置窗口的主题、强调色：名字在 look.h（和 Linux、macOS 对照同一份规格）
+    if (key == "SettingsTheme") {
+        for (const auto &t : look::themes()) {
+            if (value == t.value) {
+                return widen(t.name);
+            }
+        }
+    }
+    if (key == "SettingsAccent") {
+        return widen(look::accent(value).name);
+    }
     static const std::map<std::string, std::wstring> names = {
         {"InputScheme/Quanpin", L"拼音输入"},     {"InputScheme/Shuangpin", L"双拼输入"},
         {"InputScheme/Wubi86", L"五笔输入"},      {"ShuangpinScheme/Ziranma", L"自然码"},
@@ -295,6 +314,20 @@ struct ChartData {
 };
 ChartData g_chart;
 
+/// 0xRRGGBB 换成 GDI 的 COLORREF
+COLORREF colorRef(uint32_t rgb) { return RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF); }
+
+/// 设置窗口现在的颜色（applyLook 换）：浅色跟着系统的窗口颜色，深色用固定的一套
+struct LookColors {
+    bool dark = false;
+    uint32_t bg = 0xFFFFFF;      // 窗口底色
+    uint32_t fg = 0x000000;      // 文字
+    uint32_t dim = 0x5F5F5F;     // 次要文字（和底色的对比度至少 4.5:1）
+    uint32_t field = 0xFFFFFF;   // 输入框、下拉框的底
+    const look::Accent *accent = &look::accents().front();
+};
+LookColors g_look;
+
 LRESULT CALLBACK chartProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message != WM_PAINT) {
         return DefWindowProcW(hwnd, message, wParam, lParam);
@@ -305,12 +338,16 @@ LRESULT CALLBACK chartProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
     GetClientRect(hwnd, &client);
     const UINT dpi = GetDpiForWindow(hwnd);
     const auto px = [dpi](int dip) { return MulDiv(dip, static_cast<int>(dpi), 96); };
-    FillRect(dc, &client, GetSysColorBrush(COLOR_WINDOW));
+    {
+        HBRUSH background = CreateSolidBrush(colorRef(g_look.bg));
+        FillRect(dc, &client, background);
+        DeleteObject(background);
+    }
     HFONT font = CreateFontW(-px(11), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                              CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
     HGDIOBJ oldFont = SelectObject(dc, font);
     SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
+    SetTextColor(dc, colorRef(g_look.dim));
     const int width = client.right - client.left;
 
     // 最近 30 天：每天一根柱子，最高的那天顶满
@@ -323,7 +360,7 @@ LRESULT CALLBACK chartProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
     for (const auto &day : g_chart.days) {
         most = std::max(most, day.second);
     }
-    HBRUSH bar = CreateSolidBrush(RGB(0x2F, 0x6F, 0xD6));
+    HBRUSH bar = CreateSolidBrush(colorRef(g_look.accent->color));
     const int n = static_cast<int>(g_chart.days.size());
     for (int i = 0; i < n; ++i) {
         const int left = width * i / std::max(n, 1);
@@ -354,8 +391,12 @@ LRESULT CALLBACK chartProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
             }
         }
     }
-    const COLORREF levels[] = {RGB(0xEE, 0xEE, 0xEE), RGB(0xC6, 0xE2, 0xFF), RGB(0x8C, 0xC4, 0xFF),
-                               RGB(0x4A, 0x9B, 0xF5), RGB(0x1F, 0x6F, 0xD6)};
+    // 五档：最浅是一点点字色，中间三档是强调色叠在底色上（字用窗口的字色），最深一档是 strong（白字）
+    const COLORREF levels[] = {colorRef(look::blend(g_look.fg, g_look.bg, 0.07)),
+                               colorRef(look::blend(g_look.accent->color, g_look.bg, 0.20)),
+                               colorRef(look::blend(g_look.accent->color, g_look.bg, 0.40)),
+                               colorRef(look::blend(g_look.accent->color, g_look.bg, 0.60)),
+                               colorRef(g_look.accent->strong)};
     const double unit = width / 15.25;
     // 键的高度照剩下的地方算（6 排），最多是宽的 0.8 倍
     const int keyHeight = std::max(px(14), std::min(static_cast<int>(unit * 0.8), (height - mapTop - px(20)) / 6));
@@ -374,7 +415,7 @@ LRESULT CALLBACK chartProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
             HBRUSH brush = CreateSolidBrush(levels[heat]);
             FillRect(dc, &r, brush);
             DeleteObject(brush);
-            SetTextColor(dc, heat >= 3 ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x33, 0x33, 0x33));
+            SetTextColor(dc, heat >= 4 ? RGB(0xFF, 0xFF, 0xFF) : colorRef(g_look.fg));
             DrawTextW(dc, widen(cap.label).c_str(), -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
         y += keyHeight;
@@ -413,7 +454,12 @@ public:
 
 private:
     static LRESULT CALLBACK proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK tabsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR self);
     LRESULT handle(UINT message, WPARAM wParam, LPARAM lParam);
+    /// 换上 config 里的主题、强调色（SettingsTheme、SettingsAccent）：窗口、控件、标签、统计图的颜色
+    void applyLook(const Config &config);
+    void paintTabs(HWND tabs, HDC dc);
+    static bool systemDark();
     void build();
     void layout();
     void showPage(int page);
@@ -480,6 +526,9 @@ private:
     bool codeTouched_ = false;
     bool settingCode_ = false;
     HFONT font_ = nullptr;
+    HBRUSH backgroundBrush_ = nullptr;
+    HBRUSH fieldBrush_ = nullptr;
+    std::string lookApplied_;
     UINT dpi_ = 96;
     std::vector<Row> rows_;
     int page_ = 0;
@@ -516,6 +565,7 @@ bool SettingsWindow::create(HINSTANCE instance) {
     build();
     load();
     layout();
+    applyLook(fromControls());
     showPage(0);
     showUpdateState();
     ShowWindow(hwnd_, SW_SHOWNORMAL);
@@ -524,6 +574,8 @@ bool SettingsWindow::create(HINSTANCE instance) {
 
 void SettingsWindow::build() {
     tabs_ = child(WC_TABCONTROLW, L"", WS_VISIBLE | WS_CLIPSIBLINGS, kIdTabs);
+    // 标签自己画（paintTabs）：深色时标签控件本身画不了深色，选中的标签下面画一道强调色
+    SetWindowSubclass(tabs_, tabsProc, 1, reinterpret_cast<DWORD_PTR>(this));
     for (std::size_t i = 0; i < pages().size(); ++i) {
         TCITEMW item{};
         item.mask = TCIF_TEXT;
@@ -550,7 +602,10 @@ void SettingsWindow::build() {
                 row.control = child(L"BUTTON", label.c_str(), BS_AUTOCHECKBOX | WS_TABSTOP, id++);
                 break;
             case SettingType::Enum:
-                row.label = child(L"STATIC", label.c_str(), SS_LEFT, 0);
+                // 强调色的下拉框排在主题的右边（layout），这一行没有自己的名字
+                if (std::string(key) != "SettingsAccent") {
+                    row.label = child(L"STATIC", label.c_str(), SS_LEFT, 0);
+                }
                 row.control = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, id++);
                 for (const auto &value : def->values) {
                     SendMessageW(row.control, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(valueName(key, value).c_str()));
@@ -637,8 +692,19 @@ void SettingsWindow::layout() {
     // 模糊音这一页的分组排两列
     std::vector<int> fuzzyIndex(pages().size(), 0);
     int bottom = top;
+    HWND themeControl = nullptr;
     for (auto &row : rows_) {
         int &at = y[static_cast<std::size_t>(row.page)];
+        // 设置窗口的主题、强调色：两个下拉框排在同一行（「常规」页已经是最高的一页，不再加高）
+        if (std::string(row.def->key) == "SettingsTheme") {
+            themeControl = row.control;
+        } else if (std::string(row.def->key) == "SettingsAccent" && themeControl) {
+            const int x = margin * 2 + scale(260);
+            const int half = (width - margin * 4 - scale(260) - scale(8)) / 2;
+            MoveWindow(themeControl, x, at - rowHeight, half, scale(300), FALSE);
+            MoveWindow(row.control, x + half + scale(8), at - rowHeight, half, scale(300), FALSE);
+            continue;
+        }
         const bool twoColumns = std::wstring(pages()[static_cast<std::size_t>(row.page)].title) == L"模糊音" &&
                                 std::string(row.def->key) != "Fuzzy";
         if (twoColumns) {
@@ -784,6 +850,9 @@ void SettingsWindow::load() {
         apiKeyLoaded_.pop_back();
     }
     SetWindowTextW(apiKey_, widen(apiKeyLoaded_).c_str());
+    if (!lookApplied_.empty()) {
+        applyLook(fromControls());  // 文件在别处改了主题、强调色
+    }
 }
 
 Config SettingsWindow::fromControls() const {
@@ -1456,6 +1525,132 @@ void SettingsWindow::importVoiceModel() {
     SetWindowTextW(status_, (L"导入了 " + std::to_wstring(copied) + L" 个文件，按语音键就能说话").c_str());
 }
 
+bool SettingsWindow::systemDark() {
+    // 「设置 → 个性化 → 颜色 → 选择默认应用模式」：AppsUseLightTheme 是 0 时是深色
+    DWORD light = 1;
+    DWORD size = sizeof light;
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &light, &size) != ERROR_SUCCESS) {
+        return false;
+    }
+    return light == 0;
+}
+
+void SettingsWindow::applyLook(const Config &config) {
+    const std::string theme = config.value("SettingsTheme");
+    const std::string accentName = config.value("SettingsAccent");
+    const bool dark = look::dark(theme, systemDark());
+    const std::string key = std::string(dark ? "dark/" : "light/") + accentName;
+    if (key == lookApplied_) {
+        return;
+    }
+    lookApplied_ = key;
+    g_look.dark = dark;
+    g_look.accent = &look::accent(accentName);
+    if (dark) {
+        g_look.bg = 0x202020;
+        g_look.fg = 0xFFFFFF;
+        g_look.dim = 0xC8C8C8;
+        g_look.field = 0x2B2B2B;
+    } else {
+        const COLORREF window = GetSysColor(COLOR_WINDOW);
+        const COLORREF text = GetSysColor(COLOR_WINDOWTEXT);
+        g_look.bg = (GetRValue(window) << 16) | (GetGValue(window) << 8) | GetBValue(window);
+        g_look.fg = (GetRValue(text) << 16) | (GetGValue(text) << 8) | GetBValue(text);
+        g_look.dim = look::blend(g_look.fg, g_look.bg, 0.72);
+        g_look.field = g_look.bg;
+    }
+    for (HBRUSH *brush : {&backgroundBrush_, &fieldBrush_}) {
+        if (*brush) {
+            DeleteObject(*brush);
+        }
+    }
+    backgroundBrush_ = CreateSolidBrush(colorRef(g_look.bg));
+    fieldBrush_ = CreateSolidBrush(colorRef(g_look.field));
+
+    // 标题栏：Windows 10 2004 起是属性 20，之前的 1809–1909 是 19
+    const BOOL darkTitle = dark ? TRUE : FALSE;
+    if (FAILED(DwmSetWindowAttribute(hwnd_, 20, &darkTitle, sizeof darkTitle))) {
+        DwmSetWindowAttribute(hwnd_, 19, &darkTitle, sizeof darkTitle);
+    }
+    // 控件：深色时换系统自带的深色样式（DarkMode_Explorer、DarkMode_CFD），浅色时换回默认。勾选框的深色样式
+    // 还是画黑字，深色时去掉样式，字色走 WM_CTLCOLORSTATIC
+    for (HWND h = GetWindow(hwnd_, GW_CHILD); h; h = GetWindow(h, GW_HWNDNEXT)) {
+        wchar_t cls[32] = {};
+        GetClassNameW(h, cls, 32);
+        const std::wstring name = cls;
+        const LONG_PTR style = GetWindowLongPtrW(h, GWL_STYLE);
+        if (name == L"Button" && (style & BS_TYPEMASK) == BS_AUTOCHECKBOX) {
+            SetWindowTheme(h, dark ? L"" : nullptr, dark ? L"" : nullptr);
+        } else if (name == L"Button" || name == WC_LISTVIEWW) {
+            SetWindowTheme(h, dark ? L"DarkMode_Explorer" : nullptr, nullptr);
+        } else if (name == L"ComboBox" || name == L"Edit") {
+            SetWindowTheme(h, dark ? L"DarkMode_CFD" : nullptr, nullptr);
+        }
+    }
+    ListView_SetBkColor(wordList_, colorRef(g_look.field));
+    ListView_SetTextBkColor(wordList_, colorRef(g_look.field));
+    ListView_SetTextColor(wordList_, colorRef(g_look.fg));
+    RedrawWindow(hwnd_, nullptr, nullptr, RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN);
+}
+
+void SettingsWindow::paintTabs(HWND tabs, HDC dc) {
+    RECT client{};
+    GetClientRect(tabs, &client);
+    HBRUSH background = CreateSolidBrush(colorRef(g_look.bg));
+    FillRect(dc, &client, background);
+    DeleteObject(background);
+    // 底下一条细线，选中的标签下面一道强调色（浅色用 strong，深色用 light：和底色的对比度够）
+    RECT line{client.left, client.bottom - scale(1), client.right, client.bottom};
+    HBRUSH lineBrush = CreateSolidBrush(colorRef(look::blend(g_look.fg, g_look.bg, 0.15)));
+    FillRect(dc, &line, lineBrush);
+    DeleteObject(lineBrush);
+    HGDIOBJ oldFont = SelectObject(dc, font_);
+    SetBkMode(dc, TRANSPARENT);
+    const int selected = TabCtrl_GetCurSel(tabs);
+    const uint32_t accentText = look::textColor(*g_look.accent, g_look.dark);
+    for (int i = 0; i < TabCtrl_GetItemCount(tabs); ++i) {
+        RECT r{};
+        TabCtrl_GetItemRect(tabs, i, &r);
+        wchar_t text[64] = {};
+        TCITEMW item{};
+        item.mask = TCIF_TEXT;
+        item.pszText = text;
+        item.cchTextMax = 64;
+        SendMessageW(tabs, TCM_GETITEMW, static_cast<WPARAM>(i), reinterpret_cast<LPARAM>(&item));
+        SetTextColor(dc, colorRef(i == selected ? accentText : g_look.fg));
+        DrawTextW(dc, text, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (i == selected) {
+            RECT mark{r.left + scale(6), client.bottom - scale(3), r.right - scale(6), client.bottom};
+            HBRUSH accentBrush = CreateSolidBrush(colorRef(accentText));
+            FillRect(dc, &mark, accentBrush);
+            DeleteObject(accentBrush);
+        }
+    }
+    SelectObject(dc, oldFont);
+}
+
+LRESULT CALLBACK SettingsWindow::tabsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id,
+                                          DWORD_PTR self) {
+    switch (message) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        reinterpret_cast<SettingsWindow *>(self)->paintTabs(hwnd, dc);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_NCDESTROY:
+        RemoveWindowSubclass(hwnd, tabsProc, id);
+        break;
+    default:
+        break;
+    }
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
 LRESULT CALLBACK SettingsWindow::proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_NCCREATE) {
         auto *create = reinterpret_cast<CREATESTRUCTW *>(lParam);
@@ -1470,12 +1665,33 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORBTN: {
-        // 标签页是白底：说明文字、勾选框也用白底（不然是一条条灰的）
+        // 页面直接画在窗口底色上：说明文字、勾选框也用窗口的底色和字色（不然是一条条灰的，深色时是黑字）
         HDC dc = reinterpret_cast<HDC>(wParam);
-        SetBkColor(dc, GetSysColor(COLOR_WINDOW));
-        SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
-        return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+        SetBkColor(dc, colorRef(g_look.bg));
+        SetTextColor(dc, colorRef(g_look.fg));
+        return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetSysColorBrush(COLOR_WINDOW));
     }
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX: {
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetBkColor(dc, colorRef(g_look.field));
+        SetTextColor(dc, colorRef(g_look.fg));
+        return reinterpret_cast<LRESULT>(fieldBrush_ ? fieldBrush_ : GetSysColorBrush(COLOR_WINDOW));
+    }
+    case WM_ERASEBKGND: {
+        RECT client{};
+        GetClientRect(hwnd_, &client);
+        FillRect(reinterpret_cast<HDC>(wParam), &client,
+                 backgroundBrush_ ? backgroundBrush_ : GetSysColorBrush(COLOR_WINDOW));
+        return 1;
+    }
+    case WM_SETTINGCHANGE:
+        // 「设置 → 个性化 → 颜色」换了浅色 / 深色：跟随系统时跟着换
+        if (lParam && std::wstring(reinterpret_cast<const wchar_t *>(lParam)) == L"ImmersiveColorSet") {
+            lookApplied_.clear();
+            applyLook(fromControls());
+        }
+        break;
     case WM_NOTIFY: {
         const auto *header = reinterpret_cast<NMHDR *>(lParam);
         if (header->hwndFrom == tabs_ && header->code == TCN_SELCHANGE) {
@@ -1552,6 +1768,16 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
             ShellExecuteW(hwnd_, L"open", dataDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             return 0;
         default:
+            // 主题、强调色的下拉框：选了马上换上（存盘还是点「保存」）
+            if (HIWORD(wParam) == CBN_SELCHANGE) {
+                for (const auto &row : rows_) {
+                    const std::string key = row.def->key;
+                    if (row.control == reinterpret_cast<HWND>(lParam) &&
+                        (key == "SettingsTheme" || key == "SettingsAccent")) {
+                        applyLook(fromControls());
+                    }
+                }
+            }
             break;
         }
         break;
@@ -1624,6 +1850,12 @@ LRESULT SettingsWindow::handle(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     case WM_DESTROY:
+        if (backgroundBrush_) {
+            DeleteObject(backgroundBrush_);
+        }
+        if (fieldBrush_) {
+            DeleteObject(fieldBrush_);
+        }
         PostQuitMessage(0);
         return 0;
     default:

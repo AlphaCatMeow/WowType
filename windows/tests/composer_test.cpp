@@ -24,6 +24,7 @@
 #include "custom_words.h"
 #include "stats_view.h"
 #include "keys.h"
+#include "look.h"
 #include "utf.h"
 #include "voice.h"
 
@@ -269,6 +270,28 @@ int main(int argc, char **argv) {
         check(!c.emojiKey(), "EmojiKey 留空是不用");
         check(c.value("TranslateBaseUrl") == "a b" && !c.flag("TranslateLocal"), "引号、TranslateLocal 跟着接口");
         check(c.shuangpin(), "旧的 Shuangpin=True 是双拼");
+    }
+
+    // ---------------------------------------------------------------- 设置窗口的主题和强调色（和 Linux、macOS 一样）
+    {
+        const Config d;
+        check(d.value("SettingsTheme") == "System" && d.value("SettingsAccent") == "Green", "设置窗口默认跟随系统、绿色");
+        const Config c = Config::parse("SettingsTheme=Dark\nSettingsAccent=Blue\n");
+        check(c.value("SettingsTheme") == "Dark" && look::accent(c.value("SettingsAccent")).color == 0x3584E4,
+              "SettingsTheme、SettingsAccent 读得出来");
+        const Config wrong = Config::parse("SettingsTheme=dark\nSettingsAccent=Red\n");
+        check(wrong.value("SettingsTheme") == "System" && wrong.value("SettingsAccent") == "Green", "认不出的用默认");
+        check(std::string(look::accent("Red").value) == "Green", "认不出的强调色用绿色");
+        check(look::dark("System", true) && !look::dark("System", false) && look::dark("Dark", false) &&
+                  !look::dark("Light", true) && !look::dark("乱写", false),
+              "主题：固定的不看系统，跟随系统看系统");
+        check(look::blend(0xFFFFFF, 0x000000, 0.5) == 0x808080 && look::blend(0x0EAF76, 0xFFFFFF, 0) == 0xFFFFFF &&
+                  look::blend(0x0EAF76, 0xFFFFFF, 1) == 0x0EAF76,
+              "叠色");
+        check(look::hex(0x0A8358) == "#0A8358", "颜色写成 #RRGGBB", look::hex(0x0A8358));
+        check(look::textColor(look::accent("Green"), true) == 0x1AB37D &&
+                  look::textColor(look::accent("Green"), false) == 0x0A8358,
+              "强调色当字用：深色用 light，浅色用 strong");
     }
 
     // ---------------------------------------------------------------- 写回设置文件（和 macOS 的 serialized、merged 同名用例）
