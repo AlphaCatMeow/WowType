@@ -164,6 +164,7 @@ WubiAutoCommit=True
 WubiHint=True
 ShiftToggle=Both
 InitialMode=Chinese
+WindowMode=Same
 Traditional=False
 SelectKeys=Off
 PickChar=True
@@ -205,7 +206,7 @@ Lexicon=
 | `PageSize` | 每页候选个数，3–9 |
 | `Fuzzy`、`TypoCorrection`、`Traditional`、`DateTime`、`Calculator`、`Toolbar`、`ClipboardHistory`、`Voice`、`VoiceCopy`、`EmojiSuggest`、`Translate`、`TranslateFormal`、`CheckUpdate`、`BetaUpdates`、`TypingStats` | `True` / `False` |
 | `AutoSpace`、`AutoSpaceLetters`、`AutoSpaceDigits` | 中英文之间自动加空格：总开关（默认关）、汉字和字母之间、汉字和数字之间。要应用报告光标前的文字才生效（终端等不支持），密码、网址、邮箱输入框不加 |
-| `AutoPairPunct` | 中文标点自动配对，默认关，在设置的「输入」页（标点样式下面）打开。中文标点下打 `(` `[` `<` `{` `"` `'` 上屏成对的（）【】《》「」“”‘’，光标放到中间；在里面打完再按右半边（`)` `]` `>` `}` `"` `'`）不再多上屏一个，而是跳过补好的那个（打拼音途中按的先上屏候选），数字后面也一样：`(` `3` `)` 是（3）。可以套着打（“”）。里面空着时按退格两个一起删。里面打字、空格、退格都不打断配对；按了方向键、`Home` `End`、回车、`Tab`、`Delete`、快捷键，换了窗口、点鼠标挪了光标（应用重置输入法）以后不再跳过。数字后面的左括号照常是半角（`3(`），不配对；互译、半角标点时不配对。Linux 上光标靠插件给应用发方向键挪；macOS 上没有挪光标的接口（发方向键要「辅助功能」权限），靠输入法按位置换字：把光标要停的位置前面那个字原样换一遍，光标就落在那里（和长按出重音字母一样的接口），所以只在应用告诉输入法光标在哪、读得到光标旁边的字时配对，终端这类应用里、空的输入框里第一个字照常一个一个上屏。应用报告光标前后文字时，跳过、一起删之前还核对右边确实是补好的那个 |
+| `AutoPairPunct` | 中文标点自动配对，默认关，在设置的「输入」页（「拼音」那一组）打开。中文标点下打 `(` `[` `<` `{` `"` `'` 上屏成对的（）【】《》「」“”‘’，光标放到中间；在里面打完再按右半边（`)` `]` `>` `}` `"` `'`）不再多上屏一个，而是跳过补好的那个（打拼音途中按的先上屏候选），数字后面也一样：`(` `3` `)` 是（3）。可以套着打（“”）。里面空着时按退格两个一起删。里面打字、空格、退格都不打断配对；按了方向键、`Home` `End`、回车、`Tab`、`Delete`、快捷键，换了窗口、点鼠标挪了光标（应用重置输入法）以后不再跳过。数字后面的左括号照常是半角（`3(`），不配对；互译、半角标点时不配对。Linux 上光标靠插件给应用发方向键挪；macOS 上没有挪光标的接口（发方向键要「辅助功能」权限），靠输入法按位置换字：把光标要停的位置前面那个字原样换一遍，光标就落在那里（和长按出重音字母一样的接口），所以只在应用告诉输入法光标在哪、读得到光标旁边的字时配对，终端这类应用里、空的输入框里第一个字照常一个一个上屏。应用报告光标前后文字时，跳过、一起删之前还核对右边确实是补好的那个 |
 | `FuzzyZh`、`FuzzyCh`、`FuzzySh`、`FuzzyNL`、`FuzzyFH`、`FuzzyRL`、`FuzzyAn`、`FuzzyEn`、`FuzzyIn`、`FuzzyIan`、`FuzzyUan`、`FuzzyUn`、`FuzzyAnAi`、`FuzzyHuangWang`、`FuzzyUnIong`、`FuzzyEngOng` | 模糊音的各组（z=zh、c=ch、s=sh、n=l、f=h、r=l、an=ang、en=eng、in=ing、ian=iang、uan=uang、un=ong、an=ai、huang=wang、un=iong、eng=ong），`Fuzzy` 打开时才生效 |
 | `SelectKeys` | 分号、引号选词：`Off`、`Semicolon`（`;` 选第 2 个）、`SemicolonQuote`（再加 `'` 选第 3 个，引号不再当隔音符） |
 | `RareExtChars` | 也出 CJK 扩展 B 区及以后的单字（比如 `hou` 的 𠯜），默认关：常见中文字体（Noto CJK、思源、苹方）都没有这些字，列出来是方块。打开前先装能显示它们的字体，比如 Ubuntu / Debian 的 `fonts-hanazono`。通用规范汉字表里的扩展区字（𬭩、𫚔，约 200 个，常见字体都有）和含这些字的词（𩽾𩾌）不受这个开关影响 |
@@ -219,7 +220,9 @@ Lexicon=
 | `ShuangpinScheme` | 双拼方案：`Ziranma` 自然码、`Xiaohe` 小鹤、`Microsoft` 微软、`Sogou` 搜狗、`ABC` 智能 ABC、`Ziguang` 紫光、`PinyinJiajia` 拼音加加 |
 | `ShuangpinShowKeys` | 双拼时编辑区显示打的键（`uivs`），不翻成全拼（`shi'zhong`），中英混打时看得出打了什么。默认 `False` |
 | `ShiftToggle` | 单按哪个 Shift 切中英文：`Both`、`Left`、`Right`、`Off`。0.35 秒以内连按两下（双击）两下都不算，JetBrains 的双击 Shift 不会切中英文（#253）；单按以后接着打字照切了以后的模式打，不接着打时 0.35 秒后才切、弹提示。fcitx5 自己的全局快捷键（「临时切换输入法」「切换输入法」「向前切换输入法」等任何一项）里用了同一个 Shift 时，fcitx5 先处理，WowType 收不到；设置界面「输入」页会提示，并能一键把 Shift 从 fcitx5 那边去掉（改的是 `~/.config/fcitx5/config`，关掉开关就还原；这个文件写不了时提示「只在这次有效」，NixOS 见[安装说明](INSTALL.md#单按-shift-在-nixos-上)） |
-| `InitialMode` | 从别的输入法切到 WowType、开机后第一次用时的模式：`Chinese`（默认）、`English`、`Last`（和上次切走时一样）。换窗口不算，中英文照旧全局保持；关了 Shift 切换（`ShiftToggle=Off`）、也没另设切换键（`ToggleKey`）时总是中文（`TranslateModeKey` 只进出「译」，不算）。macOS 上每个应用记着自己的中英文：输入法停用以后系统现在用的不是 WowType（切到了别的输入法；密码框里系统临时换成英文键盘不算）就记一笔，之后每个应用第一次用到 WowType 时按这一项定一次，换应用、换窗口不动；`Last` 是每个应用和它上次一样 |
+| `InitialMode` | 从别的输入法切到 WowType、开机后第一次用时的模式：`Chinese`（默认）、`English`、`Last`（和上次切走时一样）。换窗口不算，中英文照旧全局保持（要换窗口也定一次，见 `WindowMode`）；关了 Shift 切换（`ShiftToggle=Off`）、也没另设切换键（`ToggleKey`）时总是中文（`TranslateModeKey` 只进出「译」，不算）。macOS 上每个应用记着自己的中英文：输入法停用以后系统现在用的不是 WowType（切到了别的输入法；密码框里系统临时换成英文键盘不算）就记一笔，之后每个应用第一次用到 WowType 时按这一项定一次，换应用、换窗口不动；`Last` 是每个应用和它上次一样 |
+| `WindowMode` | 换到新窗口、新应用时的默认中 / 英（#254）：`Same`（默认，保持当前模式，和以前一样：Linux 上所有窗口一个，macOS、Windows 上每个应用记着自己的）、`Chinese`、`English`。选了中 / 英以后，每次切到一个窗口、应用都先定成它；在窗口里用 Shift 切了只算这一次，切走再回来又按这一项定。从别的输入法切回来的那一下按 `InitialMode`。关了 Shift 切换、也没另设切换键时总是中文（同 `InitialMode`）。Linux 上是输入框获得焦点时；macOS 上看应用和它最前面的窗口换没换，同一个窗口里换输入框不算；Windows 上看输入框所在的顶层窗口换没换、应用从别处切回来，打到一半切走又切回来的接着打、不换。设置界面「输入 → 默认状态 → 默认中/英文」（Windows 设置窗口在「常规」页） |
+| `PunctuationStyle` | 标点样式，设置界面「输入 → 默认状态 → 默认全角/半角」：`Fullwidth` 全角中文标点（默认）、`Halfwidth` 半角英文标点 |
 | `VoiceKey` | fcitx5 的键名，如 `Alt_R`、`Control_R`、`Menu`、`F8` |
 | `ToggleKey` | 另设一个切换中 / 英文的快捷键（fcitx5 键名，如 `Control+Shift+space`），留空不用；单按 Shift 照常。在「译」里按回到中文。fcitx5 自己的全局快捷键先处理：`Control+space` 默认是 fcitx5「切换启用/禁用输入法」的键（macOS 上是系统「选择上一个输入法」的键），设成它 WowType 收不到，所以设置里不再列它；Linux 设置界面会提示被 fcitx5 占着的键 |
 | `TranslateModeKey` | 进出「译」的快捷键（如 `Control+Shift+Y`），留空不用：按它进「译」（打到一半的拼音带进去），在「译」里再按回到进来前的模式；设了以后单按 Shift 只在中 ↔ 英之间切（在「译」里单按回中文）。互译没打开、翻译没配好、密码框里这个键交给应用。和 `ToggleKey` 设成同一个键时算这个 |
@@ -293,7 +296,7 @@ macOS 还没有的功能不列；Linux 单独一页的「更新」在「常规�
 改完下一次按键时生效，不用重启；换了 `Lexicon` 会在后台重新载入词库，载完之前照旧用原来的。
 
 现在认的项：`CandidateLayout`、`ArrowKeys`、`PageSize`、`PageKeys*`、`SelectKeys`、`PickChar`、`Association`、`Fuzzy` 和 `Fuzzy*` 各组、`TypoCorrection`、`RareExtChars`、
-`InputScheme`、`ShuangpinScheme`、`ShuangpinShowKeys`、`WubiAutoCommit`、`WubiHint`、`ShiftToggle`、`InitialMode`、`Traditional`、`PunctuationStyle`、`AutoPairPunct`、`DateTime`、`Calculator`、`EmojiSuggest`、
+`InputScheme`、`ShuangpinScheme`、`ShuangpinShowKeys`、`WubiAutoCommit`、`WubiHint`、`ShiftToggle`、`InitialMode`、`WindowMode`、`Traditional`、`PunctuationStyle`、`AutoPairPunct`、`DateTime`、`Calculator`、`EmojiSuggest`、
 `AutoSpace*`、`Lexicon`、`Toolbar`、`ClipboardHistory`、`EmojiKey`、`ToggleKey`、`TranslateModeKey`、`Voice`、`VoiceKey`、`VoiceCopy`、`Translate` 和 `Translate*` 各项、`TypingStats`，另外有一项只有 macOS 有的 `CandidateFontSize`（候选字号，10–40 磅，默认 17；Linux 上字号跟着 fcitx5 主题）。
 `CheckUpdate`（默认 `True`）：输入法每天最多查一次 GitHub 上的最新正式版（后台，不挡打字），有新版时菜单栏的输入法菜单里多一项
 「有新版本 …，下载并安装…」，点它打开设置窗口「常规」页；设置窗口打开时也查。不弹系统通知（输入法没有开发者签名，通知要先授权，打字时弹框也打扰人）。

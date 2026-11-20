@@ -246,16 +246,45 @@ class WowTypeInputController: IMKInputController {
         syncComposer(force: true)
         // 从别的输入法切回来（不是换应用、换窗口）、这个进程里第一次用到这个输入框：按「切到 WowType 时」定中 / 英
         // （InitialMode，和 Linux 一样；macOS 每个应用一份模式，新的一轮里每个输入框定一次）
-        let generation = AppState.shared.noteActivated()
+        let (generation, switchedBack) = AppState.shared.noteActivated()
         if initialModeGeneration != generation {
             initialModeGeneration = generation
             composer.applyInitialMode()
+        }
+        // 换到别的应用、别的窗口：设了「默认中/英文」就定一次（WindowMode，#254；默认和上次一样，不动）。
+        // 刚从别的输入法切回来的这一下按上面的 InitialMode，别让两边抢着定
+        if AppState.shared.config.windowMode != .same {
+            let moved = AppState.shared.noteWindow(focusKey())
+            if moved && !switchedBack {
+                composer.applyWindowMode()
+            }
         }
         AppState.shared.activeController = self
         // 剪贴板历史（设置里打开时）：切换输入框时看一眼（和 Linux 一样，另外打开工具栏的剪贴板页时也看）
         AppState.shared.sampleClipboard()
         // 每天最多查一次有没有新版本（后台，有新版时菜单里多一项）
         AppState.shared.checkUpdateIfDue()
+    }
+
+    /// 现在用 WowType 的是哪个应用的哪个窗口（WindowMode）：应用的 bundle id + 它最前面的普通窗口的窗口号。
+    /// 窗口号不要「屏幕录制」权限（只看窗口号和所属进程，不读标题）；问不到时只看应用。
+    private func focusKey() -> String {
+        let app = textInput?.bundleIdentifier() ?? ""
+        return WindowFocus.key(app: app, window: Self.frontWindow(of: app))
+    }
+
+    private static func frontWindow(of bundle: String) -> Int? {
+        guard !bundle.isEmpty,
+              let pid = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first?.processIdentifier,
+              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                       kCGNullWindowID) as? [[String: Any]] else { return nil }
+        // 从前往后排的，第一个是这个应用最前面的窗口；只看普通窗口那一层（菜单、浮条不算）
+        for info in windows {
+            guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
+                  (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0 else { continue }
+            return (info[kCGWindowNumber as String] as? NSNumber)?.intValue
+        }
+        return nil
     }
 
     override func deactivateServer(_ sender: Any!) {
