@@ -124,6 +124,8 @@ func checkConfigContract() {
         ("InitialMode", WowtypeConfig.InitialMode.allCases.map(\.rawValue)),
         ("SelectKeys", WowtypeConfig.SelectKeys.allCases.map(\.rawValue)),
         ("TranslateTarget", WowtypeConfig.translateTargets),
+        ("SettingsTheme", WowtypeConfig.SettingsTheme.allCases.map(\.rawValue)),
+        ("SettingsAccent", WowtypeConfig.accentPresets.map(\.value)),
     ]
     for (key, values) in lists {
         let expected = byKey[key].map(enumValues) ?? []
@@ -159,6 +161,22 @@ func checkConfigContract() {
     check(WowtypeConfig.translateLanguages.map { $0.0 } == languages.map { $0.0 }
           && WowtypeConfig.translateLanguages.map { $0.1 } == languages.map { $0.1 },
           "契约：互译语言的名字和代码", "规格 \(languages)，macOS \(WowtypeConfig.translateLanguages)")
+    // 设置窗口的主题、强调色：名字和颜色表和规格一样（Linux 的 SETTINGS_THEMES、SETTINGS_ACCENTS 对照同一份）
+    let themes = (byKey["SettingsTheme"]?["values"]?.array ?? []).map {
+        [$0["name"]?.string ?? "", $0["value"]?.string ?? ""]
+    }
+    let ourThemes = WowtypeConfig.SettingsTheme.allCases.map { [$0.name, $0.rawValue] }
+    check(ourThemes == themes, "契约：设置窗口主题的名字", "规格 \(themes)，macOS \(ourThemes)")
+    func hex(_ value: UInt32) -> String {
+        let digits = String(value, radix: 16, uppercase: true)
+        return "#" + String(repeating: "0", count: max(0, 6 - digits.count)) + digits
+    }
+    let accents = (byKey["SettingsAccent"]?["values"]?.array ?? []).map {
+        [$0["name"]?.string ?? "", $0["value"]?.string ?? "", $0["color"]?.string ?? "?", $0["strong"]?.string ?? "?",
+         $0["light"]?.string ?? "?"]
+    }
+    let ourAccents = WowtypeConfig.accentPresets.map { [$0.name, $0.value, hex($0.color), hex($0.strong), hex($0.light)] }
+    check(ourAccents == accents, "契约：强调色的表", "规格 \(accents)，macOS \(ourAccents)")
     let providers = (spec["translateProviders"]?["items"]?.array ?? []).map {
         [$0["name"]?.string ?? "", $0["url"]?.string ?? "", $0["model"]?.string ?? ""]
     }

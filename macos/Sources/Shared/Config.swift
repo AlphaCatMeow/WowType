@@ -49,6 +49,44 @@ public struct WowtypeConfig: Equatable {
         }
     }
 
+    /// 设置窗口的主题（SettingsTheme）：跟随系统，或者固定浅色 / 深色。只管设置窗口，输入法不读；
+    /// 名字和 Linux 设置的 SETTINGS_THEMES、Windows 设置窗口的一样（见 spec/config.json）
+    public enum SettingsTheme: String, CaseIterable {
+        case system = "System", light = "Light", dark = "Dark"
+
+        public var name: String {
+            switch self {
+            case .system: return "跟随系统"
+            case .light: return "浅色"
+            case .dark: return "深色"
+            }
+        }
+    }
+
+    /// 设置窗口的强调色（SettingsAccent）。三端用同一张表（spec/config.json 的 SettingsAccent），颜色不自己算：
+    /// color 是色板本身（侧栏的底色、悬停、统计的图），strong 是上面放白字的底（选中的导航、按钮、开关，
+    /// 和白色的对比度至少 4.7:1；浅色背景上当字用也是它），light 是深色背景上当字用的颜色（至少 4.5:1）。
+    public struct AccentPreset: Equatable {
+        public let value: String
+        public let name: String
+        public let color: UInt32
+        public let strong: UInt32
+        public let light: UInt32
+    }
+
+    public static let accentPresets: [AccentPreset] = [
+        AccentPreset(value: "Green", name: "绿色", color: 0x0EAF76, strong: 0x0A8358, light: 0x1AB37D),
+        AccentPreset(value: "Blue", name: "蓝色", color: 0x3584E4, strong: 0x2D70C2, light: 0x68A3EB),
+        AccentPreset(value: "Purple", name: "紫色", color: 0x9141AC, strong: 0x9141AC, light: 0xBD8DCD),
+        AccentPreset(value: "Orange", name: "橙色", color: 0xE66100, strong: 0xB84E00, light: 0xEC8840),
+        AccentPreset(value: "Pink", name: "粉色", color: 0xD56199, strong: 0xAA4E7A, light: 0xDD81AD),
+    ]
+
+    /// 现在的强调色；文件里写的认不出时已经是默认的绿色
+    public var accent: AccentPreset {
+        WowtypeConfig.accentPresets.first { $0.value == settingsAccent } ?? WowtypeConfig.accentPresets[0]
+    }
+
     /// 双拼方案在配置文件里的名字（和 Linux 一样），核心也认小写、别名。
     public static let shuangpinSchemes = ["Ziranma", "Xiaohe", "Microsoft", "Sogou", "ABC", "Ziguang", "PinyinJiajia"]
 
@@ -226,6 +264,9 @@ public struct WowtypeConfig: Equatable {
     public var betaUpdates = false
     /// 打字统计（TypingStats，默认关）：开了才在本机按天记计数（字数、按键次数），不记打的内容
     public var typingStats = false
+    /// 设置窗口的主题、强调色（只管设置窗口，输入法不读）
+    public var settingsTheme = SettingsTheme.system
+    public var settingsAccent = "Green"
     /// 词库文件，空串用安装包里的雾凇词库；文件不在也用自带的
     public var lexicon = ""
     /// 候选字号（磅），只有 macOS 有：Linux 上字号跟着 fcitx5 主题
@@ -363,7 +404,7 @@ public struct WowtypeConfig: Equatable {
         "Traditional",
         "PunctuationStyle", "AutoPairPunct", "DateTime", "Calculator", "EmojiSuggest", "AutoSpace", "AutoSpaceLetters",
         "AutoSpaceDigits", "Lexicon", "Toolbar", "ClipboardHistory", "Voice", "VoiceKey", "VoiceCopy", "EmojiKey",
-        "ToggleKey", "TranslateModeKey", "CheckUpdate", "BetaUpdates", "TypingStats",
+        "ToggleKey", "TranslateModeKey", "CheckUpdate", "BetaUpdates", "TypingStats", "SettingsTheme", "SettingsAccent",
         "Translate", "TranslateTarget", "TranslateBaseUrl", "TranslateModel", "TranslateFormal", "TranslateLocal",
         "TranslateLocalModel", "TranslateLlamaServer", "TranslateIdleMinutes",
     ]
@@ -431,6 +472,10 @@ public struct WowtypeConfig: Equatable {
             } else if let shortcut = Shortcut(name: value) {
                 self[keyPath: path] = shortcut
             }
+        case "SettingsTheme":
+            if let v = matchName(value, SettingsTheme.allCases.map(\.rawValue)) { settingsTheme = SettingsTheme(rawValue: v)! }
+        case "SettingsAccent":
+            if let v = matchName(value, WowtypeConfig.accentPresets.map(\.value)) { settingsAccent = v }
         case "TranslateTarget":
             if let v = matchName(value, WowtypeConfig.translateTargets) { translateTarget = v }
         case "TranslateBaseUrl": translateBaseUrl = value
@@ -465,6 +510,8 @@ public struct WowtypeConfig: Equatable {
         case "EmojiKey": return emojiKey?.name ?? ""
         case "ToggleKey": return toggleKey?.name ?? ""
         case "TranslateModeKey": return translateModeKey?.name ?? ""
+        case "SettingsTheme": return settingsTheme.rawValue
+        case "SettingsAccent": return settingsAccent
         case "TranslateTarget": return translateTarget
         case "TranslateBaseUrl": return translateBaseUrl
         case "TranslateModel": return translateModel
@@ -715,6 +762,10 @@ public struct WowtypeConfig: Equatable {
         BetaUpdates=\(b(d.betaUpdates))
         # 打字统计：只在本机按天记字数、按键次数这些计数，不记打的内容；默认关，关着时什么都不记
         TypingStats=\(b(d.typingStats))
+        # 设置窗口的主题：System 跟随系统、Light 浅色、Dark 深色（只管设置窗口，不管候选框）
+        SettingsTheme=\(d.settingsTheme.rawValue)
+        # 设置窗口的强调色：Green 绿色、Blue 蓝色、Purple 紫色、Orange 橙色、Pink 粉色
+        SettingsAccent=\(d.settingsAccent)
 
         # 词库文件（拼音<TAB>词<TAB>频次），留空用自带的雾凇词库；文件不在也用自带的
         Lexicon=

@@ -2242,6 +2242,22 @@ withConfig({ $0.initialMode = .english; $0.shiftToggle = .off; $0.toggleKey = Sh
     check(c.mode == .english, "关了 Shift 切换、另设了切换键：照样进英文")
 }
 
+// MARK: 设置窗口的主题和强调色（SettingsTheme、SettingsAccent，和 Linux、Windows 一样）
+
+do {
+    let d = WowtypeConfig()
+    check(d.settingsTheme == .system && d.settingsAccent == "Green" && d.accent.strong == 0x0A8358,
+          "设置窗口默认跟随系统、绿色")
+    let parsed = WowtypeConfig.parse("SettingsTheme=Dark\nSettingsAccent=Blue\n")
+    check(parsed.settingsTheme == .dark && parsed.accent.value == "Blue" && parsed.accent.color == 0x3584E4,
+          "SettingsTheme、SettingsAccent 读得出来")
+    let wrong = WowtypeConfig.parse("SettingsTheme=dark\nSettingsAccent=Red\n")
+    check(wrong.settingsTheme == .system && wrong.accent.value == "Green", "认不出的主题、强调色用默认")
+    check(WowtypeConfig.parse(parsed.serialized(into: nil)) == parsed, "主题、强调色写进文件再读一样")
+    check(!d.serialized(into: nil).contains("\nSettingsTheme="), "默认的主题不写成生效的一行")
+    check(WowtypeConfig.SettingsTheme.allCases.map(\.name) == ["跟随系统", "浅色", "深色"], "主题的名字")
+}
+
 // MARK: 外部命令切模式（WowType --mode，和 Linux 的 org.wowtype.Input SetMode 一样）
 
 withConfig({ _ in }) { c, client in
