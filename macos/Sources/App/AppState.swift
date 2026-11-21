@@ -75,13 +75,23 @@ final class AppState {
         return controller.externalMode(request)
     }
 
-    /// 输入控制器启用了：切走过就开新的一轮，返回现在是第几轮。
-    func noteActivated() -> Int {
+    /// 输入控制器启用了：切走过就开新的一轮，返回现在是第几轮、这一下是不是刚从别的输入法切回来
+    /// （刚切回来按 InitialMode，不按 WindowMode，和 Linux 一样）。
+    func noteActivated() -> (generation: Int, switchedBack: Bool) {
+        let switchedBack = switchedAway
         if switchedAway {
             switchedAway = false
             switchGeneration += 1
         }
-        return switchGeneration
+        return (switchGeneration, switchedBack)
+    }
+
+    /// 上一次启用 WowType 的应用和窗口（WindowMode，#254）
+    private var windowFocus = WindowFocus()
+
+    /// 输入控制器启用了：记下现在是哪个应用的哪个窗口，返回是不是换了应用、换了窗口。
+    func noteWindow(_ key: String) -> Bool {
+        windowFocus.moved(to: key)
     }
 
     /// 打字统计的句柄（core 的 Recorder）：建好时是关着的（不读不建文件），loadConfig 按 TypingStats 打开。

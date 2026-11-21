@@ -3,7 +3,9 @@
 //!
 //! ```
 //! wowtype-show (--data <目录> | --lexicon lexicon.tsv) [--lm words.lm | --no-lm] [--english english.txt | --no-english]
-//!              [--max 1000] [--show 18] [--context 文本] [--shuangpin 方案] [--scores] [--legacy] 拼音...
+//!              [--nnlm nnlm.bin]
+//!              [--max 1000] [--show 18] [--context 文本] [--shuangpin 方案] [--scores] [--legacy]
+//!              [--no-typo] [--no-fuzzy-fallback] [--why] 拼音...
 //! ```
 //!
 //! 只打印前 `--show` 个（默认 18，外壳的前两页）。`--legacy` 是以前的配置：候选上限 18、
@@ -31,6 +33,7 @@ fn main() {
     let mut lexicon_path = String::new();
     let mut english_path = String::new();
     let mut lm_path = String::new();
+    let mut nnlm_path = String::new();
     let mut context = String::new();
     let mut max_candidates: Option<usize> = None;
     let mut show = 18usize;
@@ -40,6 +43,9 @@ fn main() {
     let mut no_english = false;
     let mut scheme = None;
     let mut inputs = Vec::new();
+    let mut no_typo = false;
+    let mut no_fuzzy_fallback = false;
+    let mut why = false;
     let mut i = 1;
     while i < args.len() {
         let take = |i: &mut usize| -> String {
@@ -57,6 +63,7 @@ fn main() {
             "--english" => english_path = take(&mut i),
             "--no-english" => no_english = true,
             "--lm" => lm_path = take(&mut i),
+            "--nnlm" => nnlm_path = take(&mut i),
             "--no-lm" => no_lm = true,
             "--context" => context = take(&mut i),
             "--max" => max_candidates = take(&mut i).parse().ok(),
@@ -69,10 +76,14 @@ fn main() {
                 );
             }
             "--scores" => scores = true,
+            "--no-typo" => no_typo = true,
+            "--no-fuzzy-fallback" => no_fuzzy_fallback = true,
+            "--why" => why = true,
             "--legacy" => legacy = true,
             "-h" | "--help" => {
                 println!("wowtype-show (--data <目录> | --lexicon <tsv>) [--lm <words.lm> | --no-lm] [--english <txt> | --no-english]");
                 println!("             [--max n] [--show n] [--context 文本] [--shuangpin 方案] [--scores] [--legacy] 拼音...");
+                println!("             [--no-typo] [--no-fuzzy-fallback] [--why]  关掉纠错 / 模糊音兜底；--why 标出拼音和是谁加的");
                 return;
             }
             other => inputs.push(other.to_string()),
@@ -114,6 +125,12 @@ fn main() {
         config.shuangpin = true;
         config.shuangpin_scheme = s;
     }
+    if no_typo {
+        config.typo_correction = false;
+    }
+    if no_fuzzy_fallback {
+        config.fuzzy_fallback = false;
+    }
     let lm: Arc<dyn wowtype_core::lm::LanguageModel> = if !lm_path.is_empty() {
         wowtype_core::lm::load_lm(&lm_path)
             .unwrap_or_else(|e| fail(&format!("语言模型载入失败: {e:#}")))
@@ -126,6 +143,11 @@ fn main() {
         engine
             .load_english(&english_path)
             .unwrap_or_else(|e| fail(&format!("英文词表载入失败: {e:#}")));
+    }
+    if !nnlm_path.is_empty() {
+        engine
+            .load_nnlm(&nnlm_path)
+            .unwrap_or_else(|e| fail(&format!("神经语言模型载入失败: {e:#}")));
     }
     engine.set_context(if legacy {
         context.as_str()
@@ -148,10 +170,28 @@ fn main() {
                 } else {
                     "词"
                 };
-                if scores {
-                    format!("{}.{}{}({:.1})", i + 1, c.text, kind, c.score)
+                // --why：拼音，和是哪种机制加进来的（* 纠错、~ 模糊音兜底、^ 简拼、+ 补全）
+                let detail = if why {
+                    let f = &c.features;
+                    let mut marks = String::new();
+                    for (on, mark) in [
+                        (f.typo_count > 0.0, '*'),
+                        (f.fuzzy, '~'),
+                        (f.full_jianpin > 0.0, '^'),
+                        (f.prefix_completion > 0.0, '+'),
+                    ] {
+                        if on {
+                            marks.push(mark);
+                        }
+                    }
+                    format!("[{}{marks}]", c.pinyin)
                 } else {
-                    format!("{}.{}{}", i + 1, c.text, kind)
+                    String::new()
+                };
+                if scores {
+                    format!("{}.{}{}{detail}({:.1})", i + 1, c.text, kind, c.score)
+                } else {
+                    format!("{}.{}{}{detail}", i + 1, c.text, kind)
                 }
             })
             .collect();

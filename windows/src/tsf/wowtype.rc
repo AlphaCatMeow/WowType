@@ -1,0 +1,41 @@
+// 资源：图标（输入法列表里的图标是第一个）和版本信息。CMake 传 WOWTYPE_VERSION_NUM（1,2,3,0）、WOWTYPE_VERSION_STR。
+#include <winver.h>
+
+#pragma code_page(65001)
+
+#ifndef WOWTYPE_VERSION_NUM
+#define WOWTYPE_VERSION_NUM 0, 0, 0, 0
+#endif
+#ifndef WOWTYPE_VERSION_STR
+#define WOWTYPE_VERSION_STR "0.0.0"
+#endif
+
+101 ICON "../../res/wowtype.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION WOWTYPE_VERSION_NUM
+PRODUCTVERSION WOWTYPE_VERSION_NUM
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_DLL
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName", "WowType"
+            VALUE "FileDescription", "WowType 输入法"
+            VALUE "FileVersion", WOWTYPE_VERSION_STR
+            VALUE "InternalName", "wowtype"
+            VALUE "OriginalFilename", "wowtype.dll"
+            VALUE "ProductName", "WowType"
+            VALUE "ProductVersion", WOWTYPE_VERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END

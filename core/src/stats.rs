@@ -442,7 +442,8 @@ impl Recorder {
 
     /// 一次物理按键。`down` 为假时只松开（用来识别长按和合成重复）。
     ///
-    /// `platform`：0 = X11/fcitx5（`code` 是 XKB 键码，内部减 8 成 evdev），1 = macOS（`NSEvent.keyCode`）。
+    /// `platform`：0 = X11/fcitx5（`code` 是 XKB 键码，内部减 8 成 evdev），1 = macOS（`NSEvent.keyCode`），
+    /// 2 = Windows（扫描码，扩展键或上 0xE000，见 [`key_id`]）。
     /// `flags` 带 [`SENSITIVE`]（密码框）时不算。
     pub fn key(&mut self, platform: i32, code: u32, down: bool, flags: u32, now_ms: i64) {
         if !self.enabled {
@@ -465,8 +466,9 @@ impl Recorder {
                     }
                 }
             }
-            // macOS 的 InputMethodKit 只送按下（没有松开），自动重复由外壳的 `isARepeat` 挡掉
-            1 if down => {}
+            // macOS 的 InputMethodKit 只送按下（没有松开），自动重复由外壳的 `isARepeat` 挡掉；
+            // Windows 的外壳也只送按下，自动重复看 lParam 的「之前已按下」位挡掉
+            1 | 2 if down => {}
             _ => return,
         }
         if flags & SENSITIVE != 0 {
@@ -830,12 +832,49 @@ fn is_emoji(ch: char) -> bool {
 
 /// 物理键码 → `KeyboardEvent.code` 风格的 id。
 ///
-/// `platform`：0 = X11（XKB 键码，evdev + 8；fcitx5 给的就是这个），1 = macOS（`NSEvent.keyCode`）。
+/// `platform`：0 = X11（XKB 键码，evdev + 8；fcitx5 给的就是这个），1 = macOS（`NSEvent.keyCode`），
+/// 2 = Windows（键盘消息 lParam 里的扫描码，带扩展键位的或上 0xE000：右 Ctrl 是 0xE01D）。
 /// 热力图画不出的键（F13 以后、媒体键、打印屏幕……）返回 `None`，不计入。
 pub fn key_id(platform: i32, code: u32) -> Option<&'static str> {
     match platform {
         0 => x11_key_id(code.checked_sub(8)?),
         1 => macos_key_id(u16::try_from(code).ok()?),
+        2 => windows_key_id(code),
+        _ => None,
+    }
+}
+
+/// Windows 的扫描码（第 1 套）：不带扩展位的主键区和 Linux 的 evdev 键码一样（两边都照 PC 的扫描码编），
+/// 带扩展位（E0）的方向键、右边的 Ctrl / Alt、小键盘回车和除号、Windows 键另外对。
+fn windows_key_id(code: u32) -> Option<&'static str> {
+    if code & 0xE000 == 0xE000 {
+        return Some(match code & 0xFF {
+            0x1C => "NumpadEnter",
+            0x1D => "ControlRight",
+            0x35 => "NumpadDivide",
+            0x38 => "AltRight",
+            // NumLock 在键盘消息里带扩展位（不带的 0x45 是 Pause）
+            0x45 => "NumLock",
+            0x47 => "Home",
+            0x48 => "ArrowUp",
+            0x49 => "PageUp",
+            0x4B => "ArrowLeft",
+            0x4D => "ArrowRight",
+            0x4F => "End",
+            0x50 => "ArrowDown",
+            0x51 => "PageDown",
+            0x52 => "Insert",
+            0x53 => "Delete",
+            0x5B => "MetaLeft",
+            0x5C => "MetaRight",
+            0x5D => "ContextMenu",
+            _ => return None,
+        });
+    }
+    match code {
+        // Pause（不带扩展位的 0x45）热力图上没有
+        0x45 => None,
+        1..=0x58 => x11_key_id(code),
         _ => None,
     }
 }
@@ -1074,13 +1113,10 @@ fn macos_key_id(code: u16) -> Option<&'static str> {
 
 /// Unix 毫秒 → 本地日期 `YYYY-MM-DD`。
 pub fn local_day(now_ms: i64) -> String {
-    let seconds = now_ms.div_euclid(1000);
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let time = seconds as libc::time_t;
-    if unsafe { libc::localtime_r(&time, &mut tm) }.is_null() {
-        return String::new();
+    match crate::platform::local_time(now_ms.div_euclid(1000)) {
+        Some(t) => format!("{:04}-{:02}-{:02}", t.year, t.month, t.day),
+        None => String::new(),
     }
-    format!("{:04}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday)
 }
 
 pub fn now_ms() -> i64 {

@@ -68,7 +68,8 @@ pub unsafe extern "C" fn wowtype_stats_enabled(stats: *const WowtypeStats) -> c_
     c_int::from(stats.recorder.enabled())
 }
 
-/// 一次物理按键。`platform`：0 = X11/fcitx5（`code` 是 XKB 键码），1 = macOS（`NSEvent.keyCode`）。
+/// 一次物理按键。`platform`：0 = X11/fcitx5（`code` 是 XKB 键码），1 = macOS（`NSEvent.keyCode`），
+/// 2 = Windows（扫描码，扩展键或上 0xE000；1.13 起）。
 /// `down` 非 0 表示按下。`flags` 带 WOWTYPE_STATS_SENSITIVE 时不算。返回 0 成功，-1 参数错误。
 #[no_mangle]
 pub unsafe extern "C" fn wowtype_stats_key(

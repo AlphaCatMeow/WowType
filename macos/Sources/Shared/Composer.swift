@@ -116,6 +116,7 @@ public final class Engine {
             problems.append("不认识双拼方案 \(config.shuangpinScheme)，用自然码")
             wowtype_engine_set_shuangpin_scheme(handle, "ziranma")
         }
+        wowtype_engine_set_shuangpin_abbrev(handle, config.shuangpinAbbrev ? 1 : 0)
         wowtype_engine_set_typo_correction(handle, config.typoCorrection ? 1 : 0)
         wowtype_engine_set_rare_ext_chars(handle, config.rareExtChars ? 1 : 0)
         if config.traditional && !conversionLoaded {
@@ -186,7 +187,7 @@ public protocol TextClient: AnyObject {
     func setMarkedText(_ text: String, cursor: Int)
     /// 画候选框；nil 表示收起。
     func showCandidates(_ page: CandidatePage?)
-    /// 光标前一个字符（Unicode 码位），不知道给 0。数字后面的符号（3.14、20:22）要原样上屏。
+    /// 光标前一个字符（Unicode 码位），不知道给 0。数字写法里的符号（3.14、20:22）要原样上屏。
     var previousCharacter: UInt32 { get }
     /// 能把打的字发去翻译。密码框之类（macOS 上是系统开着安全输入时）照常打中文，不往外发。
     var allowsTranslation: Bool { get }
@@ -476,10 +477,12 @@ public final class Composer {
         return handleComposing(key)
     }
 
-    /// Shift 的按下 / 松开（macOS 的 flagsChanged）。单按切中英文时返回 true。
+    /// Shift 的按下 / 松开（macOS 的 flagsChanged）。这一下切了模式时返回 true。
     /// right 是右 Shift（设置里 ShiftToggle 可以只用一边，或者不用 Shift 切换）。
     /// 判断在会话里（和 Linux 同一套规矩）：中间按了别的键、按住超过 0.5 秒、按下时带着别的修饰键、
-    /// 工具栏或表情面板开着都不算。
+    /// 工具栏或表情面板开着都不算。now 和 clock 是同一个时钟。
+    /// 单按先不切（双击 Shift 不切换，#253）：叫 onTranslatePoll 开始轮询，到时间没有第二下在
+    /// pollTranslation 里切；之前按了别的键时在那个键里先切（mode 变了，外壳照常弹提示）。
     @discardableResult
     public func shiftChanged(down: Bool, otherModifiers: Bool, now: Double, right: Bool = false) -> Bool {
         configure() // 翻译器可能刚配好（本地模型下载完）：「译」这一档跟着
@@ -489,20 +492,23 @@ public final class Composer {
         raw.release = down ? 0 : 1
         raw.modifiers = otherModifiers ? Modifiers.control.rawValue : 0
         raw.time_ms = UInt64(max(now, 0) * 1000)
-        guard let frame = wowtype_session_key(session, &raw), frame.pointee.mode_changed != 0 else {
-            return false
+        guard let frame = wowtype_session_key(session, &raw) else { return false }
+        if frame.pointee.wake_after_ms > 0 {
+            // 单按 Shift 等双击（#253）：到时间没有第二下，pollTranslation 里切
+            onTranslatePoll?()
         }
+        guard frame.pointee.mode_changed != 0 else { return false }
         // 打到一半切英文：会话把已选的词 + 打的字母放进了 frame；离开「译」时是攒着的原文
         apply(frame)
         return true
     }
 
-    /// 别的修饰键变了（Command、Option 等）：这次 Shift 不算单按。
+    /// 别的修饰键变了（Command、Option 等）：这次 Shift 不算单按（等双击的那一下单按先切）。
     public func otherModifierChanged() {
         var raw = WowtypeKey()
         raw.size = UInt32(MemoryLayout<WowtypeKey>.size)
         raw.action = UInt32(WOWTYPE_KEY_ACTION_OBSERVE)
-        wowtype_session_key(session, &raw)
+        followObserved(wowtype_session_key(session, &raw))
     }
 
     /// 告诉会话有这个键（只用来打断单按 Shift，不处理）。
@@ -512,7 +518,15 @@ public final class Composer {
         raw.keysym = key.keysym
         raw.modifiers = key.modifiers.rawValue
         raw.action = UInt32(WOWTYPE_KEY_ACTION_OBSERVE)
-        wowtype_session_key(session, &raw)
+        followObserved(wowtype_session_key(session, &raw))
+    }
+
+    /// OBSERVE 的 frame 里切了模式：等双击的单按 Shift 被这个键打断（#253），会话先切了
+    /// （打到一半切英文时字母在 frame 里），这个键照新模式处理。
+    private func followObserved(_ frame: UnsafePointer<WowtypeFrame>?) {
+        if let frame, frame.pointee.mode_changed != 0 {
+            apply(frame)
+        }
     }
 
     /// 设置里另设的切换键、进出「译」的键（和 Linux 一样：两个一样时算进出「译」）。
@@ -579,6 +593,20 @@ public final class Composer {
     public func applyInitialMode() {
         switch config.initialMode {
         case .last:
+            return
+        case .chinese:
+            switchMode(to: .chinese)
+        case .english:
+            switchMode(to: canToggleMode ? .english : .chinese)
+        }
+    }
+
+    /// 换到别的应用、别的窗口时（#254）按设置里的 WindowMode 定中 / 英，和 Linux 的 applyWindowMode 一样：
+    /// Same 不动（每个应用记着自己的模式）；切不回中文时不进英文；在「译」里的回到中文 / 英文。不弹提示。
+    /// 外壳负责只在应用、窗口变了时调；从别的输入法切回来的那一下按 InitialMode，不调这个。
+    public func applyWindowMode() {
+        switch config.windowMode {
+        case .same:
             return
         case .chinese:
             switchMode(to: .chinese)
@@ -658,6 +686,8 @@ public final class Composer {
         // 自动配对要能挪应用里的光标：这个输入框现在不能时先不开（sendToSession 每个键看一眼，变了再配）
         pairing = settings.autoPairPunct && client?.canEditAroundCaret == true
         config.auto_pair_punct = pairing ? 1 : 0
+        // 双击 Shift 不切换（#253）：等着的单按在 pollTranslation、observe 的 frame 里切，都跟着 mode_changed
+        config.shift_double_tap = 1
         wowtype_session_configure(session, &config)
         if isComposing {
             refresh()
@@ -666,13 +696,13 @@ public final class Composer {
 
     private func handleIdle(_ key: KeyInput) -> Bool {
         // 都交给会话：字母开始编辑区（大写原样保留，Hello、iPhone 出英文候选）；
-        // 标点换成中文标点（半角样式、数字后面的、没有中文写法的交给应用）；
+        // 标点换成中文标点（半角样式、数字写法里的符号、没有中文写法的交给应用）；
         // 汉字后面打数字要补空格时会话自己上屏（第 5 章）；退格、方向键、回车这些交给应用，
         // 会话借这一下知道应用里的字可能变了（上文作废）
         if sendToSession(key) {
             return true
         }
-        // 互译时打的字都要进原文：会话交给应用的（数字后面的点 3.14、半角标点）原样进原文
+        // 互译时打的字都要进原文：会话交给应用的（数字写法里的点 3.14、半角标点）原样进原文
         if translating, let c = key.ascii, c > 0x20, c < 0x7f, !key.isLetter {
             insert(String(UnicodeScalar(c)))
             return true
@@ -737,9 +767,10 @@ public final class Composer {
             raw.hints |= WOWTYPE_KEY_HINT_NO_AUTO_SPACE
         } else {
             // 应用告诉的才给（自己猜的给 0）：会话按它决定要不要补空格、核对自己记的上文；
-            // 数字后面的标点它自己也记
+            // 数字写法里的标点它自己也记。应用说了光标前没有字（输入框清空了、光标在开头）也报：
+            // 会话清掉记的上文，和 fcitx5、Windows 一样（不报的话清空输入框后还拿上一次上屏的字当上文）
             raw.prev_char = reliablePreviousCharacter
-            if raw.prev_char != 0 {
+            if client?.previousCharacterIsReliable == true {
                 raw.hints |= WOWTYPE_KEY_HINT_SURROUNDING
             }
         }
@@ -864,11 +895,19 @@ public final class Composer {
     // MARK: 互译
 
     /// 外壳每 50 毫秒调一次（会话的 wake_after_ms）：到时间就发请求，按过回车的译好了就上屏，
-    /// 结果变了就重画。返回 false 表示不用再调了（下一次原文变了会再叫 onTranslatePoll）。
+    /// 结果变了就重画；单按 Shift 等双击等到了时间就切（#253，mode 变了外壳弹提示）。
+    /// 返回 false 表示不用再调了（下一次原文变了、又单按了 Shift 会再叫 onTranslatePoll）。
     @discardableResult
     public func pollTranslation() -> Bool {
         guard let frame = wowtype_session_tick(session, UInt64(max(clock(), 0) * 1000)) else {
             return false
+        }
+        if frame.pointee.mode_changed != 0 {
+            // 打到一半切英文时字母在 frame 里；离开「译」时是攒着的原文
+            let wake = frame.pointee.wake_after_ms > 0
+            translateDrawn = ""
+            apply(frame)
+            return wake
         }
         if frame.pointee.commit != nil {
             // 按过回车，译好了：上屏译文（正在打的拼音留着）

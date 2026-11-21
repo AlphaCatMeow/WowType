@@ -108,12 +108,25 @@ func fresh() -> (Composer, FakeClient) {
     return (Composer(engine: engine, client: client), client)
 }
 
-/// 单按一下 Shift（按下、松开，会话判断单按）。每次往后挪一秒，不会被当成按住太久。
+/// 外壳的轮询在 at 秒时到了（单按 Shift 等双击，#253）：返回这一下切没切模式。
+@discardableResult
+func settleShift(_ c: Composer, at: Double) -> Bool {
+    let mode = c.mode
+    let clock = c.clock
+    c.clock = { at }
+    c.pollTranslation()
+    c.clock = clock
+    return c.mode != mode
+}
+
+/// 单按一下 Shift（按下、松开，会话判断单按），再等过双击间隔（轮询到了时间）。
+/// 每次往后挪一秒，不会被当成双击或按住太久。
 var shiftClock = 100.0
 func tapShift(_ c: Composer) {
     shiftClock += 1
     _ = c.shiftChanged(down: true, otherModifiers: false, now: shiftClock)
     _ = c.shiftChanged(down: false, otherModifiers: false, now: shiftClock + 0.05)
+    settleShift(c, at: shiftClock + 0.5)
 }
 
 do {
@@ -304,6 +317,14 @@ do {
 
 do {
     let (c, client) = fresh()
+    // 顿号没有半角形态：数字后面按 \ 还是顿号（#250）
+    check(!c.handle(.char("1")), "数字交给应用")
+    _ = c.handle(.char("\\"))
+    check(client.committed == "、", "1\\ -> 1、", client.committed)
+}
+
+do {
+    let (c, client) = fresh()
     // 不在打字时数字、快捷键交给应用
     check(!c.handle(.char("1")), "数字交给应用")
     check(!c.handle(.char("c", .command)), "Command+C 交给应用")
@@ -319,8 +340,9 @@ do {
     check(c.allCandidates().contains("Hello"), "Hello 有英文候选", "\(c.allCandidates().prefix(5))")
     _ = c.handle(.key(Keysym.returnKey))
     check(client.committed == "Hello", "回车上屏 Hello", client.committed)
-    _ = c.handle(.char("A", [.shift, .caps]))
-    check(c.input == "A", "Caps Lock 下的大写也进编辑区", c.input)
+    // 开着大写锁定、没在打字时，字母直接给应用（API、HTTP），不进编辑区（#271、#264，和 Linux、Windows 一样）
+    _ = c.handle(.char("A", [.caps]))
+    check(!c.isComposing && c.input.isEmpty, "Caps Lock 开着时字母不进编辑区", c.input)
 }
 
 do {
@@ -328,16 +350,49 @@ do {
     type(c, "ni")
     // 单按 Shift：打到一半切英文，字母原样上屏
     check(c.shiftChanged(down: true, otherModifiers: false, now: 1.0) == false, "按下 Shift 不切")
-    check(c.shiftChanged(down: false, otherModifiers: false, now: 1.2), "0.2 秒内松开算单按")
-    check(c.mode == .english && client.committed == "ni", "切英文并上屏 ni", client.committed)
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 1.2) && c.isComposing,
+          "0.2 秒内松开算单按：先等双击（#253），拼音还在")
+    check(settleShift(c, at: 1.6) && c.mode == .english && client.committed == "ni",
+          "没有第二下：到时间切英文并上屏 ni", client.committed)
     check(!c.handle(.char("a")), "英文模式字母交给应用")
     _ = c.shiftChanged(down: true, otherModifiers: false, now: 2.0)
     _ = c.handle(.char("A", .shift))
-    check(!c.shiftChanged(down: false, otherModifiers: false, now: 2.1), "Shift+A 不算单按")
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 2.1) && !settleShift(c, at: 2.6), "Shift+A 不算单按")
     _ = c.shiftChanged(down: true, otherModifiers: false, now: 3.0)
-    check(!c.shiftChanged(down: false, otherModifiers: false, now: 3.8), "按太久不算单按")
-    _ = c.shiftChanged(down: true, otherModifiers: false, now: 4.0)
-    check(c.shiftChanged(down: false, otherModifiers: false, now: 4.1) && c.mode == .chinese, "再单按切回中文")
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 3.8) && !settleShift(c, at: 4.3), "按太久不算单按")
+    _ = c.shiftChanged(down: true, otherModifiers: false, now: 5.0)
+    _ = c.shiftChanged(down: false, otherModifiers: false, now: 5.1)
+    check(settleShift(c, at: 5.5) && c.mode == .chinese, "再单按切回中文")
+}
+
+do {
+    // #253：双击 Shift（JetBrains 的到处搜索）不切中英文。单按先等双击间隔，外壳开始轮询
+    let (c, client) = fresh()
+    var polled = 0
+    c.onTranslatePoll = { polled += 1 }
+    type(c, "ni")
+    _ = c.shiftChanged(down: true, otherModifiers: false, now: 1.0)
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 1.08) && polled > 0, "单按以后叫外壳开始轮询")
+    _ = c.shiftChanged(down: true, otherModifiers: false, now: 1.25)
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 1.33), "间隔以内的第二下也不切")
+    check(!settleShift(c, at: 3.0) && c.mode == .chinese && c.isComposing && client.committed.isEmpty,
+          "双击 Shift：过了时间也不切，拼音留着", client.committed)
+    // 单按以后接着按键：这个键之前先切（ni 原样上屏），键照英文交给应用
+    _ = c.shiftChanged(down: true, otherModifiers: false, now: 5.0)
+    _ = c.shiftChanged(down: false, otherModifiers: false, now: 5.08)
+    check(!c.handle(.char("a")) && c.mode == .english && client.committed == "ni",
+          "单按以后接着按键：先切英文，a 交给应用", client.committed)
+    // 按着 Shift 时按了 Command（别的修饰键）：等着的那一下也先切
+    _ = c.shiftChanged(down: true, otherModifiers: false, now: 6.0)
+    _ = c.shiftChanged(down: false, otherModifiers: false, now: 6.08)
+    c.otherModifierChanged()
+    check(c.mode == .chinese, "等双击时按了别的修饰键：先切回中文")
+    // 过了间隔才按第二下（轮询晚了）：第一下在按下时切，第二下自己再等
+    _ = c.shiftChanged(down: true, otherModifiers: false, now: 7.0)
+    _ = c.shiftChanged(down: false, otherModifiers: false, now: 7.08)
+    check(c.shiftChanged(down: true, otherModifiers: false, now: 7.6) && c.mode == .english, "过了间隔才按第二下：第一下照切")
+    _ = c.shiftChanged(down: false, otherModifiers: false, now: 7.68)
+    check(c.mode == .english && settleShift(c, at: 8.1) && c.mode == .chinese, "第二下到时间也切")
 }
 
 do {
@@ -496,6 +551,7 @@ do {
     check(d.horizontal && d.pageSize == 9 && d.pageKeys == 1, "默认横排、每页 9 个、- = 翻页")
     check(!d.fuzzy && d.fuzzyGroups == 1 | 2 | 4 | 64 | 128 | 256 | 512 | 1024, "默认模糊音关，分组同核心默认", "\(d.fuzzyGroups)")
     check(d.typoCorrection && !d.rareExtChars && !d.shuangpin && d.shuangpinScheme == "Ziranma", "默认纠错开、双拼关（自然码）")
+    check(d.shuangpinAbbrev && !WowtypeConfig.parse("ShuangpinAbbrev=False\n").shuangpinAbbrev, "双拼简拼默认开，写 False 关")
     check(d.shiftToggle == .both && !d.traditional && !d.halfwidthPunct && d.selectKeys == .off, "默认 Shift 切换、简体、全角标点")
     check(d.pickChar && d.dateTime && d.calculator && d.emojiSuggest && d.autoSpaceFlags == 0 && d.lexicon.isEmpty,
           "默认以词定字、日期、计算器、emoji 推荐开，自动空格关，自带词库")
@@ -555,6 +611,17 @@ withConfig({ $0.inputScheme = .shuangpin }) { c, client in
     // 默认方案自然码：hao = hk
     type(c, "nihk")
     check(client.page?.texts.first == "你好", "自然码 nihk 出你好", "\(client.page?.texts ?? [])")
+}
+
+withConfig({ $0.inputScheme = .shuangpin }) { c, client in
+    // #268：双拼简拼默认开，每个键都是声母（自然码 kx 读不通）时当成只打了声母
+    type(c, "kx")
+    check(client.page?.texts.first == "开心", "自然码简拼 kx 出开心", "\(client.page?.texts ?? [])")
+}
+
+withConfig({ $0.inputScheme = .shuangpin; $0.shuangpinAbbrev = false }) { c, client in
+    type(c, "kx")
+    check(!(client.page?.texts ?? []).contains("开心"), "关掉双拼简拼后 kx 没有开心", "\(client.page?.texts ?? [])")
 }
 
 do {
@@ -730,15 +797,18 @@ withConfig({ $0.halfwidthPunct = true }) { c, client in
 
 withConfig({ $0.shiftToggle = .right }) { c, _ in
     _ = c.shiftChanged(down: true, otherModifiers: false, now: 1.0, right: false)
-    check(!c.shiftChanged(down: false, otherModifiers: false, now: 1.1, right: false) && c.mode == .chinese, "只用右 Shift：左 Shift 不切")
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 1.1, right: false) && !settleShift(c, at: 1.5)
+              && c.mode == .chinese, "只用右 Shift：左 Shift 不切")
     _ = c.shiftChanged(down: true, otherModifiers: false, now: 2.0, right: true)
-    check(c.shiftChanged(down: false, otherModifiers: false, now: 2.1, right: true) && c.mode == .english, "右 Shift 切英文")
+    _ = c.shiftChanged(down: false, otherModifiers: false, now: 2.1, right: true)
+    check(settleShift(c, at: 2.5) && c.mode == .english, "右 Shift 切英文")
     var off = c.config
     off.shiftToggle = .off
     c.apply(off)
     check(c.mode == .chinese, "关掉 Shift 切换时回到中文")
     _ = c.shiftChanged(down: true, otherModifiers: false, now: 3.0, right: true)
-    check(!c.shiftChanged(down: false, otherModifiers: false, now: 3.1, right: true), "关掉以后单按 Shift 不切")
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 3.1, right: true) && !settleShift(c, at: 3.5),
+          "关掉以后单按 Shift 不切")
 }
 
 withConfig({ $0.autoSpace = true }) { c, client in
@@ -751,6 +821,7 @@ withConfig({ $0.autoSpace = true }) { c, client in
     check(client.committed == "第 5章abc 你好", "自动加空格", client.committed)
     _ = c.shiftChanged(down: true, otherModifiers: false, now: 1.0)
     _ = c.shiftChanged(down: false, otherModifiers: false, now: 1.1)
+    // 单按以后紧接着打字母：先切英文（#253 等双击时也一样），x 照英文处理
     check(c.handle(.char("x")) && client.committed.hasSuffix("你好 x"), "英文模式汉字后面的字母补空格", client.committed)
     check(!c.handle(.char("y")), "字母后面的字母照常交给应用")
 }
@@ -833,6 +904,9 @@ do {
     all.translateLlamaServer = "/opt/homebrew/bin/llama-server"
     all.translateIdleMinutes = 30
     all.initialMode = .last
+    all.windowMode = .english
+    all.settingsTheme = .dark
+    all.settingsAccent = "Purple"
     check(WowtypeConfig.keys.allSatisfy { all.value(forKey: $0) != d.value(forKey: $0) }, "每一项都改了",
           "\(WowtypeConfig.keys.filter { all.value(forKey: $0) == d.value(forKey: $0) })")
     for (name, base) in [("模板", nil), ("空文件", ""), ("只有注释", "# 我的设置\n")] as [(String, String?)] {
@@ -1049,7 +1123,8 @@ withConfig({ _ in }) { c, client in
     check(client.page?.aux == "工具栏：数字键选择，Esc 关闭", "工具栏的提示", client.page?.aux ?? "nil")
     check(c.handle(.char("a")) && c.openPanel == .menu && client.committed.isEmpty, "别的键吃掉，不打进应用")
     _ = c.shiftChanged(down: true, otherModifiers: false, now: 1.0)
-    check(!c.shiftChanged(down: false, otherModifiers: false, now: 1.1) && c.mode == .chinese, "工具栏开着时单按 Shift 不切")
+    check(!c.shiftChanged(down: false, otherModifiers: false, now: 1.1) && !settleShift(c, at: 1.5) && c.mode == .chinese,
+          "工具栏开着时单按 Shift 不切")
     _ = c.handle(.key(Keysym.down))
     check(client.page?.cursor == 1, "下键移光标", "\(client.page?.cursor ?? -1)")
     _ = c.handle(.key(Keysym.backspace))
@@ -1451,7 +1526,14 @@ do {
     _ = r.c.shiftChanged(down: true, otherModifiers: false, now: 1.0)
     _ = r.c.shiftChanged(down: false, otherModifiers: false, now: 1.1)
     _ = r.c.shiftChanged(down: true, otherModifiers: false, now: 2.0)
-    check(r.c.shiftChanged(down: false, otherModifiers: false, now: 2.1) && r.c.mode == .translate, "单按两次 Shift 到译")
+    _ = r.c.shiftChanged(down: false, otherModifiers: false, now: 2.1)
+    check(settleShift(r.c, at: 2.5) && r.c.mode == .translate, "单按两次 Shift 到译（隔开一秒，不算双击）")
+    // #253：双击不进「译」，也不动
+    _ = r.c.shiftChanged(down: true, otherModifiers: false, now: 3.0)
+    _ = r.c.shiftChanged(down: false, otherModifiers: false, now: 3.08)
+    _ = r.c.shiftChanged(down: true, otherModifiers: false, now: 3.25)
+    _ = r.c.shiftChanged(down: false, otherModifiers: false, now: 3.33)
+    check(!settleShift(r.c, at: 4.0) && r.c.mode == .translate, "在「译」里双击 Shift 不动")
 
     r.t.isReady = false
     tapShift(r.c)
@@ -2143,6 +2225,19 @@ do {
     check(AppUpdate.pickNewest([L(tag: "v0.9.9", prerelease: true), L(tag: "v0.10.0")]) == 1, "Beta：按数字段比")
     check(AppUpdate.pickNewest([L(tag: "nnlm-2026.11.17", prerelease: true)]) == nil && AppUpdate.pickNewest([]) == nil,
           "Beta：没有合适的")
+    // 接口限流时改走网页（和 Linux 的 fetch_latest_web 一样）
+    check(AppUpdate.tag(fromLatestURL: "https://github.com/Gloridust/WowType/releases/tag/v0.6.0") == "v0.6.0"
+          && AppUpdate.tag(fromLatestURL: "https://github.com/Gloridust/WowType/releases") == nil,
+          "releases/latest 跳到的地址里取 tag")
+    let feed = ["v0.8.0", "v0.7.0", "lm-2026.11.09", "v0.6.0", "v0.7.0"]
+        .map { "<link href=\"https://github.com/Gloridust/WowType/releases/tag/\($0)\"/>" }.joined()
+    check(AppUpdate.webCandidates(latest: "v0.6.0", feed: nil) == ["v0.6.0"], "网页：不开 Beta 只看最新正式版")
+    check(AppUpdate.webCandidates(latest: "v0.6.0", feed: feed) == ["v0.8.0", "v0.7.0", "v0.6.0"],
+          "网页：Beta 按版本号从大到小试，数据的发布不算、重复的去掉", AppUpdate.webCandidates(latest: "v0.6.0", feed: feed).joined(separator: " "))
+    let sha = String(repeating: "a", count: 64)
+    check(AppUpdate.highlights("## 这一版要注意\n\n- 甲\n\n## 安装\n\n乙") == "- 甲", "更新说明：发布任务写的「这一版要注意」那一节")
+    check(AppUpdate.assetNames(sums: "\(sha)  WowType-0.6.0-macos.pkg\n\(sha) *wowtype_0.6.0_debian13_amd64.deb\nbad  x\n\(sha)  ../evil\n")
+          == ["WowType-0.6.0-macos.pkg", "wowtype_0.6.0_debian13_amd64.deb"], "SHA256SUMS 里的文件名")
     check(!WowtypeConfig().betaUpdates && WowtypeConfig.parse("BetaUpdates=True\n").betaUpdates, "BetaUpdates 默认关、读得出来")
     check(!WowtypeConfig().typingStats && WowtypeConfig.parse("TypingStats=True\n").typingStats, "TypingStats 默认关、读得出来")
     check(AppUpdate.isNewer("0.4.1", than: "0.4.0") && AppUpdate.isNewer("0.10.0", than: "0.9.9")
@@ -2219,6 +2314,70 @@ withConfig({ $0.initialMode = .english; $0.shiftToggle = .off }) { c, _ in
 withConfig({ $0.initialMode = .english; $0.shiftToggle = .off; $0.toggleKey = Shortcut(name: "Control+Shift+space") }) { c, _ in
     c.applyInitialMode()
     check(c.mode == .english, "关了 Shift 切换、另设了切换键：照样进英文")
+}
+
+// MARK: 设置窗口的主题和强调色（SettingsTheme、SettingsAccent，和 Linux、Windows 一样）
+
+do {
+    let d = WowtypeConfig()
+    check(d.settingsTheme == .system && d.settingsAccent == "Green" && d.accent.strong == 0x0A8358,
+          "设置窗口默认跟随系统、绿色")
+    let parsed = WowtypeConfig.parse("SettingsTheme=Dark\nSettingsAccent=Blue\n")
+    check(parsed.settingsTheme == .dark && parsed.accent.value == "Blue" && parsed.accent.color == 0x3584E4,
+          "SettingsTheme、SettingsAccent 读得出来")
+    let wrong = WowtypeConfig.parse("SettingsTheme=dark\nSettingsAccent=Red\n")
+    check(wrong.settingsTheme == .system && wrong.accent.value == "Green", "认不出的主题、强调色用默认")
+    check(WowtypeConfig.parse(parsed.serialized(into: nil)) == parsed, "主题、强调色写进文件再读一样")
+    check(!d.serialized(into: nil).contains("\nSettingsTheme="), "默认的主题不写成生效的一行")
+    check(WowtypeConfig.SettingsTheme.allCases.map(\.name) == ["跟随系统", "浅色", "深色"], "主题的名字")
+}
+
+// MARK: 换到新窗口、新应用时（WindowMode，#254）
+
+do {
+    check(WowtypeConfig().windowMode == .same, "换窗口默认和上次一样")
+    check(WowtypeConfig.parse("WindowMode=English\n").windowMode == .english
+          && WowtypeConfig.parse("WindowMode=Chinese\n").windowMode == .chinese, "WindowMode 读得出来")
+    check(WowtypeConfig.parse("WindowMode=english\n").windowMode == .same, "WindowMode 大小写不对用默认")
+    var english = WowtypeConfig()
+    english.windowMode = .english
+    check(WowtypeConfig.parse(english.serialized(into: nil)).windowMode == .english, "WindowMode 写进文件再读一样")
+}
+
+do {
+    var focus = WindowFocus()
+    check(focus.moved(to: WindowFocus.key(app: "com.apple.TextEdit", window: 1)), "第一次用到算换了窗口")
+    check(!focus.moved(to: WindowFocus.key(app: "com.apple.TextEdit", window: 1)), "同一个窗口里换输入框不算")
+    check(focus.moved(to: WindowFocus.key(app: "com.apple.TextEdit", window: 2)), "同一个应用换了窗口算")
+    check(focus.moved(to: WindowFocus.key(app: "com.apple.Terminal", window: nil)), "换了应用算（问不到窗口号）")
+    check(!focus.moved(to: WindowFocus.key(app: "com.apple.Terminal", window: nil)), "问不到窗口号时同一个应用不算")
+}
+
+withConfig({ $0.windowMode = .english }) { c, _ in
+    c.applyWindowMode()
+    check(c.mode == .english, "WindowMode=English：换窗口后是英文")
+    tapShift(c)
+    check(c.mode == .chinese, "单按 Shift 还是能切回中文")
+    c.applyWindowMode()
+    check(c.mode == .english, "再换窗口又回到默认的英文")
+}
+
+withConfig({ $0.windowMode = .chinese }) { c, client in
+    tapShift(c)
+    check(c.mode == .english, "先切到英文")
+    c.applyWindowMode()
+    check(c.mode == .chinese && client.committed.isEmpty, "WindowMode=Chinese：换窗口后是中文")
+}
+
+withConfig({ _ in }) { c, _ in
+    tapShift(c)
+    c.applyWindowMode()
+    check(c.mode == .english, "WindowMode 默认 Same：换窗口还是英文")
+}
+
+withConfig({ $0.windowMode = .english; $0.shiftToggle = .off }) { c, _ in
+    c.applyWindowMode()
+    check(c.mode == .chinese, "WindowMode=English 但切不回中文：总是中文")
 }
 
 // MARK: 外部命令切模式（WowType --mode，和 Linux 的 org.wowtype.Input SetMode 一样）
@@ -2582,6 +2741,39 @@ withConfig({ $0.association = true }) { c, client in
     check(client.committed == "你好开心你好你好开心", "联想行里按空格上屏联想", client.committed)
     check(c.handle(.key(Keysym.escape)) || client.page == nil, "Esc 关掉联想")
     check(client.page == nil, "联想收起")
+}
+
+do {
+    // 输入框清空了（光标前没有字，应用说得清）：会话清掉记的上文，不拿上一次上屏的字学搭配。
+    // 和 fcitx5、Windows 一样；对照：没清空时接着打，搭配照常学到
+    let (c, client) = fresh()
+    let path = "/tmp/wowtype-macos-harness-\(getpid())-context-history.tsv"
+    func pairs() -> String {
+        _ = engine.saveHistory(path)
+        defer { unlink(path) }
+        guard let f = fopen(path, "r") else { return "" }
+        defer { fclose(f) }
+        var bytes: [UInt8] = []
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let n = fread(&buffer, 1, buffer.count, f)
+            if n <= 0 { break }
+            bytes.append(contentsOf: buffer[0..<n])
+        }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+    type(c, "kaixin ")
+    check(client.committed == "开心", "kaixin 空格上屏开心", client.committed)
+    client.committed = ""
+    type(c, "lve ")
+    check(client.committed == "略", "清空输入框后打略", client.committed)
+    check(!pairs().contains("p\t开心\t略\t"), "清空输入框后不学上一次上屏的字的搭配（开心 → 略）")
+    type(c, "hao")
+    if let at = client.page?.texts.firstIndex(of: "号") {
+        c.select(at)
+    }
+    check(client.committed == "略号", "没清空接着选号", client.committed)
+    check(pairs().contains("p\t略\t号\t"), "没清空时照常学搭配（略 → 号）")
 }
 
 if failures > 0 {

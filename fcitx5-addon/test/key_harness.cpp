@@ -243,6 +243,11 @@ void runCases(Instance &instance) {
               std::string(text) + " 原样（数字后的符号不换成中文标点），实际 上屏「" + ic->committed +
                   "」交给应用「" + ic->passed + "」");
     }
+    // 顿号没有半角形态：数字后面按 \ 还是顿号（#250）
+    fresh(ic.get());
+    type(ic.get(), "1\\");
+    check(ic->passed == "1" && ic->committed == "、", "1\\ -> 1、，实际 上屏「" + ic->committed +
+                                                       "」交给应用「" + ic->passed + "」");
     // 以词定字（#83）：[ 取首选的第一个字，] 取最后一个字；单字时照常先上屏再出【】
     fresh(ic.get());
     type(ic.get(), "nihao[");
@@ -625,7 +630,7 @@ void runCases(Instance &instance) {
         }
     }
     check(layout() == CandidateLayoutHint::Vertical && !grid.empty() && firstPage.size() >= 8 &&
-              grid[0].rfind("\uFF11\u3014" + firstPage[0] + "\u3015", 0) == 0 &&
+              grid[0].rfind("\uFF11\u3010" + firstPage[0] + "\u3011", 0) == 0 &&
               grid[0].find(firstPage[5]) != std::string::npos &&
               grid[0].find(firstPage[6]) == std::string::npos,
           "下键展开：第一行 6 个、光标框住第一个：" + join(grid));
@@ -672,7 +677,7 @@ void runCases(Instance &instance) {
         const auto screen = page(ic.get());
         bool framed = false;
         for (const auto &row : screen) {
-            framed = framed || row.find("\u3014") != std::string::npos;
+            framed = framed || row.find("\u3010") != std::string::npos;
         }
         check(common() && common()->cursorIndex() >= 0 && common()->currentPage() == 1 && framed,
               "展开后下移 7 行：面板翻到第二屏，看得到光标：" + join(screen));
@@ -771,11 +776,11 @@ void runCases(Instance &instance) {
     }
     // 展开面板上点翻页按钮、滚滚轮（直接调列表的 next / prev）：会话的光标跟着到那一屏，
     // 看到的这一屏上框着的词就是空格选的，数字选的是光标那一行的
-    /// 一行里〔〕框着的词；没有框是空的
+    /// 一行里【】框着的词；没有框是空的
     auto framedIn = [](const std::vector<std::string> &rows) {
         for (const auto &row : rows) {
-            const auto open = row.find("\u3014");
-            const auto close = row.find("\u3015");
+            const auto open = row.find("\u3010");
+            const auto close = row.find("\u3011");
             if (open != std::string::npos && close != std::string::npos && close > open) {
                 return row.substr(open + 3, close - open - 3);
             }
@@ -786,7 +791,7 @@ void runCases(Instance &instance) {
     auto labelledIn = [](const std::vector<std::string> &rows, const std::string &label) {
         for (const auto &row : rows) {
             auto at = row.find(label + "\u3000");
-            if (row.find("\u3014") == std::string::npos || at == std::string::npos) {
+            if (row.find("\u3010") == std::string::npos || at == std::string::npos) {
                 continue;
             }
             at += label.size() + 3;
@@ -1212,7 +1217,7 @@ void runCases(Instance &instance) {
     // 上面刚选过 😊：最近用过的排最前。第二个是什么看前面的用例选过什么
     // （词库不同，前面翻页、展开时可能选到 🔟 这类按键 emoji；什么都没选过就是全部 emoji 的 😀）
     const std::string recentGrid = page(ic.get()).empty() ? std::string() : page(ic.get())[0];
-    check(recentGrid.find("〔😊〕") != std::string::npos && recentGrid.find("〔😊〕") < recentGrid.find("２"),
+    check(recentGrid.find("【😊】") != std::string::npos && recentGrid.find("【😊】") < recentGrid.find("２"),
           "最近用过的排最前：" + recentGrid);
     std::string recentSecond;
     if (auto at = recentGrid.find("２　"); at != std::string::npos) {
@@ -1715,6 +1720,49 @@ void runCases(Instance &instance) {
         check(!english(), "测完回到中文");
     }
     {
+        // #254：换窗口、换应用时按 WindowMode 定中 / 英；默认 Same，和以前一样不动
+        const auto english = [&]() {
+            fresh(ic.get());
+            type(ic.get(), "a");
+            const bool ascii = ic->passed == "a" && preedit(ic.get()).empty();
+            fresh(ic.get());
+            return ascii;
+        };
+        const auto switchWindow = [&]() {
+            ic->focusOut();
+            ic->focusIn();
+        };
+        std::ofstream(configDir + "/wowtype.conf") << "WindowMode=English\n";
+        addon->reloadConfig();
+        switchWindow();
+        check(english(), "WindowMode=English：换窗口后是英文");
+        // 在窗口里切回中文，再换窗口又按默认定成英文
+        tapShift(FcitxKey_Shift_R);
+        check(!english(), "单按 Shift 还是能切回中文");
+        switchWindow();
+        check(english(), "再换窗口又回到默认的英文");
+        // 只设了 WindowMode、没设 InitialMode 时，切输入法仍按 InitialMode 的默认中文
+        instance.setCurrentInputMethod(ic.get(), "testim", true);
+        instance.setCurrentInputMethod(ic.get(), "wowtype", true);
+        check(!english(), "切输入法时 InitialMode 优先，回到中文");
+        // WindowMode=Chinese：换窗口定成中文
+        std::ofstream(configDir + "/wowtype.conf") << "WindowMode=Chinese\n";
+        addon->reloadConfig();
+        tapShift(FcitxKey_Shift_R);
+        check(english(), "先切到英文");
+        switchWindow();
+        check(!english(), "WindowMode=Chinese：换窗口后是中文");
+        // 默认 Same：换窗口保持当前模式（和以前一样）
+        std::filesystem::remove(configDir + "/wowtype.conf");
+        addon->reloadConfig();
+        tapShift(FcitxKey_Shift_R);
+        check(english(), "默认 WindowMode：先在当前窗口切到英文");
+        switchWindow();
+        check(english(), "WindowMode 默认 Same：换窗口还是英文");
+        tapShift(FcitxKey_Shift_R);
+        check(!english(), "测完回到中文");
+    }
+    {
         // #82：认 Shift 松开要看键码。xkb 选项（grp:shifts_toggle 等）或 fcitx5 按输入法布局重新翻译时，
         // 松开那一下 Shift 已经算按着，同一个键（左 Shift 键码 50）可能翻成 ISO_Next_Group
         const auto english = [&]() {
@@ -1795,6 +1843,78 @@ void runCases(Instance &instance) {
         check(instance.inputMethodLabel(ic.get()) == "中", "#225：再单按一下回到中文");
     }
     fresh(ic.get());
+    {
+        // #253：JetBrains 的双击 Shift（到处搜索）不该切中英文。开着双击判断（插件默认，别的用例为了
+        // 连按不用等，用 WOWTYPE_SHIFT_DOUBLE_TAP=0 关着）：单按先等 0.35 秒，这么久以内又单按一下两下都不算。
+        // 这里事件循环不走、定时器不来：靠接着按的键让等着的那一下先切（定时器那条路在互译用例里测）
+        ::unsetenv("WOWTYPE_SHIFT_DOUBLE_TAP");
+        addon->reloadConfig();
+        const auto label = [&]() { return instance.inputMethodLabel(ic.get()); };
+        const auto settle = []() { std::this_thread::sleep_for(std::chrono::milliseconds(400)); };
+        // 双击：两下的按下、松开都不接受（交给应用，JetBrains 才看得到双击），模式不变
+        const bool first = tapShift(FcitxKey_Shift_R);
+        const bool second = tapShift(FcitxKey_Shift_R);
+        check(first && second && label() == "中", "#253：双击 Shift 四个事件都交给应用，不切：" + label());
+        settle();
+        type(ic.get(), "nihao<sp>");
+        check(ic->committed == "你好" && label() == "中", "#253：双击以后还是中文：" + ic->committed);
+        fresh(ic.get());
+        // 左 Shift 也一样（Shift_L 不是 fcitx5 默认的临时切换键时）
+        KeyEvent leftPress(ic.get(), Key(FcitxKey_Shift_L), false);
+        const bool leftTaken = ic->keyEvent(leftPress);
+        KeyEvent leftRelease(ic.get(), Key(FcitxKey_Shift_L, KeyState::Shift), true);
+        const bool leftReleaseTaken = ic->keyEvent(leftRelease);
+        check(!leftTaken && !leftReleaseTaken, "#253：等双击时左 Shift 的按下、松开也交给应用");
+        check(tapShift(FcitxKey_Shift_L) && label() == "中", "#253：左 Shift 双击也不切");
+        settle();
+        fresh(ic.get());
+        // 单按：先不切；接着打字时先切，这个字母照英文交给应用（和以前单按立刻切一样）
+        check(tapShift(FcitxKey_Shift_R) && label() == "中", "#253：单按先不切（等双击）");
+        type(ic.get(), "a");
+        check(ic->passed == "a" && ic->committed.empty() && preedit(ic.get()).empty() && label() == "英",
+              "#253：单按以后接着打字：先切英文，a 交给应用：" + ic->passed + " " + label());
+        fresh(ic.get());
+        // 慢的第二下（过了间隔才按下）：第一下照切，第二下自己再等
+        tapShift(FcitxKey_Shift_R);
+        settle();
+        KeyEvent slowPress(ic.get(), Key(FcitxKey_Shift_R), false);
+        check(!ic->keyEvent(slowPress) && label() == "中", "#253：过了间隔才按第二下：第一下照切（回中文）");
+        KeyEvent slowRelease(ic.get(), Key(FcitxKey_Shift_R, KeyState::Shift), true);
+        check(!ic->keyEvent(slowRelease) && label() == "中", "#253：第二下松开也交给应用，先不切");
+        // 等着的时候输入框重置（点了别处、换窗口）：那一下照切
+        ic->focusOut();
+        ic->focusIn();
+        check(label() == "英", "#253：等双击时输入框重置，照切英文：" + label());
+        type(ic.get(), "b");
+        check(ic->passed == "b" && label() == "英", "#253：重置后是英文：" + ic->passed);
+        fresh(ic.get());
+        tapShift(FcitxKey_Shift_R);
+        type(ic.get(), "ni");
+        check(label() == "中" && preedit(ic.get()) == "ni", "#253：单按回中文，接着打拼音：" + preedit(ic.get()));
+        // 打到一半双击：拼音留着，什么也不上屏
+        tapShift(FcitxKey_Shift_R);
+        tapShift(FcitxKey_Shift_R);
+        settle();
+        check(ic->committed.empty() && preedit(ic.get()) == "ni" && label() == "中",
+              "#253：打到一半双击 Shift：拼音留着，不上屏：" + ic->committed + "|" + preedit(ic.get()));
+        type(ic.get(), "hao<sp>");
+        check(ic->committed == "你好", "#253：接着打完照常上屏：" + ic->committed);
+        // 打到一半单按：等的时候拼音还在，接着按键时字母原样上屏、切英文
+        fresh(ic.get());
+        type(ic.get(), "nih");
+        tapShift(FcitxKey_Shift_R);
+        check(ic->committed.empty() && preedit(ic.get()) == "ni'h" && label() == "中", "#253：打到一半单按：先不上屏：" + ic->committed + "|" + preedit(ic.get()) + "|" + label());
+        type(ic.get(), "a");
+        check(ic->committed == "nih" && ic->passed == "a" && label() == "英",
+              "#253：接着按键：字母原样上屏，切英文，a 交给应用：" + ic->committed + "|" + ic->passed);
+        fresh(ic.get());
+        tapShift(FcitxKey_Shift_R);
+        ::setenv("WOWTYPE_SHIFT_DOUBLE_TAP", "0", 1);
+        addon->reloadConfig();
+        type(ic.get(), "nihao<sp>");
+        check(ic->committed == "你好" && label() == "中", "#253：测完回到中文：" + ic->committed);
+        fresh(ic.get());
+    }
 
     // fcitx5 全局翻页热键（#27）：设成 , . 后打字途中按它们翻页，不上屏标点
     {
@@ -1842,6 +1962,25 @@ void runCases(Instance &instance) {
           "双拼 V1+2*3 -> 7：" + preedit(ic.get()) + " | " + join(page(ic.get())));
     type(ic.get(), "=");
     check(ic->committed == "7", "双拼按 = 上屏结果：" + ic->committed);
+    fresh(ic.get());
+    // #268：双拼的简拼，每个键都是声母（sm，微软双拼里读不通）时当成只打了声母
+    type(ic.get(), "sm");
+    check(!page(ic.get()).empty() && page(ic.get())[0] == "什么",
+          "双拼简拼 sm -> 什么：" + join(page(ic.get())));
+    type(ic.get(), "<sp>");
+    check(ic->committed == "什么", "双拼简拼选「什么」：" + ic->committed);
+    fresh(ic.get());
+    {
+        std::ofstream(configDir + "/wowtype.conf")
+            << "Shuangpin=True\nShuangpinScheme=Microsoft\nShuangpinAbbrev=False\n";
+    }
+    addon->reloadConfig();
+    type(ic.get(), "sm");
+    {
+        const auto cands = page(ic.get());
+        check(std::find(cands.begin(), cands.end(), "什么") == cands.end(),
+              "关掉双拼简拼后 sm 没有「什么」：" + join(cands));
+    }
     fresh(ic.get());
     // #122：设置里打开「双拼时编辑区显示打的键」
     {
@@ -2887,6 +3026,41 @@ void runTranslateCase(Instance &instance, std::function<void()> done) {
                      type(ic, "nihao<sp>");
                  },
                  expectCommit("你好")});
+    // #253：单按 Shift 等双击，没有第二下、也没再按键时，到时间在插件的定时器里切（事件循环走着才测得到）
+    auto label = [c](HarnessInputContext *ic) { return c->instance.inputMethodLabel(ic); };
+    auto waitedFrom = std::make_shared<uint64_t>(0);
+    auto tappedLabel = std::make_shared<std::string>();
+    s.push_back({"#253：单按 Shift 先不切，0.35 秒后定时器里切英文",
+                 [addon, reset, label, tappedLabel](HarnessInputContext *ic) {
+                     ::unsetenv("WOWTYPE_SHIFT_DOUBLE_TAP");
+                     addon->reloadConfig();
+                     reset(ic);
+                     tapKey(ic, FcitxKey_Shift_R);
+                     *tappedLabel = label(ic);
+                 },
+                 [label, tappedLabel](HarnessInputContext *ic) {
+                     return *tappedLabel == "中" && label(ic) == "英";
+                 }});
+    s.push_back({"#253：双击 Shift 过了间隔也不切",
+                 [waitedFrom](HarnessInputContext *ic) {
+                     tapKey(ic, FcitxKey_Shift_R);
+                     tapKey(ic, FcitxKey_Shift_R);
+                     *waitedFrom = now(CLOCK_MONOTONIC);
+                 },
+                 [label, waitedFrom](HarnessInputContext *ic) {
+                     return now(CLOCK_MONOTONIC) - *waitedFrom > 700000 && label(ic) == "英";
+                 }});
+    s.push_back({"#253：再单按一下，定时器里切回中文",
+                 [](HarnessInputContext *ic) { tapKey(ic, FcitxKey_Shift_R); },
+                 [label](HarnessInputContext *ic) { return label(ic) == "中"; }});
+    s.push_back({"#253：测完关掉双击判断（别的用例连按不等）",
+                 [addon, reset](HarnessInputContext *ic) {
+                     ::setenv("WOWTYPE_SHIFT_DOUBLE_TAP", "0", 1);
+                     addon->reloadConfig();
+                     reset(ic);
+                     type(ic, "nihao<sp>");
+                 },
+                 expectCommit("你好")});
 
     c->timer = instance.eventLoop().addTimeEvent(
         CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 50000, 1000, [c, done](EventSourceTime *source, uint64_t) {
@@ -3567,6 +3741,9 @@ int main(int argc, char **argv) {
     char arg1[] = "--disable=all";
     char arg2[] = "--enable=wowtype,testim,clipboard";
     char *args[] = {arg0, arg1, arg2};
+    // 双击 Shift 不切换（#253）要等 0.35 秒才切：大多数用例连按 Shift、按完马上看模式，关着测；
+    // runCases 和互译用例里各有一段开着测
+    ::setenv("WOWTYPE_SHIFT_DOUBLE_TAP", "0", 1);
     Instance instance(3, args);
     FakeClipboardFactory clipboardFactory;
     StaticAddonRegistry registry{{"clipboard", &clipboardFactory}};

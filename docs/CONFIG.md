@@ -62,12 +62,12 @@ dbus-send --session --dest=org.fcitx.Fcitx5 /controller \
 
 ### 翻译引擎
 
-「翻译引擎」不是单独的设置项，是从下面几项推出来的（Linux 设置界面和 macOS 一样，见 `spec/config.json` 的 `translateEngines`）：
+「翻译引擎」不是单独的设置项，是从下面几项推出来的（Linux 设置界面、macOS、Windows 设置窗口都一样，见 `spec/config.json` 的 `translateEngines`）：
 
 | 引擎 | 配置文件里 | 说明 |
 |---|---|---|
 | 本地翻译（离线） | `TranslateLocal=True`（默认） | 见[本地模型](#本地模型离线) |
-| 哔哩哔哩（免费，不用 API Key） | `TranslateLocal=False`，`TranslateBaseUrl` 的主机是 `index-translate.bilibili.com` | 见[哔哩哔哩](#哔哩哔哩index-translate) |
+| 哔哩哔哩（免费） | `TranslateLocal=False`，`TranslateBaseUrl` 的主机是 `index-translate.bilibili.com` | 见[哔哩哔哩](#哔哩哔哩index-translate) |
 | 自定义翻译服务 | `TranslateLocal=False`，别的地址 | 服务商、地址、Key、模型，见上面 |
 
 在设置里换引擎时写上这个引擎的 `TranslateLocal`、`TranslateBaseUrl`、`TranslateModel`。从「自定义」换到哔哩哔哩再换回来，
@@ -160,10 +160,12 @@ RareExtChars=False
 InputScheme=Quanpin
 ShuangpinScheme=Ziranma
 ShuangpinShowKeys=False
+ShuangpinAbbrev=True
 WubiAutoCommit=True
 WubiHint=True
 ShiftToggle=Both
 InitialMode=Chinese
+WindowMode=Same
 Traditional=False
 SelectKeys=Off
 PickChar=True
@@ -195,6 +197,8 @@ TranslateIdleMinutes=5
 CheckUpdate=True
 BetaUpdates=False
 TypingStats=False
+SettingsTheme=System
+SettingsAccent=Green
 Lexicon=
 ```
 
@@ -205,12 +209,13 @@ Lexicon=
 | `PageSize` | 每页候选个数，3–9 |
 | `Fuzzy`、`TypoCorrection`、`Traditional`、`DateTime`、`Calculator`、`Toolbar`、`ClipboardHistory`、`Voice`、`VoiceCopy`、`EmojiSuggest`、`Translate`、`TranslateFormal`、`CheckUpdate`、`BetaUpdates`、`TypingStats` | `True` / `False` |
 | `AutoSpace`、`AutoSpaceLetters`、`AutoSpaceDigits` | 中英文之间自动加空格：总开关（默认关）、汉字和字母之间、汉字和数字之间。要应用报告光标前的文字才生效（终端等不支持），密码、网址、邮箱输入框不加 |
-| `AutoPairPunct` | 中文标点自动配对，默认关，在设置的「输入」页（标点样式下面）打开。中文标点下打 `(` `[` `<` `{` `"` `'` 上屏成对的（）【】《》「」“”‘’，光标放到中间；在里面打完再按右半边（`)` `]` `>` `}` `"` `'`）不再多上屏一个，而是跳过补好的那个（打拼音途中按的先上屏候选），数字后面也一样：`(` `3` `)` 是（3）。可以套着打（“”）。里面空着时按退格两个一起删。里面打字、空格、退格都不打断配对；按了方向键、`Home` `End`、回车、`Tab`、`Delete`、快捷键，换了窗口、点鼠标挪了光标（应用重置输入法）以后不再跳过。数字后面的左括号照常是半角（`3(`），不配对；互译、半角标点时不配对。Linux 上光标靠插件给应用发方向键挪；macOS 上没有挪光标的接口（发方向键要「辅助功能」权限），靠输入法按位置换字：把光标要停的位置前面那个字原样换一遍，光标就落在那里（和长按出重音字母一样的接口），所以只在应用告诉输入法光标在哪、读得到光标旁边的字时配对，终端这类应用里、空的输入框里第一个字照常一个一个上屏。应用报告光标前后文字时，跳过、一起删之前还核对右边确实是补好的那个 |
+| `AutoPairPunct` | 中文标点自动配对，默认关，在设置的「输入」页（「拼音」那一组）打开。中文标点下打 `(` `[` `<` `{` `"` `'` 上屏成对的（）【】《》「」“”‘’，光标放到中间；在里面打完再按右半边（`)` `]` `>` `}` `"` `'`）不再多上屏一个，而是跳过补好的那个（打拼音途中按的先上屏候选），数字后面也一样：`(` `3` `)` 是（3）。可以套着打（“”）。里面空着时按退格两个一起删。里面打字、空格、退格都不打断配对；按了方向键、`Home` `End`、回车、`Tab`、`Delete`、快捷键，换了窗口、点鼠标挪了光标（应用重置输入法）以后不再跳过。数字后面的左括号照常是半角（`3(`），不配对；互译、半角标点时不配对。Linux 上光标靠插件给应用发方向键挪；macOS 上没有挪光标的接口（发方向键要「辅助功能」权限），靠输入法按位置换字：把光标要停的位置前面那个字原样换一遍，光标就落在那里（和长按出重音字母一样的接口），所以只在应用告诉输入法光标在哪、读得到光标旁边的字时配对，终端这类应用里、空的输入框里第一个字照常一个一个上屏。应用报告光标前后文字时，跳过、一起删之前还核对右边确实是补好的那个 |
 | `FuzzyZh`、`FuzzyCh`、`FuzzySh`、`FuzzyNL`、`FuzzyFH`、`FuzzyRL`、`FuzzyAn`、`FuzzyEn`、`FuzzyIn`、`FuzzyIan`、`FuzzyUan`、`FuzzyUn`、`FuzzyAnAi`、`FuzzyHuangWang`、`FuzzyUnIong`、`FuzzyEngOng` | 模糊音的各组（z=zh、c=ch、s=sh、n=l、f=h、r=l、an=ang、en=eng、in=ing、ian=iang、uan=uang、un=ong、an=ai、huang=wang、un=iong、eng=ong），`Fuzzy` 打开时才生效 |
 | `SelectKeys` | 分号、引号选词：`Off`、`Semicolon`（`;` 选第 2 个）、`SemicolonQuote`（再加 `'` 选第 3 个，引号不再当隔音符） |
 | `RareExtChars` | 也出 CJK 扩展 B 区及以后的单字（比如 `hou` 的 𠯜），默认关：常见中文字体（Noto CJK、思源、苹方）都没有这些字，列出来是方块。打开前先装能显示它们的字体，比如 Ubuntu / Debian 的 `fonts-hanazono`。通用规范汉字表里的扩展区字（𬭩、𫚔，约 200 个，常见字体都有）和含这些字的词（𩽾𩾌）不受这个开关影响 |
 | `PickChar` | 以词定字：打拼音时 `[` 上屏光标处候选的第一个字、`]` 上屏最后一个字，默认开；翻页键设成 `[ ]` 时让给翻页 |
 | `Association` | 联想：选词、整句上屏以后给出一页常跟在后面的词（词级模型里的，加上自己用过的搭配）。按 `Tab` 进联想行，再用空格、回车、数字上屏，`Esc` 退出，也能用鼠标点；没按 `Tab` 时接着打字、数字、标点、空格、回车都照常（数字不选联想，中文后面常接着打数字）。五笔、互译、密码框里不出。默认关（0.5.0 预发布时默认开），在设置的「输入」页打开 |
+| `SettingsTheme`、`SettingsAccent` | 设置窗口自己的主题和强调色（「常规 → 设置窗口」），只管设置窗口，不管候选框，输入法不读；Linux、macOS、Windows 三端都有，选项一样，见下面的[设置窗口的主题和强调色](#设置窗口的主题和强调色) |
 | `TypingStats` | [打字统计](#打字统计)，默认关。关着时什么都不记、不建文件；打开以后只在本机记每天的聚合计数，不记打的内容。在设置的「统计」页打开、清除 |
 | `InputScheme` | 输入方案，设置界面里是「输入方案」的单选：`Quanpin` 拼音（默认）、`Shuangpin` 双拼、`Wubi86` 五笔 86。五笔要数据目录里有五笔码表 `wubi86.tsv`（安装包里带着，查找顺序和词库一样，环境变量是 `WOWTYPE_WUBI`）；没有时设置里「五笔输入」灰掉，配置文件里写了 `Wubi86` 的照全拼打，候选框上方提示没有码表。五笔怎么打见 [README 的五笔](../README.md#五笔) |
 | `Shuangpin` | 0.3.12 及以前的双拼开关，已经不是设置项。文件里没有 `InputScheme` 时，`Shuangpin=True` 读成 `InputScheme=Shuangpin`；有 `InputScheme` 时不看它。三端存盘时都不写它，下次存盘这一行就没了 |
@@ -218,8 +223,11 @@ Lexicon=
 | `WubiHint` | 五笔的候选后面显示还要打的码（打 `wq` 时「您 in」「你好 vb」），默认 `True`。只在五笔时显示；`z` 临时拼音反查的五笔码总是显示 |
 | `ShuangpinScheme` | 双拼方案：`Ziranma` 自然码、`Xiaohe` 小鹤、`Microsoft` 微软、`Sogou` 搜狗、`ABC` 智能 ABC、`Ziguang` 紫光、`PinyinJiajia` 拼音加加 |
 | `ShuangpinShowKeys` | 双拼时编辑区显示打的键（`uivs`），不翻成全拼（`shi'zhong`），中英混打时看得出打了什么。默认 `False` |
-| `ShiftToggle` | 单按哪个 Shift 切中英文：`Both`、`Left`、`Right`、`Off`。fcitx5 自己的全局快捷键（「临时切换输入法」「切换输入法」「向前切换输入法」等任何一项）里用了同一个 Shift 时，fcitx5 先处理，WowType 收不到；设置界面「输入」页会提示，并能一键把 Shift 从 fcitx5 那边去掉（改的是 `~/.config/fcitx5/config`，关掉开关就还原；这个文件写不了时提示「只在这次有效」，NixOS 见[安装说明](INSTALL.md#单按-shift-在-nixos-上)） |
-| `InitialMode` | 从别的输入法切到 WowType、开机后第一次用时的模式：`Chinese`（默认）、`English`、`Last`（和上次切走时一样）。换窗口不算，中英文照旧全局保持；关了 Shift 切换（`ShiftToggle=Off`）、也没另设切换键（`ToggleKey`）时总是中文（`TranslateModeKey` 只进出「译」，不算）。macOS 上每个应用记着自己的中英文：输入法停用以后系统现在用的不是 WowType（切到了别的输入法；密码框里系统临时换成英文键盘不算）就记一笔，之后每个应用第一次用到 WowType 时按这一项定一次，换应用、换窗口不动；`Last` 是每个应用和它上次一样 |
+| `ShuangpinAbbrev` | 双拼的简拼（#268）：每个键都是声母时也当成只打了声母，`sm` 出「什么」（zh ch sh 用方案里的声母键，自然码、小鹤是 `v` `i` `u`；`s` 和全拼的简拼一样，s、sh 开头的都算）。同样的键按双拼也读得通、有词时（小鹤的 `zg` 是 zeng），双拼读出来的排在前面，简拼的词（词库里的整词）接在它的前五个后面，不顶掉双拼的字。默认 `True` |
+| `ShiftToggle` | 单按哪个 Shift 切中英文：`Both`、`Left`、`Right`、`Off`。0.35 秒以内连按两下（双击）两下都不算，JetBrains 的双击 Shift 不会切中英文（#253）；单按以后接着打字照切了以后的模式打，不接着打时 0.35 秒后才切、弹提示。fcitx5 自己的全局快捷键（「临时切换输入法」「切换输入法」「向前切换输入法」等任何一项）里用了同一个 Shift 时，fcitx5 先处理，WowType 收不到；设置界面「输入」页会提示，并能一键把 Shift 从 fcitx5 那边去掉（改的是 `~/.config/fcitx5/config`，关掉开关就还原；这个文件写不了时提示「只在这次有效」，NixOS 见[安装说明](INSTALL.md#单按-shift-在-nixos-上)） |
+| `InitialMode` | 从别的输入法切到 WowType、开机后第一次用时的模式：`Chinese`（默认）、`English`、`Last`（和上次切走时一样）。换窗口不算，中英文照旧全局保持（要换窗口也定一次，见 `WindowMode`）；关了 Shift 切换（`ShiftToggle=Off`）、也没另设切换键（`ToggleKey`）时总是中文（`TranslateModeKey` 只进出「译」，不算）。macOS 上每个应用记着自己的中英文：输入法停用以后系统现在用的不是 WowType（切到了别的输入法；密码框里系统临时换成英文键盘不算）就记一笔，之后每个应用第一次用到 WowType 时按这一项定一次，换应用、换窗口不动；`Last` 是每个应用和它上次一样 |
+| `WindowMode` | 换到新窗口、新应用时的默认中 / 英（#254）：`Same`（默认，保持当前模式，和以前一样：Linux 上所有窗口一个，macOS、Windows 上每个应用记着自己的）、`Chinese`、`English`。选了中 / 英以后，每次切到一个窗口、应用都先定成它；在窗口里用 Shift 切了只算这一次，切走再回来又按这一项定。从别的输入法切回来的那一下按 `InitialMode`。关了 Shift 切换、也没另设切换键时总是中文（同 `InitialMode`）。Linux 上是输入框获得焦点时；macOS 上看应用和它最前面的窗口换没换，同一个窗口里换输入框不算；Windows 上看输入框所在的顶层窗口换没换、应用从别处切回来，打到一半切走又切回来的接着打、不换。设置界面「输入 → 默认状态 → 默认中/英文」（Windows 设置窗口在「常规」页） |
+| `PunctuationStyle` | 标点样式，设置界面「输入 → 默认状态 → 默认全角/半角」：`Fullwidth` 全角中文标点（默认）、`Halfwidth` 半角英文标点 |
 | `VoiceKey` | fcitx5 的键名，如 `Alt_R`、`Control_R`、`Menu`、`F8` |
 | `ToggleKey` | 另设一个切换中 / 英文的快捷键（fcitx5 键名，如 `Control+Shift+space`），留空不用；单按 Shift 照常。在「译」里按回到中文。fcitx5 自己的全局快捷键先处理：`Control+space` 默认是 fcitx5「切换启用/禁用输入法」的键（macOS 上是系统「选择上一个输入法」的键），设成它 WowType 收不到，所以设置里不再列它；Linux 设置界面会提示被 fcitx5 占着的键 |
 | `TranslateModeKey` | 进出「译」的快捷键（如 `Control+Shift+Y`），留空不用：按它进「译」（打到一半的拼音带进去），在「译」里再按回到进来前的模式；设了以后单按 Shift 只在中 ↔ 英之间切（在「译」里单按回中文）。互译没打开、翻译没配好、密码框里这个键交给应用。和 `ToggleKey` 设成同一个键时算这个 |
@@ -234,7 +242,7 @@ Lexicon=
 
 文件不存在、或者少写了哪一项，就用默认值（就是上面这些）。注释要单独写一行（`#` 开头），不能写在值后面。
 
-三端（Linux 插件、设置界面、macOS）读这个文件的规矩一样：
+各端（Linux 插件、设置界面、macOS、Windows）读这个文件的规矩一样：
 
 - 开关只认 `True` / `False`，选项区分大小写（`Horizontal`，不是 `horizontal`）；写错了、认不出的用默认值。
 - 数字超出范围夹到边上（`PageSize=12` 读成 9），认不出的数字用默认值。
@@ -243,8 +251,8 @@ Lexicon=
 - 两边带双引号的值去掉引号，`\\`、`\"`、`\n` 还原成反斜杠、引号、换行。
 
 **改设置项（加键、改名、改默认值、范围、可选值）要先改规格 [`spec/config.json`](../spec/config.json)**（可选词库包的规矩在
-[`spec/lexicon-pack.json`](../spec/lexicon-pack.json)），Linux 插件、设置界面、macOS 三端的测试都拿它对照，哪一端没跟上 CI 就挂：
-插件在 `scripts/addon-test.sh`、设置界面在 `scripts/test-config-contract.py`、macOS 在 `macos/test.sh`。
+[`spec/lexicon-pack.json`](../spec/lexicon-pack.json)），Linux 插件、设置界面、macOS、Windows 各端的测试都拿它对照，哪一端没跟上 CI 就挂：
+插件在 `scripts/addon-test.sh`、设置界面在 `scripts/test-config-contract.py`、macOS 在 `macos/test.sh`、Windows 在 `windows/test.sh`（CI 的 Windows 任务）。
 两端故意不一样的（比如 `EmojiKey` 的默认值）、只有一端有的项，规格里都写了原因。
 
 下面这些环境变量主要是**调试和测试用**，设了的话**优先于**配置文件（在设置界面里改了也不起作用），平时用不着：
@@ -274,6 +282,13 @@ Lexicon=
 
 临时试一下：`WOWTYPE_FUZZY=1 fcitx5 -r -d`。长期用写进 `~/.config/environment.d/wowtype.conf`，注销重新登录后生效。
 
+### Windows
+
+Windows 版还在第一阶段（[WINDOWS.md](WINDOWS.md)）：设置在 `%LOCALAPPDATA%\WowType\wowtype.conf`，**键名、取值、默认值和上面一样**，
+`EmojiKey` 的默认值和 macOS 一样是 `Control+period`，也认 `CandidateFontSize`。开始菜单的「WowType 设置」（或任务栏上「中」按钮右键 →「WowType 设置…」）打开设置窗口，
+和 macOS 一样只写改过的键，注释、不认识的键原样留着；也可以右键 →「打开设置文件」用记事本改。存了以后下一次按键生效。检查更新（`CheckUpdate`、`BetaUpdates`）和 macOS 一样，有新版时任务栏「中」按钮的右键菜单里多一项；打字统计（`TypingStats`）记在同一个目录的 `stats.json`，设置窗口「统计」页看（柱状图、键盘热力图）；
+语音输入（`Voice*`）和另两端一样，模型要自己放进同一个目录的 `wtlocal\`（还没有下载按钮）。
+
 ### macOS
 
 macOS 上的设置在 `~/Library/Application Support/WowType/wowtype.conf`，**键名、取值、默认值和上面一样**（只有 `EmojiKey` 的默认值不同，见下），Linux 上的文件拷过去就能用。
@@ -286,8 +301,8 @@ macOS 还没有的功能不列；Linux 单独一页的「更新」在「常规�
 改完下一次按键时生效，不用重启；换了 `Lexicon` 会在后台重新载入词库，载完之前照旧用原来的。
 
 现在认的项：`CandidateLayout`、`ArrowKeys`、`PageSize`、`PageKeys*`、`SelectKeys`、`PickChar`、`Association`、`Fuzzy` 和 `Fuzzy*` 各组、`TypoCorrection`、`RareExtChars`、
-`InputScheme`、`ShuangpinScheme`、`ShuangpinShowKeys`、`WubiAutoCommit`、`WubiHint`、`ShiftToggle`、`InitialMode`、`Traditional`、`PunctuationStyle`、`AutoPairPunct`、`DateTime`、`Calculator`、`EmojiSuggest`、
-`AutoSpace*`、`Lexicon`、`Toolbar`、`ClipboardHistory`、`EmojiKey`、`ToggleKey`、`TranslateModeKey`、`Voice`、`VoiceKey`、`VoiceCopy`、`Translate` 和 `Translate*` 各项、`TypingStats`，另外有一项只有 macOS 有的 `CandidateFontSize`（候选字号，10–40 磅，默认 17；Linux 上字号跟着 fcitx5 主题）。
+`InputScheme`、`ShuangpinScheme`、`ShuangpinShowKeys`、`ShuangpinAbbrev`、`WubiAutoCommit`、`WubiHint`、`ShiftToggle`、`InitialMode`、`WindowMode`、`Traditional`、`PunctuationStyle`、`AutoPairPunct`、`DateTime`、`Calculator`、`EmojiSuggest`、
+`AutoSpace*`、`Lexicon`、`Toolbar`、`ClipboardHistory`、`EmojiKey`、`ToggleKey`、`TranslateModeKey`、`Voice`、`VoiceKey`、`VoiceCopy`、`Translate` 和 `Translate*` 各项、`TypingStats`、`SettingsTheme`、`SettingsAccent`，另外有一项只有 macOS 有的 `CandidateFontSize`（候选字号，10–40 磅，默认 17；Linux 上字号跟着 fcitx5 主题）。
 `CheckUpdate`（默认 `True`）：输入法每天最多查一次 GitHub 上的最新正式版（后台，不挡打字），有新版时菜单栏的输入法菜单里多一项
 「有新版本 …，下载并安装…」，点它打开设置窗口「常规」页；设置窗口打开时也查。不弹系统通知（输入法没有开发者签名，通知要先授权，打字时弹框也打扰人）。
 「下载并安装」下载 `WowType-<版本>-macos.pkg` 和同一页的 `SHA256SUMS`，校验后交给系统的 `installer` 只装给当前用户（不要密码，和一键安装脚本一样），
@@ -367,10 +382,10 @@ macOS 还没有的功能不列；Linux 单独一页的「更新」在「常规�
 | `words.lm` | 词级语言模型（哪些词常连着用），有它长句更准；安装包里自带，见下 |
 | `custom.tsv` | [自定义词](#自定义词)：在设置里加的词 |
 | `user.tsv` | 自动学到的新词：分几次选出来拼成的词（四个字以内，比如「霜」「频」「阁」）30 天里第二次这样拼（或者直接选它）就收进来；一次打出来的词选够 3 次（按 30 天减半的热度算）才收 |
-| `history.tsv` | 输入习惯：选过哪些词、哪些词常连着用、等第二次的候选新词 |
+| `history.tsv` | 输入习惯：选过哪些词、哪些词常连着用、等第二次的候选新词、忘掉的词（Ctrl+Delete） |
 | `emoji-recent.txt` | 最近用过的 emoji（表情面板里排最前） |
 | `stats.json` | [打字统计](#打字统计)（默认关，打开了才有）：每天的字数、各类字符数、活跃毫秒、每个键按下的次数、候选位置，不保存输入内容；旁边的 `stats.clear` 是清空计数 |
-| `lexicon.tsv.wcache` | 词库快照，让第二次启动更快（约 0.3 秒）；删了会自动重建 |
+| `lexicon.tsv.wcache` | 词库快照，让第二次启动更快（约 0.1 秒，快照直接映射进内存用）；删了会自动重建 |
 | `wtlocal/` | 语音模型（约 130MB），在设置的「语音」页下载或删除；没有它语音输入打不开，按语音键只提示去下载 |
 | `dicts/wanxiang/` | 可选：万象词库包（`lexicon.tsv`、许可证、来源说明），在设置里下载，见下 |
 | `wetype/nlrgpt2_nnlm.bin` | 可选：导入的微信输入法的整句增强模型（16MB），有它就先用它，不然用安装包自带的 `nnlm.bin`，见下 |
@@ -385,7 +400,7 @@ macOS 还没有的功能不列；Linux 单独一页的「更新」在「常规�
 安装包里自带一份（38 MB，装到 `/usr/share/wowtype/words.lm`，许可证 CC BY-SA 4.0），
 是用清华的对话语料 [LCCC](https://huggingface.co/datasets/thu-coai/lccc)（MIT）加中文维基百科（CC BY-SA 4.0）训练的，
 单独下载见 [Release lm-2026.11.09](https://github.com/Gloridust/WowType/releases/tag/lm-2026.11.09)。
-载入约 0.06 秒，多占约 90 MB 内存，对按键速度几乎没有影响。想用自己的语料重新训练：
+载入约 0.03 秒，多占约 45 MB 内存，对按键速度几乎没有影响。想用自己的语料重新训练：
 
 ```bash
 cargo run --release -p wowtype-core --bin wowtype-lmbuild -- \
@@ -439,7 +454,7 @@ cargo run --release -p wowtype-core --bin wowtype-lmbuild -- \
   `--use-lexicon rime-ice|wanxiang`。包里只许有哪几个文件、少于多少条不装、怎么校验，和 Linux 的规矩一样
   （`macos/Sources/Shared/LexiconPack.swift`）。正在用万象、开着 `CheckUpdate` 时，输入法每天检查更新时顺带看一眼：
   发布页上有新版万象就在后台下载、校验、换上（和 Linux 设置界面的后台检查一样，不打扰人；没成功的那一版一天以内不再试）。
-- **代价**：多占约 300 MB 内存，第一次载入（建快照）慢一些，之后启动约 2 秒。
+- **代价**：比雾凇多占约 60 MB 内存，第一次载入（建快照）要四五秒，之后启动约 0.1 秒。
 - 只用了万象的词条，没有用它的 `.gram` 语法模型（那是 librime 专用的格式）；整句仍靠 WowType 自己的 `words.lm`。
   万象故意收的错音错字词库（`dicts/cuoyin`，如「秘鲁 mì lǔ」）没收，因为 WowType 没有在候选旁提示正确读音的功能。
 - 词库包由 `scripts/make-wanxiang.sh` 生成：拼音去声调，词频整体缩放到和雾凇同一量级，再合进项目热词；包里带万象的 `LICENSE` 和写明来源与改动的 `SOURCE.txt`。
@@ -494,3 +509,20 @@ cargo run --release -p wowtype-core --bin wowtype-lmbuild -- \
 输入法写文件前看这个数：和开始攒这一批时不一样，就整批丢掉（里面有清除之前打的），不会把清掉的写回来；
 文件里的 `cleared` 和 `stats.clear` 对不上的，设置界面当作没有记录，输入法下次写时删掉。
 不用设置界面也可以：退出输入法（或先关掉统计）再删掉 `stats.json`。
+
+## 设置窗口的主题和强调色
+
+设置窗口「常规」页的「设置窗口」一组（Windows 在「常规」页最后两项），只改设置窗口自己，不影响候选框，输入法不读这两项：
+
+- **主题**（`SettingsTheme`）：`System` 跟随系统（默认）、`Light` 浅色、`Dark` 深色。
+  系统是深色、窗口却显示成浅色（或者反过来）时，固定成浅色或深色。
+  Linux 上固定以后连 `~/.config/gtk-4.0/gtk.css` 里系统主题写的颜色（KDE 会把它的配色写在那里）也不跟；
+  macOS 换的是窗口的外观（NSAppearance）；Windows 跟随系统时看「设置 → 个性化 → 颜色」里的应用模式。
+- **强调色**（`SettingsAccent`）：`Green` 绿色（默认，WowType 绿）、`Blue` 蓝色、`Purple` 紫色、`Orange` 橙色、`Pink` 粉色。
+  用在选中的页面、按钮、开关和统计的图上。三端用同一张颜色表（[`spec/config.json`](../spec/config.json) 的 `SettingsAccent`）：
+  每种颜色带一个放白字用的深一点的版本（和白字的对比度至少 4.7:1）、一个深色背景上当字用的浅一点的版本（至少 4.5:1）。
+
+不能自己写 CSS 换样式：macOS、Windows 的设置窗口不是用 CSS 画的，三端只做三端都有的选项。
+
+Linux 的设置窗口不管选哪个主题，底色和文字都用 libadwaita 的颜色、成对跟着主题走；次要文字（行的副标题、说明）比 libadwaita
+默认的深一些，浅色下和卡片的对比度约 5:1。以前底色写死、文字跟着系统主题，KDE 的深色配色下整页淡得看不清（#255）。

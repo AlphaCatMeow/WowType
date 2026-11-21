@@ -13,19 +13,37 @@ set -euo pipefail
 name=${0##*/}
 case "$name" in
   sudo) exec "$@" ;;
+  # GitHub 的地址从本地夹具取：FIXTURE_MIRROR 是测试里的代理前缀（去掉前缀再认地址），
+  # FIXTURE_DIRECT_DOWN=1 时直连 GitHub 像被重置一样失败（curl 35），
+  # FIXTURE_MIRROR_FOLLOWS=1 时代理自己跟着跳转，releases/latest 不跳到 tag 地址、直接返回发布页
   curl)
-    output= url=
+    output= url= writeout=
     while (($#)); do
       case "$1" in
         -o) output=$2; shift 2 ;;
+        -w) writeout=1; shift 2 ;;
+        --connect-timeout|--max-time) shift 2 ;;
         *) url=$1; shift ;;
       esac
     done
     printf 'curl %s\n' "$url" >> "$FIXTURE_FETCH_LOG"
-    case "$url" in
-      file://*) cp -- "${url#file://}" "$output" ;;
-      https://github.com/Gloridust/WowType/releases/latest)
-        printf '%s\n' https://github.com/Gloridust/WowType/releases/tag/v0.3.8 ;;
+    direct=$url via=direct gh=https://github.com/Gloridust/WowType
+    if [[ -n "${FIXTURE_MIRROR:-}" && "$url" == "$FIXTURE_MIRROR"* ]]; then direct=${url#"$FIXTURE_MIRROR"} via=mirror; fi
+    if [[ "$via" == direct && "$direct" == https://* && -n "${FIXTURE_DIRECT_DOWN:-}" ]]; then
+      echo 'curl: (35) Recv failure: Connection reset by peer' >&2; exit 35
+    fi
+    case "$direct" in
+      file://*) [[ "$via" == direct ]] || { echo "代理不该转发本地地址：$url" >&2; exit 1; }
+        cp -- "${url#file://}" "$output" ;;
+      "$gh/releases/latest")
+        if [[ "$via" == mirror && -n "${FIXTURE_MIRROR_FOLLOWS:-}" ]]; then
+          if [[ -n "$writeout" ]]; then printf '%s\n' "$url"
+          else printf '<a href="/Gloridust/WowType/releases/tag/v0.3.8">WowType v0.3.8</a>\n'; fi
+        else
+          printf '%s\n' "${url%/latest}/tag/v0.3.8"
+        fi ;;
+      "$gh/releases/download/v0.3.8/"*) cp -- "$FIXTURE_ASSETS/${direct##*/}" "$output" || exit 22 ;;
+      "$gh/archive/refs/tags/v0.3.8.tar.gz") cp -- "$FIXTURE_SOURCE" "$output" || exit 22 ;;
       *) printf '测试禁止联网：%s\n' "$url" >&2; exit 1 ;;
     esac
     ;;
@@ -43,7 +61,14 @@ case "$name" in
     [[ "${1:-}" != get ]] || printf '%s\n' "${FIXTURE_GSETTINGS:-@as []}"
     ;;
   im-config) [[ "${1:-}" != -m ]] || printf 'fcitx5\nfcitx5\n' ;;
-  apt-get|pacman|dnf|wowtype-config|installer)
+  # openSUSE 源码编译：cargo 要在解开的源码目录里跑，cmake --install 时词库要已经解到 dist/data
+  cargo) [[ -f fcitx5-addon/CMakeLists.txt ]] || { echo "cargo 不在源码目录里跑：$PWD" >&2; exit 1; } ;&
+  cmake)
+    if [[ "$name" == cmake && "${1:-}" == --install ]]; then
+      [[ -f "${2%/build}/dist/data/lexicon.tsv" ]] || { echo "词库没解到 dist/data" >&2; exit 1; }
+    fi
+    ;&
+  apt-get|pacman|dnf|zypper|wowtype-config|installer)
     printf '%s' "$name" >> "$FIXTURE_LOG"
     printf ' %q' "$@" >> "$FIXTURE_LOG"
     printf '\n' >> "$FIXTURE_LOG"
@@ -54,7 +79,7 @@ case "$name" in
 esac
 MOCK
 chmod +x "$work/bin/mock"
-for name in sudo curl apt-get pacman dnf pgrep im-config wowtype-config installer gnome-extensions apt-cache gsettings; do
+for name in sudo curl apt-get pacman dnf zypper cargo cmake pgrep im-config wowtype-config installer gnome-extensions apt-cache gsettings; do
   ln -s mock "$work/bin/$name"
 done
 
@@ -63,6 +88,9 @@ test_version=v0.3.8
 test_system=Linux
 test_no_switch=1
 test_desktop=
+test_base="file://$work/assets"
+test_source="file://$work/source.tar.gz"
+test_mirror=
 count=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 pass() { count=$((count + 1)); printf 'ok %s - %s\n' "$count" "$*"; }
@@ -77,20 +105,26 @@ run() {
     FIXTURE_LOG="$work/commands" FIXTURE_FETCH_LOG="$work/fetches" \
     WOWTYPE_SYSTEM="$test_system" WOWTYPE_OS_RELEASE="$work/os-release" WOWTYPE_ARCH="$test_arch" \
     WOWTYPE_VERSION="$test_version" WOWTYPE_REPO=Gloridust/WowType \
-    WOWTYPE_BASE_URL="file://$work/assets" WOWTYPE_YES=1 \
+    WOWTYPE_BASE_URL="$test_base" WOWTYPE_SOURCE_URL="$test_source" WOWTYPE_YES=1 \
+    WOWTYPE_GITHUB_MIRROR="$test_mirror" FIXTURE_MIRROR=https://mirror.test/ \
+    FIXTURE_ASSETS="$work/assets" FIXTURE_SOURCE="$work/source.tar.gz" \
     WOWTYPE_NO_IM_CONFIG="$test_no_switch" WOWTYPE_NO_RESTART="$test_no_switch" XDG_CURRENT_DESKTOP="$test_desktop" \
     bash "$root/install.sh" "$@"
 }
 reset() {
   : > "$work/commands"
   : > "$work/fetches"
-  rm -f "$work/assets/"*
+  rm -f "$work/assets/"* "$work/source.tar.gz"
   test_arch=x86_64
   test_version=v0.3.8
   test_system=Linux
   test_no_switch=1
   test_desktop=
+  test_base="file://$work/assets"
+  test_source="file://$work/source.tar.gz"
+  test_mirror=
   unset FIXTURE_SETUP_EXIT FIXTURE_EXTENSIONS FIXTURE_ENABLED FIXTURE_KIMPANEL FIXTURE_ENABLE_EXIT FIXTURE_GSETTINGS
+  unset FIXTURE_DIRECT_DOWN FIXTURE_MIRROR_FOLLOWS
   printf '%s\n' "$1" > "$work/os-release"
 }
 asset() {
@@ -115,7 +149,7 @@ rejected() {
 }
 assert_log() { grep -Fq -- "$1" "$work/commands" || fail "缺少命令：$1"; }
 assert_no_install() {
-  if grep -Eq '^(apt-get|pacman|dnf|installer) ' "$work/commands"; then fail '校验失败仍运行包管理器'; fi
+  if grep -Eq '^(apt-get|pacman|dnf|zypper|cargo|cmake|installer) ' "$work/commands"; then fail '校验失败仍运行包管理器'; fi
 }
 
 plan $'ID=ubuntu\nVERSION_ID="22.04"' wowtype_0.3.8_ubuntu22.04_amd64.deb apt-get 'Ubuntu 22.04'
@@ -142,7 +176,8 @@ rejected $'ID=example\nID_LIKE="arch manjaro"' 'package-arch.sh' 'Manjaro deriva
 rejected $'ID=fedora\nVERSION_ID=43\nVARIANT_ID=silverblue' 'rpm-ostree' 'Silverblue uses rpm-ostree'
 rejected $'ID=fedora\nVERSION_ID=43\nVARIANT_ID=sway-atomic' 'rpm-ostree' 'Fedora Atomic uses rpm-ostree'
 rejected 'ID=nixos' 'flake' 'NixOS uses flake'
-rejected $'ID=opensuse-tumbleweed\nID_LIKE=suse' '源码' 'openSUSE source guidance'
+plan $'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"\nVERSION_ID=20261120' 'WowType-0.3.8 源码' zypper 'openSUSE Tumbleweed builds from source'
+rejected $'ID=opensuse-leap\nID_LIKE="suse opensuse"\nVERSION_ID=16.0' '源码' 'openSUSE Leap source guidance'
 rejected $'ID=rocky\nID_LIKE="rhel centos fedora"\nVERSION_ID=9' '源码' 'RHEL derivative is not treated as Fedora'
 rejected 'ID=alpine' '源码' 'Alpine source guidance'
 
@@ -171,6 +206,12 @@ test_arch=aarch64
 if run --print-plan > "$work/output" 2>&1; then fail 'Unexpected aarch64 Arch binary'; fi
 grep -Fq 'package-arch.sh' "$work/output" || fail 'Missing Arch aarch64 guidance'
 pass 'Arch aarch64 builds locally'
+
+reset $'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"'
+result=$(run --print-plan) || fail 'openSUSE 计划失败'
+[[ "$result" == *'编译依赖：'*'fcitx5-devel'*'typelib-1_0-Adw-1'* ]] || fail "openSUSE 计划没列编译依赖：$result"
+[[ ! -s "$work/commands" && ! -s "$work/fetches" ]] || fail 'openSUSE --print-plan 有副作用'
+pass 'openSUSE plan lists zypper build dependencies'
 
 reset $'ID=ubuntu\nVERSION_ID="24.04"'
 test_arch=riscv64
@@ -292,6 +333,48 @@ assert_log 'wowtype-0.3.8-1.fc43.x86_64.rpm'
 assert_log 'fcitx5-gtk3 fcitx5-gtk4 fcitx5-qt5 fcitx5-qt6'
 pass 'DNF installs exact Fedora RPM and GTK/Qt frontends'
 
+# openSUSE：zypper 装编译依赖，源码用这一版 tag 的压缩包，词库用发布页上校验过的词库包
+opensuse_assets() {
+  mkdir -p "$work/tree/WowType-0.3.8/fcitx5-addon" "$work/tree/data"
+  : > "$work/tree/WowType-0.3.8/fcitx5-addon/CMakeLists.txt"
+  printf '你好\tnihao\t1\n' > "$work/tree/data/lexicon.tsv"
+  tar -czf "$work/source.tar.gz" -C "$work/tree" WowType-0.3.8
+  tar -czf "$work/assets/wowtype-data-rime-ice-2026.1.1.1.tar.gz" -C "$work/tree/data" lexicon.tsv
+  (cd "$work/assets" && sha256sum wowtype-data-rime-ice-2026.1.1.1.tar.gz) >> "$work/assets/SHA256SUMS"
+  rm -rf "$work/tree"
+}
+reset $'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"'
+opensuse_assets
+asset wowtype-data-rime-ice_20260101_all.deb
+run > "$work/output" 2>&1 || fail "openSUSE install: $(cat "$work/output")"
+assert_log 'zypper --non-interactive refresh'
+assert_log 'zypper --non-interactive install -y'
+assert_log 'fcitx5-devel fcitx5-configtool fcitx5-gtk3 fcitx5-gtk4 fcitx5-qt5 fcitx5-qt6 alsa-devel'
+assert_log 'python3-gobject python3-gobject-Gdk typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1'
+assert_log 'cargo build --release --locked -p wowtype-core'
+assert_log 'cmake -S fcitx5-addon -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr'
+assert_log 'cmake --install'
+assert_log 'wowtype-config --setup --yes --no-im-config --no-restart'
+grep -Fq "curl file://$work/source.tar.gz" "$work/fetches" || fail 'openSUSE 没下载源码包'
+if grep -q 'wowtype-data-rime-ice_' "$work/fetches"; then fail 'openSUSE fetched a Debian data package'; fi
+[[ "$(grep -n '^zypper .*install' "$work/commands" | cut -d: -f1)" -lt "$(grep -n '^cargo ' "$work/commands" | cut -d: -f1)" ]] ||
+  fail '要先装依赖再编译'
+pass 'openSUSE installs build deps with zypper and builds the release source with its lexicon'
+
+reset $'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"'
+opensuse_assets
+printf 'corruption\n' >> "$work/assets/wowtype-data-rime-ice-2026.1.1.1.tar.gz"
+if run > "$work/output" 2>&1; then fail 'Corrupted openSUSE lexicon accepted'; fi
+assert_no_install
+pass 'openSUSE lexicon checksum mismatch prevents zypper and the build'
+
+reset $'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"'
+asset wowtype-0.3.8-1.fc43.x86_64.rpm
+if run > "$work/output" 2>&1; then fail 'openSUSE release without a lexicon tarball accepted'; fi
+grep -Fq '词库包' "$work/output" || fail "缺少词库包提示：$(cat "$work/output")"
+assert_no_install
+pass 'openSUSE release without a lexicon tarball fails before zypper'
+
 reset 'ID=arch'
 asset wowtype-0.3.8-1-x86_64.pkg.tar.zst
 printf 'corruption\n' >> "$work/assets/wowtype-0.3.8-1-x86_64.pkg.tar.zst"
@@ -339,6 +422,134 @@ test_version=
 run > "$work/output" 2>&1 || fail 'Latest release resolution failed'
 grep -Fq 'https://github.com/Gloridust/WowType/releases/latest' "$work/fetches" || fail 'Wrong release repository'
 pass 'Latest release uses the upstream repository'
+
+# 连不上 GitHub：WOWTYPE_GITHUB_MIRROR 给 GitHub 的地址加代理前缀，不设时什么都不变
+gh_dl=https://github.com/Gloridust/WowType/releases/download/v0.3.8
+mirror_dl=https://mirror.test/$gh_dl
+only_mirror() { # 除了 <允许的直连地址>，下载记录里的 GitHub 地址都要带代理前缀
+  if grep -v -Fx "curl $1" "$work/fetches" | grep -v '^curl https://mirror.test/https://' | grep -q .; then
+    fail "有地址没走代理：$(cat "$work/fetches")"
+  fi
+}
+
+reset 'ID=arch'
+test_base=
+asset wowtype-0.3.8-1-x86_64.pkg.tar.zst
+run > "$work/output" 2>&1 || fail "no mirror: $(cat "$work/output")"
+grep -Fxq "curl $gh_dl/SHA256SUMS" "$work/fetches" || fail "SHA256SUMS 地址不对：$(cat "$work/fetches")"
+grep -Fxq "curl $gh_dl/wowtype-0.3.8-1-x86_64.pkg.tar.zst" "$work/fetches" || fail "安装包地址不对：$(cat "$work/fetches")"
+if grep -q 'mirror.test' "$work/fetches" || grep -Fq '代理' "$work/output"; then fail '没设代理却走了代理'; fi
+assert_log 'pacman -U --noconfirm'
+pass 'Without a mirror GitHub URLs are fetched unchanged'
+
+reset 'ID=arch'
+test_base=
+test_version=
+test_mirror=https://mirror.test
+asset wowtype-0.3.8-1-x86_64.pkg.tar.zst
+run > "$work/output" 2>&1 || fail "mirror: $(cat "$work/output")"
+grep -Fxq 'curl https://mirror.test/https://github.com/Gloridust/WowType/releases/latest' "$work/fetches" ||
+  fail "查最新版没走代理：$(cat "$work/fetches")"
+grep -Fxq "curl $gh_dl/SHA256SUMS" "$work/fetches" || fail "SHA256SUMS 该先直连：$(cat "$work/fetches")"
+grep -Fxq "curl $mirror_dl/wowtype-0.3.8-1-x86_64.pkg.tar.zst" "$work/fetches" || fail "安装包没走代理：$(cat "$work/fetches")"
+only_mirror "$gh_dl/SHA256SUMS"
+grep -Fq '第三方代理 https://mirror.test/' "$work/output" || fail "缺少第三方代理提醒：$(cat "$work/output")"
+grep -Fq 'SHA256SUMS 直接从 GitHub 下载' "$work/output" || fail "缺少直连提示：$(cat "$work/output")"
+assert_log 'pacman -U --noconfirm'
+pass 'Mirror prefixes every GitHub download, SHA256SUMS tries GitHub first'
+
+reset 'ID=arch'
+test_base=
+test_mirror=https://mirror.test/
+export FIXTURE_DIRECT_DOWN=1
+asset wowtype-0.3.8-1-x86_64.pkg.tar.zst
+run > "$work/output" 2>&1 || fail "mirror fallback: $(cat "$work/output")"
+grep -Fxq "curl $mirror_dl/SHA256SUMS" "$work/fetches" || fail "SHA256SUMS 没改走代理：$(cat "$work/fetches")"
+only_mirror "$gh_dl/SHA256SUMS"
+grep -Fq '改从代理下载' "$work/output" || fail "缺少改走代理的说明：$(cat "$work/output")"
+assert_log 'pacman -U --noconfirm'
+pass 'SHA256SUMS falls back to the mirror and says so'
+
+reset 'ID=arch'
+test_base=
+test_mirror=https://mirror.test/
+asset wowtype-0.3.8-1-x86_64.pkg.tar.zst
+printf 'corruption\n' >> "$work/assets/wowtype-0.3.8-1-x86_64.pkg.tar.zst"
+if run > "$work/output" 2>&1; then fail 'Corrupted asset accepted through mirror'; fi
+grep -Fq '校验和对不上' "$work/output" || fail "缺少校验失败提示：$(cat "$work/output")"
+assert_no_install
+pass 'Checksums are still enforced through a mirror'
+
+reset 'ID=arch'
+test_base=
+test_version=
+test_mirror=https://mirror.test/
+export FIXTURE_MIRROR_FOLLOWS=1
+asset wowtype-0.3.8-1-x86_64.pkg.tar.zst
+run > "$work/output" 2>&1 || fail "mirror follows redirects: $(cat "$work/output")"
+grep -Fxq "curl $mirror_dl/wowtype-0.3.8-1-x86_64.pkg.tar.zst" "$work/fetches" || fail "没认出最新版：$(cat "$work/fetches")"
+only_mirror "$gh_dl/SHA256SUMS"
+pass 'Latest tag is read from the release page when the mirror follows redirects'
+
+reset 'ID=arch'
+test_mirror=https://mirror.test/
+asset wowtype-0.3.8-1-x86_64.pkg.tar.zst
+run > "$work/output" 2>&1 || fail "mirror with local assets: $(cat "$work/output")"
+if grep -q 'mirror.test' "$work/fetches"; then fail "不是 GitHub 的地址不该加代理：$(cat "$work/fetches")"; fi
+pass 'Mirror leaves non-GitHub asset URLs alone'
+
+reset $'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"'
+test_base=
+test_source=
+test_mirror=https://mirror.test/
+opensuse_assets
+run > "$work/output" 2>&1 || fail "openSUSE mirror: $(cat "$work/output")"
+grep -Fxq 'curl https://mirror.test/https://github.com/Gloridust/WowType/archive/refs/tags/v0.3.8.tar.gz' "$work/fetches" ||
+  fail "源码包没走代理：$(cat "$work/fetches")"
+grep -Fxq "curl $mirror_dl/wowtype-data-rime-ice-2026.1.1.1.tar.gz" "$work/fetches" || fail "词库包没走代理：$(cat "$work/fetches")"
+only_mirror "$gh_dl/SHA256SUMS"
+assert_log 'cmake --install'
+pass 'openSUSE source and lexicon tarballs go through the mirror'
+
+reset 'ID=unused'
+test_system=Darwin
+test_base=
+test_mirror=https://mirror.test/
+asset WowType-0.3.8-macos.pkg
+run > "$work/output" 2>&1 || fail "macOS mirror: $(cat "$work/output")"
+grep -Fxq "curl $mirror_dl/WowType-0.3.8-macos.pkg" "$work/fetches" || fail "macOS 包没走代理：$(cat "$work/fetches")"
+only_mirror "$gh_dl/SHA256SUMS"
+assert_log 'installer -pkg'
+pass 'macOS pkg goes through the mirror'
+
+reset 'ID=arch'
+test_mirror=https://mirror.test
+result=$(run --print-plan) || fail '代理计划失败'
+[[ "$result" == *'GitHub 代理：https://mirror.test/'* && ! -s "$work/fetches" ]] || fail "计划里没写代理：$result"
+pass 'Plan shows the mirror and stays offline'
+
+for bad_mirror in 'ftp://mirror.test/' 'https://mirror test/' "https://mirror.test/\$(id)"; do
+  reset 'ID=arch'
+  test_mirror=$bad_mirror
+  if run --print-plan > "$work/output" 2>&1; then fail "不该接受代理地址：$bad_mirror"; fi
+  grep -Fq 'WOWTYPE_GITHUB_MIRROR' "$work/output" || fail "缺少代理地址格式提示：$(cat "$work/output")"
+done
+pass 'Malformed mirror prefixes are rejected'
+
+# 没设代理、GitHub 连不上：给出 WOWTYPE_GITHUB_MIRROR 和 jsDelivr 的用法
+reset 'ID=arch'
+test_base=
+export FIXTURE_DIRECT_DOWN=1
+asset wowtype-0.3.8-1-x86_64.pkg.tar.zst
+if run > "$work/output" 2>&1; then fail 'GitHub 连不上还装成功了'; fi
+grep -Fq 'WOWTYPE_GITHUB_MIRROR=https://<代理地址>/' "$work/output" || fail "缺少代理用法提示：$(cat "$work/output")"
+grep -Fq 'https://cdn.jsdelivr.net/gh/Gloridust/WowType@main/install.sh' "$work/output" || fail "缺少 jsDelivr 提示：$(cat "$work/output")"
+assert_no_install
+test_version=
+: > "$work/fetches"
+if run > "$work/output" 2>&1; then fail '查不到最新版还装成功了'; fi
+grep -Fq 'cdn.jsdelivr.net' "$work/output" || fail "查最新版失败时缺少提示：$(cat "$work/output")"
+pass 'Connection failures without a mirror explain how to use one'
 
 # macOS：下载 pkg，用系统的 installer 只装给当前用户，不碰 Linux 的包管理器
 reset 'ID=unused'

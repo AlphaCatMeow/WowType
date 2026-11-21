@@ -762,7 +762,10 @@ fn run_job(
             inner.job.child = None;
         }
     };
-    let spawned = Command::new("curl")
+    let mut command = Command::new("curl");
+    // Windows 10 1803 起系统自带 curl.exe（System32），-K - 从标准输入读配置也认；起它时别弹黑框
+    crate::platform::no_console_window(&mut command);
+    let spawned = command
         .args([
             "-sS",
             "-N",
@@ -925,6 +928,8 @@ fn run_job(
 mod tests {
     use super::*;
 
+    // 假的 llama-server 是 Python 脚本（带 #!），只在 Unix 上起得来
+    #[cfg(unix)]
     #[test]
     fn local_model_end_to_end() {
         if !std::process::Command::new("python3")

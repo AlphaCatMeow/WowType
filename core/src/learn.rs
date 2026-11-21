@@ -50,6 +50,17 @@ pub const PRUNE_HEAT: f64 = 1.0 / 32.0;
 /// 分几次选出来拼成的词第一次只记成「候选新词」，这么久以内再拼一次才收进用户词库（30 天，毫秒）。
 pub const NEW_WORD_TTL_MS: u64 = 30 * 24 * 3600 * 1000;
 
+/// 忘掉的词（候选框里 Ctrl+Delete）记多久（180 天，毫秒）、最多记几个。
+///
+/// Windows 上每个应用进程各有一个引擎，存盘前把别的进程存的读进来合并（[`load_history`]）。光从自己内存里
+/// 删掉的话，别的应用还记着这个词，下次合并又回来了；所以忘掉的词连同时间写进输入习惯（`f` 行），
+/// 各个进程合并时都把在这之前学到的去掉（[`apply_forgotten`]）。之后又用了、又学到的照常留着。
+pub const FORGOTTEN_TTL_MS: u64 = 180 * 24 * 3600 * 1000;
+pub const MAX_FORGOTTEN: usize = 2_000;
+
+/// 忘掉的词 -> 什么时候忘的（epoch 毫秒）。
+pub type Forgotten = HashMap<String, u64>;
+
 /// 按半衰期衰减后的次数（热度）。
 pub fn decayed(entry: HistoryEntry, at_ms: u64) -> f64 {
     let age = at_ms.saturating_sub(entry.last_used_ms) as f64;
@@ -228,6 +239,18 @@ impl UserPairs {
         self.map.values().map(HashMap::len).sum()
     }
 
+    /// 只留 keep 说留的搭配，返回去掉了几条。
+    pub fn retain(&mut self, mut keep: impl FnMut(&str, &str, &HistoryEntry) -> bool) -> usize {
+        let mut removed = 0;
+        for (prev, next) in self.map.iter_mut() {
+            let before = next.len();
+            next.retain(|cur, entry| keep(prev, cur, entry));
+            removed += before - next.len();
+        }
+        self.map.retain(|_, next| !next.is_empty());
+        removed
+    }
+
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
@@ -318,6 +341,7 @@ fn plain_ascii(text: &str) -> bool {
 /// w <词> <热度> <上次使用，epoch 毫秒>
 /// p <前一个词> <后一个词> <热度> <上次使用>
 /// n <候选新词> <拼音> <第一次拼出来的时间>
+/// f <忘掉的词> <忘掉的时间>（[`history_text_with`] 才写，见 [`FORGOTTEN_TTL_MS`]）
 /// ```
 ///
 /// 热度是上次使用时衰减过的次数，可以带小数（最多三位；旧版本只写整数，读得进来）。
@@ -330,6 +354,19 @@ pub fn history_text(
     new_words: &HashMap<String, NewWord>,
     now_ms: u64,
 ) -> String {
+    history_text_with(words, pairs, new_words, &Forgotten::new(), now_ms)
+}
+
+/// [`history_text`] 再加上忘掉的词（`f` 行）：过了 [`FORGOTTEN_TTL_MS`] 的不写，最多写最近的 [`MAX_FORGOTTEN`] 个。
+/// 旧版本读到 `f` 行跳过（不认识的行都跳过）。
+pub fn history_text_with(
+    words: &HashMap<String, HistoryEntry>,
+    pairs: &UserPairs,
+    new_words: &HashMap<String, NewWord>,
+    forgotten: &Forgotten,
+    now_ms: u64,
+) -> String {
+    let history = words;
     let mut out = String::from("# wowtype 用户输入习惯 v1\n");
     let one_column = |s: &str| !s.is_empty() && !s.contains(['\t', '\n', '\r']);
     let clean = |s: &str| one_column(s) && !plain_ascii(s);
@@ -372,7 +409,41 @@ pub fn history_text(
     for (word, new) in new_words {
         out.push_str(&format!("n\t{word}\t{}\t{}\n", new.pinyin, new.at_ms));
     }
+    // 忘掉以后又用过的（热度的时间更晚）不写：又要了
+    let mut forgotten: Vec<_> = forgotten
+        .iter()
+        .filter(|(w, at)| {
+            one_column(w)
+                && now_ms.saturating_sub(**at) <= FORGOTTEN_TTL_MS
+                && history.get(w.as_str()).map_or(true, |e| e.last_used_ms <= **at)
+        })
+        .collect();
+    forgotten.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    forgotten.truncate(MAX_FORGOTTEN);
+    forgotten.sort_by(|a, b| a.0.cmp(b.0));
+    for (word, at) in forgotten {
+        out.push_str(&format!("f\t{word}\t{at}\n"));
+    }
     out
+}
+
+/// 把忘掉的词用到学到的东西上：在忘掉之前（`last_used_ms` 不比忘掉的时间晚）学到的这个词的热度、
+/// 和它有关的搭配、候选新词都去掉；忘掉以后又用过的（热度更新过）说明又要了，留着，这条忘掉的记录也不要了。
+/// 用户词库没有时间，由 [`crate::Engine`] 按留下的记录去掉。
+pub fn apply_forgotten(
+    forgotten: &mut Forgotten,
+    words: &mut HashMap<String, HistoryEntry>,
+    pairs: &mut UserPairs,
+    new_words: &mut HashMap<String, NewWord>,
+) {
+    if forgotten.is_empty() {
+        return;
+    }
+    forgotten.retain(|word, at| words.get(word).map_or(true, |e| e.last_used_ms <= *at));
+    let before = |word: &str, ms: u64| forgotten.get(word).is_some_and(|at| ms <= *at);
+    words.retain(|word, e| !before(word, e.last_used_ms));
+    pairs.retain(|prev, cur, e| !before(prev, e.last_used_ms) && !before(cur, e.last_used_ms));
+    new_words.retain(|word, n| !before(word, n.at_ms));
 }
 
 /// 热度写成文字：整数照旧写整数，否则最多三位小数。
@@ -399,11 +470,27 @@ pub fn save_history<P: AsRef<Path>>(
 
 /// 读回 [`save_history`] 写的文件，返回读到的条数。坏行（列数不对、数字解析不了、
 /// 不是合法 UTF-8）跳过，别的行照常，见 [`crate::fsutil::read_lines_lossy`]。
+///
+/// 内存里已经有的条目和文件里的合并：同一个词、同一个搭配留最近用过的那份（`last_used_ms` 大的），
+/// 新词留先记下的那份。外壳只在新建的引擎上读一次时和以前一样；Windows 上每个应用进程各有一个引擎，
+/// 存盘前把别的进程存的读进来合并，学到的词就不会互相盖掉（docs/WINDOWS.md）。
 pub fn load_history<P: AsRef<Path>>(
     path: P,
     words: &mut HashMap<String, HistoryEntry>,
     pairs: &mut UserPairs,
     new_words: &mut HashMap<String, NewWord>,
+) -> Result<usize> {
+    load_history_with(path, words, pairs, new_words, &mut Forgotten::new())
+}
+
+/// [`load_history`] 再读忘掉的词（`f` 行，和内存里的合并，同一个词留晚的那次），读完用 [`apply_forgotten`]：
+/// 别的进程存的、在忘掉之前学到的不会合并回来，自己内存里的也按别的进程忘掉的去掉。
+pub fn load_history_with<P: AsRef<Path>>(
+    path: P,
+    words: &mut HashMap<String, HistoryEntry>,
+    pairs: &mut UserPairs,
+    new_words: &mut HashMap<String, NewWord>,
+    forgotten: &mut Forgotten,
 ) -> Result<usize> {
     let path = path.as_ref();
     let (lines, _bad) = crate::fsutil::read_lines_lossy(path)
@@ -425,7 +512,10 @@ pub fn load_history<P: AsRef<Path>>(
         match parts.as_slice() {
             ["w", word, count, last] if !word.is_empty() && !plain_ascii(word) => {
                 if let Some(e) = entry(count, last) {
-                    words.insert((*word).to_string(), e);
+                    let newer = words.get(*word).map_or(true, |old| e.last_used_ms > old.last_used_ms);
+                    if newer {
+                        words.insert((*word).to_string(), e);
+                    }
                     loaded += 1;
                 }
             }
@@ -433,7 +523,12 @@ pub fn load_history<P: AsRef<Path>>(
                 if !prev.is_empty() && !cur.is_empty() && !plain_ascii(prev) && !plain_ascii(cur) =>
             {
                 if let Some(e) = entry(count, last) {
-                    pairs.insert((*prev).to_string(), (*cur).to_string(), e);
+                    let newer = pairs
+                        .get(prev, cur)
+                        .map_or(true, |old| e.last_used_ms > old.last_used_ms);
+                    if newer {
+                        pairs.insert((*prev).to_string(), (*cur).to_string(), e);
+                    }
                     loaded += 1;
                 }
             }
@@ -443,13 +538,21 @@ pub fn load_history<P: AsRef<Path>>(
                         pinyin: (*pinyin).to_string(),
                         at_ms,
                     };
-                    new_words.insert((*word).to_string(), new);
+                    new_words.entry((*word).to_string()).or_insert(new);
+                    loaded += 1;
+                }
+            }
+            ["f", word, at] if !word.is_empty() => {
+                if let Ok(at) = at.parse::<u64>() {
+                    let slot = forgotten.entry((*word).to_string()).or_insert(at);
+                    *slot = (*slot).max(at);
                     loaded += 1;
                 }
             }
             _ => {}
         }
     }
+    apply_forgotten(forgotten, words, pairs, new_words);
     Ok(loaded)
 }
 
@@ -457,6 +560,73 @@ pub fn load_history<P: AsRef<Path>>(
 mod tests {
     use super::*;
     use crate::lm::BigramLm;
+
+    /// 忘掉的词（f 行）：读回来、合并时去掉在忘掉之前学到的，留着之后又用过的；过期的、又用过的不写。
+    #[test]
+    fn forgotten_words_remove_older_learning_when_merged() {
+        let dir = std::env::temp_dir().join(format!("wowtype_forgotten_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.tsv");
+        std::fs::write(&path, "w\t旧词\t3\t900\nw\t又用了\t2\t3000\np\t旧词\t你好\t1\t900\nf\t旧词\t1000\nf\t又用了\t2000\n")
+            .unwrap();
+        let mut words = HashMap::new();
+        words.insert("旧词".to_string(), HistoryEntry { count: 5.0, last_used_ms: 950 });
+        let mut pairs = UserPairs::default();
+        pairs.insert("你好".into(), "旧词".into(), HistoryEntry { count: 1.0, last_used_ms: 950 });
+        pairs.insert("你好".into(), "世界".into(), HistoryEntry { count: 1.0, last_used_ms: 950 });
+        let mut new_words = HashMap::new();
+        new_words.insert("旧词".to_string(), NewWord { pinyin: "jiu ci".into(), at_ms: 800 });
+        let mut forgotten = Forgotten::new();
+        load_history_with(&path, &mut words, &mut pairs, &mut new_words, &mut forgotten).unwrap();
+        assert!(!words.contains_key("旧词"), "内存里、文件里忘掉之前的热度都去掉");
+        assert_eq!(words["又用了"].count, 2.0, "忘掉以后又用过的留着");
+        assert_eq!(pairs.len(), 1, "和忘掉的词有关的搭配去掉，别的留着");
+        assert!(new_words.is_empty());
+        assert_eq!(forgotten.get("旧词"), Some(&1000));
+        assert!(!forgotten.contains_key("又用了"), "又用过了：不再算忘掉的");
+
+        forgotten.insert("很久以前".into(), 5);
+        let now = 5 + FORGOTTEN_TTL_MS + 1;
+        let text = history_text_with(&words, &pairs, &new_words, &forgotten, 2000);
+        assert!(text.contains("f\t旧词\t1000\n") && text.contains("f\t很久以前\t5\n"));
+        let text = history_text_with(&words, &pairs, &new_words, &forgotten, now);
+        assert!(!text.contains("很久以前"), "过期的不写");
+        // 旧版本的读法跳过 f 行
+        let mut w2 = HashMap::new();
+        load_history(&path, &mut w2, &mut UserPairs::default(), &mut HashMap::new()).unwrap();
+        assert!(w2.contains_key("又用了"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 内存里已经有的和文件里的合并：同一条留最近用过的（Windows 上几个应用进程各存各的，存盘前先合并别人的）。
+    #[test]
+    fn loading_into_a_used_engine_keeps_the_newer_entries() {
+        let dir = std::env::temp_dir().join(format!("wowtype_merge_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.tsv");
+        std::fs::write(
+            &path,
+            "w\t你好\t5\t2000\nw\t世界\t1\t500\nw\t别人的\t2\t1500\n\
+             p\t你好\t世界\t3\t2000\np\t旧的\t搭配\t9\t100\nn\t新词\txin ci\t900\n",
+        )
+        .unwrap();
+        let mut words = HashMap::new();
+        words.insert("世界".to_string(), HistoryEntry { count: 4.0, last_used_ms: 1000 });
+        words.insert("你好".to_string(), HistoryEntry { count: 1.0, last_used_ms: 1000 });
+        let mut pairs = UserPairs::default();
+        pairs.insert("旧的".into(), "搭配".into(), HistoryEntry { count: 1.0, last_used_ms: 3000 });
+        let mut new_words = HashMap::new();
+        new_words.insert("新词".to_string(), NewWord { pinyin: "xin ci".into(), at_ms: 100 });
+        load_history(&path, &mut words, &mut pairs, &mut new_words).unwrap();
+        // 文件里的更新：用文件的；内存里的更新：留着；只在文件里的：加进来
+        assert_eq!(words["你好"].count, 5.0);
+        assert_eq!(words["世界"].count, 4.0);
+        assert_eq!(words["别人的"].count, 2.0);
+        assert_eq!(pairs.get("你好", "世界").unwrap().count, 3.0);
+        assert_eq!(pairs.get("旧的", "搭配").unwrap().count, 1.0);
+        assert_eq!(new_words["新词"].at_ms, 100);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// 旧文件里纯 ASCII 的词和搭配（回车上屏的原始字母串）载入时跳过，存盘后文件里也没有了。
     #[test]

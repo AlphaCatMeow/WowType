@@ -353,10 +353,12 @@ DEFAULTS = {
     "InputScheme": "Quanpin",
     "ShuangpinScheme": "Ziranma",
     "ShuangpinShowKeys": "False",
+    "ShuangpinAbbrev": "True",
     "WubiAutoCommit": "True",
     "WubiHint": "True",
     "ShiftToggle": "Both",
     "InitialMode": "Chinese",
+    "WindowMode": "Same",
     "Traditional": "False",
     "PunctuationStyle": "Fullwidth",
     "SelectKeys": "Off",
@@ -390,6 +392,9 @@ DEFAULTS = {
     "BetaUpdates": "False",
     # 打字统计默认关：关着时输入法什么都不记
     "TypingStats": "False",
+    # 设置窗口自己的主题和强调色（输入法不读），见 SETTINGS_THEMES、SETTINGS_ACCENTS
+    "SettingsTheme": "System",
+    "SettingsAccent": "Green",
     # 词库文件，留空用默认的雾凇；切到万象时是 WANXIANG_LEXICON
     "Lexicon": "",
 }
@@ -521,6 +526,30 @@ INITIAL_MODES = [
     ("和上次切走时一样", "Last"),
 ]
 
+# 设置窗口的主题：跟随系统，或者固定浅色 / 深色（「常规 → 设置窗口」，三端一样，见 spec/config.json 的 SettingsTheme）
+SETTINGS_THEMES = [
+    ("跟随系统", "System"),
+    ("浅色", "Light"),
+    ("深色", "Dark"),
+]
+
+# 设置窗口的强调色：(名字, 存盘名, 色板上的颜色, 放白字的底, 深色背景上当字用)。
+# 三端用同一张表（spec/config.json 的 SettingsAccent），颜色不自己算；对比度在 scripts/test-config-contract.py 核对
+SETTINGS_ACCENTS = [
+    ("绿色", "Green", "#0EAF76", "#0A8358", "#1AB37D"),
+    ("蓝色", "Blue", "#3584E4", "#2D70C2", "#68A3EB"),
+    ("紫色", "Purple", "#9141AC", "#9141AC", "#BD8DCD"),
+    ("橙色", "Orange", "#E66100", "#B84E00", "#EC8840"),
+    ("粉色", "Pink", "#D56199", "#AA4E7A", "#DD81AD"),
+]
+
+# 换到新窗口、新应用时的默认中 / 英（#254）
+WINDOW_MODES = [
+    ("和上次一样", "Same"),
+    ("中文", "Chinese"),
+    ("英文", "English"),
+]
+
 # 枚举项认哪些写法（区分大小写，认不出的读成默认值，和插件、macOS 一样，见 spec/config.json）
 ENUMS = {
     "CandidateLayout": ("Horizontal", "Vertical"),
@@ -529,105 +558,152 @@ ENUMS = {
     "ShuangpinScheme": tuple(value for _label, value in SHUANGPIN_SCHEMES),
     "ShiftToggle": tuple(value for _label, value in SHIFT_TOGGLES),
     "InitialMode": tuple(value for _label, value in INITIAL_MODES),
+    "WindowMode": tuple(value for _label, value in WINDOW_MODES),
     "PunctuationStyle": tuple(value for _label, value in PUNCT_STYLES),
     "SelectKeys": tuple(value for _label, value in SELECT_KEYS),
     "TranslateTarget": tuple(code for _label, code, _english in TRANSLATE_LANGUAGES),
+    "SettingsTheme": tuple(value for _label, value in SETTINGS_THEMES),
+    "SettingsAccent": tuple(value for _label, value, *_colors in SETTINGS_ACCENTS),
 }
 
-# 设置窗口的样式（照微信输入法：薄荷绿渐变侧栏、绿色选中块、白色圆角卡片）
-GREEN = "#0EAF76"
-STYLE_LIGHT = """
-.wt-sidebar { background-image: linear-gradient(180deg, #d9f3e6 0%, #e9f8f0 40%, #f5fbf8 100%); }
-.wt-sidebar label, .wt-sidebar image { color: #2a332f; }
+# 设置窗口的样式（照微信输入法：强调色渐变的侧栏、强调色的选中块、圆角卡片）。
+#
+# 底色和文字一律用 libadwaita 的颜色（{window_bg}、{card_fg} 这些，见 theme_css），成对跟着主题走。以前内容区、卡片的
+# 底色写死成浅色或深色、文字却跟着系统主题：KDE 把深色配色写进 ~/.config/gtk-4.0/gtk.css，libadwaita 又认成浅色时，
+# 浅色的字画在写死的浅色底上，整页淡得看不清（#255）。侧栏只在窗口底色上叠一层半透明的强调色，文字照样是窗口的字色。
+# 次要文字（行的副标题、dim-label、统计的说明）的透明度从 libadwaita 的 55% 提到 75%（侧栏 80%）：浅色下和卡片的对比度
+# 约 5.7:1（原来约 3.2:1），深色下约 7.7:1，都过 WCAG AA 的 4.5:1。
+STYLE = """
+.wt-sidebar {
+  background-color: {window_bg};
+  background-image: linear-gradient(180deg, alpha({accent}, 0.16) 0%, alpha({accent}, 0.08) 40%, alpha({accent}, 0.02) 100%);
+  color: {window_fg};
+}
 .wt-sidebar headerbar { background: transparent; box-shadow: none; }
 .wt-brand { margin: 0 0 0 16px; }
 .wt-side-top { min-height: 47px; }
 .wt-brand-name { font-weight: 800; font-size: 12.5pt; }
 .wt-nav { margin-top: 6px; }
 .wt-header-title { font-weight: 700; }
-.wt-nav, .wt-nav row { background: transparent; }
+.wt-nav, .wt-nav row { background: transparent; color: inherit; }
 .wt-nav row { border-radius: 10px; margin: 2px 12px; padding: 9px 12px; }
-.wt-nav row:hover { background: alpha(#0EAF76, 0.10); }
-.wt-nav row:selected { background: #0EAF76; color: white; }
-.wt-nav row:selected image, .wt-nav row:selected label { color: white; }
-.wt-content, .wt-content headerbar { background: #f5f7f6; box-shadow: none; }
-.wt-content list.boxed-list { border-radius: 12px; background: white; box-shadow: 0 0 0 1px #e6eae8; }
-.wt-content preferencesgroup > box > box > label.heading { color: #6b7570; }
-.wt-stats-page { background-color: #f5f7f6; }
-.wt-stats-page stackswitcher button { color: #59635e; }
-.wt-stats-page stackswitcher button:checked { color: #0EAF76; }
-.wt-stats-card { background: white; border-radius: 12px; box-shadow: 0 0 0 1px #e6eae8; padding: 18px 20px; }
-.wt-stat-label { font-size: 9pt; color: #6b7570; }
-.wt-stat-value { font-size: 21pt; font-weight: 800; color: #0EAF76; }
-.wt-stat-unit { font-size: 9pt; color: #6b7570; }
-.wt-stat-note { font-size: 8pt; color: #8a938f; }
-.wt-stats-heading { font-weight: 700; font-size: 11pt; color: #3a453f; }
-.wt-stats-note { font-size: 8pt; color: #6b7570; }
+.wt-nav row:hover { background: alpha({accent}, 0.14); }
+.wt-nav row:selected { background: {strong}; color: #ffffff; }
+.wt-nav row:selected image, .wt-nav row:selected label { color: #ffffff; }
+.wt-content, .wt-content headerbar { background: {window_bg}; color: {window_fg}; box-shadow: none; }
+.wt-content list.boxed-list { border-radius: 12px; }
+.wt-content preferencesgroup > box > box > label.heading { opacity: 0.8; }
+.wt-stats-page { background-color: {window_bg}; color: {window_fg}; }
+.wt-stats-page stackswitcher button:checked { color: {accent_text}; }
+.wt-stats-page stackswitcher button { min-width: 0; padding-left: 14px; padding-right: 14px; }
+.wt-stats-card {
+  background: {card_bg}; color: {card_fg}; border-radius: 12px; box-shadow: 0 0 0 1px alpha(currentColor, 0.12);
+  padding: 18px 20px;
+}
+.wt-stat-label { font-size: 9pt; opacity: 0.75; }
+.wt-stat-value { font-size: 21pt; font-weight: 800; color: {accent_text}; }
+.wt-stat-unit { font-size: 9pt; opacity: 0.75; }
+.wt-stat-note { font-size: 8pt; opacity: 0.75; }
+.wt-stats-heading { font-weight: 700; font-size: 11pt; }
+.wt-stats-note { font-size: 8pt; opacity: 0.75; }
 .wt-stats-line { font-size: 9pt; }
-.wt-chip { border: 1px solid #dfe4e2; border-radius: 6px; padding: 3px 7px; }
+.wt-chip { border: 1px solid alpha(currentColor, 0.15); border-radius: 6px; padding: 3px 7px; }
 .wt-key { border-radius: 5px; font-size: 8pt; padding: 0 2px; }
-.wt-key-0 { background: #eef1f0; color: #6b7570; }
-.wt-key-1 { background: alpha(#0EAF76, 0.20); color: #0d6a4a; }
-.wt-key-2 { background: alpha(#0EAF76, 0.40); color: #0d6a4a; }
-.wt-key-3 { background: alpha(#0EAF76, 0.65); color: white; }
-.wt-key-4 { background: #0EAF76; color: white; }
-.wt-swatch-0 { background: #eef1f0; }
-.wt-swatch-1 { background: alpha(#0EAF76, 0.20); }
-.wt-swatch-2 { background: alpha(#0EAF76, 0.40); }
-.wt-swatch-3 { background: alpha(#0EAF76, 0.65); }
-.wt-swatch-4 { background: #0EAF76; }
-"""
-STYLE_DARK = """
-.wt-sidebar { background-image: linear-gradient(180deg, #17332a 0%, #1c2a25 45%, #202523 100%); }
-.wt-sidebar label, .wt-sidebar image { color: #e6ece9; }
-.wt-sidebar headerbar { background: transparent; box-shadow: none; }
-.wt-brand { margin: 0 0 0 16px; }
-.wt-side-top { min-height: 47px; }
-.wt-brand-name { font-weight: 800; font-size: 12.5pt; }
-.wt-nav { margin-top: 6px; }
-.wt-header-title { font-weight: 700; }
-.wt-nav, .wt-nav row { background: transparent; }
-.wt-nav row { border-radius: 10px; margin: 2px 12px; padding: 9px 12px; }
-.wt-nav row:hover { background: alpha(#3CCB93, 0.12); }
-.wt-nav row:selected { background: #0EAF76; color: white; }
-.wt-nav row:selected image, .wt-nav row:selected label { color: white; }
-.wt-content, .wt-content headerbar { background: #1d201f; box-shadow: none; }
-.wt-content list.boxed-list { border-radius: 12px; background: #282c2a; box-shadow: 0 0 0 1px #3b4144; }
-.wt-content preferencesgroup > box > box > label.heading { color: #a3aca8; }
-.wt-stats-page { background-color: #1d201f; }
-.wt-stats-page stackswitcher button { color: #b8c1bd; }
-.wt-stats-page stackswitcher button:checked { color: #3CCB93; }
-.wt-stats-card { background: #282c2a; border-radius: 12px; box-shadow: 0 0 0 1px #3b4144; padding: 18px 20px; }
-.wt-stat-label { font-size: 9pt; color: #a3aca8; }
-.wt-stat-value { font-size: 21pt; font-weight: 800; color: #3CCB93; }
-.wt-stat-unit { font-size: 9pt; color: #a3aca8; }
-.wt-stat-note { font-size: 8pt; color: #8a938f; }
-.wt-stats-heading { font-weight: 700; font-size: 11pt; color: #e6ece9; }
-.wt-stats-note { font-size: 8pt; color: #a3aca8; }
-.wt-stats-line { font-size: 9pt; }
-.wt-chip { border: 1px solid #3b4144; border-radius: 6px; padding: 3px 7px; }
-.wt-key { border-radius: 5px; font-size: 8pt; padding: 0 2px; }
-.wt-key-0 { background: #343a37; color: #a3aca8; }
-.wt-key-1 { background: alpha(#3CCB93, 0.22); color: #bfe9d8; }
-.wt-key-2 { background: alpha(#3CCB93, 0.42); color: #e6f7ef; }
-.wt-key-3 { background: alpha(#3CCB93, 0.68); color: #10241c; }
-.wt-key-4 { background: #3CCB93; color: #10241c; }
-.wt-swatch-0 { background: #343a37; }
-.wt-swatch-1 { background: alpha(#3CCB93, 0.22); }
-.wt-swatch-2 { background: alpha(#3CCB93, 0.42); }
-.wt-swatch-3 { background: alpha(#3CCB93, 0.68); }
-.wt-swatch-4 { background: #3CCB93; }
-"""
-# 开关、单选框、主按钮换成 WowType 绿（旧版 libadwaita 用命名颜色，1.6 起用 CSS 变量）
-STYLE_ACCENT = """
-@define-color accent_bg_color #0EAF76;
-@define-color accent_color %s;
-@define-color accent_fg_color #ffffff;
+.wt-key-0 { background: alpha(currentColor, 0.07); }
+.wt-key-1 { background: alpha({accent}, 0.20); }
+.wt-key-2 { background: alpha({accent}, 0.40); }
+.wt-key-3 { background: alpha({accent}, 0.60); }
+.wt-key-4 { background: {strong}; color: #ffffff; }
+.wt-swatch-0 { background: alpha(currentColor, 0.07); }
+.wt-swatch-1 { background: alpha({accent}, 0.20); }
+.wt-swatch-2 { background: alpha({accent}, 0.40); }
+.wt-swatch-3 { background: alpha({accent}, 0.60); }
+.wt-swatch-4 { background: {strong}; }
 .wt-warning .subtitle { color: @warning_color; }
 """
-STYLE_ACCENT_VARS = """
-:root { --accent-bg-color: #0EAF76; --accent-fg-color: #ffffff; --accent-color: %s; }
+# 开关、单选框、主按钮换成强调色。上面放白字的地方用 strong（和白字的对比度至少 4.7:1），强调色当字用时
+# 浅色用 strong、深色用 light（--accent-color 要写明：Ubuntu 的 libadwaita 按系统的强调色算，不跟着 --accent-bg-color）。
+# 旧版 libadwaita 用命名颜色，1.6 起用 CSS 变量
+STYLE_ACCENT = """
+@define-color accent_bg_color {strong};
+@define-color accent_color {accent_text_hex};
+@define-color accent_fg_color #ffffff;
 """
+STYLE_ACCENT_VARS = """
+:root { --accent-bg-color: {strong}; --accent-fg-color: #ffffff; --accent-color: {accent_text_hex}; }
+"""
+# 次要文字的透明度：libadwaita 1.6 起是 --dim-opacity（高对比度时 90%），旧版直接写 opacity
+STYLE_DIM_VARS = """
+.wt-content, .wt-sidebar, .wt-stats-page { --dim-opacity: 75%; }
+.wt-sidebar { --dim-opacity: 80%; }
+"""
+STYLE_DIM_HIGH_CONTRAST = """
+@media (prefers-contrast: more) { .wt-content, .wt-sidebar, .wt-stats-page { --dim-opacity: 90%; } }
+"""
+STYLE_DIM_OLD = """
+.wt-content row label.subtitle, .wt-content .dim-label { opacity: 0.75; }
+.wt-sidebar .dim-label { opacity: 0.8; }
+"""
+# 主题固定成浅色 / 深色时（SettingsTheme 是 Light、Dark），窗口、卡片、弹出框这些底色和文字用 libadwaita 自己的
+# 那一套，优先级比 ~/.config/gtk-4.0/gtk.css（USER）还高一级：KDE 把系统的深色配色写在那里，不盖过它的话
+# 选了「浅色」照样是深色的。跟随系统时不加，系统主题写的颜色照用（底色、文字成对，看得清）。
+FORCED_COLORS = {
+    False: {"window": ("#fafafb", "rgba(0,0,6,0.8)"), "view": ("#ffffff", "rgba(0,0,6,0.8)"),
+            "headerbar": ("#ffffff", "rgba(0,0,6,0.8)"), "sidebar": ("#ebebed", "rgba(0,0,6,0.8)"),
+            "card": ("#ffffff", "rgba(0,0,6,0.8)"), "dialog": ("#fafafb", "rgba(0,0,6,0.8)"),
+            "popover": ("#ffffff", "rgba(0,0,6,0.8)")},
+    True: {"window": ("#222226", "#ffffff"), "view": ("#1d1d20", "#ffffff"),
+           "headerbar": ("#2e2e32", "#ffffff"), "sidebar": ("#2e2e32", "#ffffff"),
+           "card": ("rgba(255,255,255,0.08)", "#ffffff"), "dialog": ("#36363a", "#ffffff"),
+           "popover": ("#36363a", "#ffffff")},
+}
+
+
+def new_css_supported():
+    """libadwaita 1.6、GTK 4.16 起颜色是 CSS 变量（--window-bg-color 这些）。"""
+    return (Gtk.get_major_version(), Gtk.get_minor_version()) >= (4, 16) and Adw.get_minor_version() >= 6
+
+
+def accent_colors(accent):
+    """强调色的 (色板, 放白字的底, 深色背景上当字用)；认不出的用绿色。"""
+    _name, _value, color, strong, light = next(
+        (item for item in SETTINGS_ACCENTS if item[1] == accent), SETTINGS_ACCENTS[0])
+    return color, strong, light
+
+
+def forced_css(dark):
+    """主题固定时盖过系统主题颜色的那一段（见 FORCED_COLORS）。"""
+    lines = []
+    variables = []
+    for name, (bg, fg) in FORCED_COLORS[dark].items():
+        lines.append(f"@define-color {name}_bg_color {bg};")
+        lines.append(f"@define-color {name}_fg_color {fg};")
+        variables.append(f"--{name}-bg-color: {bg}; --{name}-fg-color: {fg};")
+    css = "\n".join(lines) + "\n"
+    if new_css_supported():
+        css += ":root { " + " ".join(variables) + " }\n"
+    return css
+
+
+def theme_css(dark, accent="Green"):
+    """设置窗口的整段样式。dark 只决定旧版 libadwaita 上强调色当字用时的颜色，别的颜色都跟着主题。"""
+    color, strong, light = accent_colors(accent)
+    new_css = new_css_supported()
+    css = STYLE + STYLE_ACCENT
+    if new_css:
+        css += STYLE_ACCENT_VARS + STYLE_DIM_VARS
+        if Gtk.get_minor_version() >= 20:
+            css += STYLE_DIM_HIGH_CONTRAST
+    else:
+        css += STYLE_DIM_OLD
+    named = {name: (f"var(--{name.replace('_', '-')}-color)" if new_css else f"@{name}_color")
+             for name in ("window_bg", "window_fg", "card_bg", "card_fg")}
+    accent_text = light if dark else strong
+    values = {**named, "accent": color, "strong": strong, "accent_text_hex": accent_text,
+              "accent_text": "var(--accent-color)" if new_css else accent_text}
+    for name, value in values.items():
+        css = css.replace("{" + name + "}", value)
+    return css
 
 
 # ---------------- 打字统计
@@ -2568,6 +2644,16 @@ RELEASE_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 # Beta 计划：最近的几十个发布（含预发布），挑版本号最大的
 RELEASES_API = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
 RELEASES_PAGE = f"{HOMEPAGE}/releases"
+# 接口被限流时（不登录每个 IP 每小时 60 次：校园网、公司网、运营商 NAT 后面很多人共用一个 IP）改走网页：
+# releases/latest 跳到最新正式版的 tag 页，releases.atom 列着最近的发布，发布页的 SHA256SUMS 列着这一版的全部文件。
+# 这些都不算接口次数
+RELEASES_LATEST_PAGE = f"{HOMEPAGE}/releases/latest"
+RELEASES_ATOM = f"{HOMEPAGE}/releases.atom"
+RELEASES_DOWNLOAD = f"{HOMEPAGE}/releases/download"
+# 发布任务把「这一版要注意」那一节单独传成这个文件（0.7.1 起），取更新说明也不用接口
+RELEASE_NOTES_FILE = "RELEASE-NOTES.md"
+# 更早的版本没有这个文件：有新版时才问一次接口要说明
+RELEASE_TAG_API = f"https://api.github.com/repos/{REPO}/releases/tags/{{tag}}"
 CACHE_DIR = os.path.join(_xdg("XDG_CACHE_HOME", "~/.cache"), "wowtype")
 UPDATE_DIR = os.path.join(CACHE_DIR, "updates")
 UPDATE_STATE = os.path.join(CACHE_DIR, "update-check.json")
@@ -2749,13 +2835,13 @@ def _md_inline(text):
 
 
 def release_highlights(notes):
-    """发布说明里只留「## 这一版」那一节（去掉标题本身）；没有这一节就原样返回。
+    """发布说明里只留「## 这一版」（发布任务写的是「## 这一版要注意」）那一节（去掉标题本身）；没有这一节就原样返回。
 
     后面的安装步骤、自动生成的提交列表对已经装好的人没用，放进「更新内容」只会很长。
     """
     lines = notes.strip().splitlines()
     for i, line in enumerate(lines):
-        if re.match(r"^##\s*这一版\s*$", line.strip()):
+        if re.match(r"^##\s*这一版(要注意)?\s*$", line.strip()):
             body = []
             for rest in lines[i + 1:]:
                 if re.match(r"^#{1,2}\s", rest):
@@ -2837,9 +2923,23 @@ def beta_updates(values=None):
 
 
 def fetch_latest(beta=None):
-    """GitHub 上最新的正式版；Beta 计划开着时是最新的版本（预发布也算）。beta 不给时按设置。"""
+    """GitHub 上最新的正式版；Beta 计划开着时是最新的版本（预发布也算）。beta 不给时按设置。
+
+    先走网页（fetch_latest_web，不算接口次数）；网页那条路走不通时（GitHub 改了页面之类）再问接口。"""
     if beta is None:
         beta = beta_updates()
+    try:
+        return fetch_latest_web(beta)
+    except OSError as web_error:
+        try:
+            return fetch_latest_api(beta)
+        except OSError:
+            raise web_error from None
+
+
+def fetch_latest_api(beta):
+    """问 GitHub 接口。不登录时每个 IP 每小时只能问 60 次（校园网、公司网、运营商 NAT 后面很多人共用一个 IP），
+    用完了回 403，所以只在网页那条路走不通时用。"""
     if beta:
         with http_open(RELEASES_API, timeout=20) as response:
             picked = pick_release(json.load(response))
@@ -2847,6 +2947,79 @@ def fetch_latest(beta=None):
             return picked
     with http_open(RELEASE_API, timeout=20) as response:
         return release_info(json.load(response))
+
+
+APP_TAG = re.compile(r"[vV]\d+(\.\d+)*")
+
+
+def fetch_latest_web(beta):
+    """不走接口：最新正式版的 tag 从 releases/latest 跳到的地址里取；Beta 计划开着时再看 releases.atom，
+    从版本号最大的往下试（一样大要正式版）。文件列表从这一版的 SHA256SUMS 读。
+
+    releases.atom 里也有只推了 tag、还没发出来（正在构建）的版本，它们没有 SHA256SUMS（404），跳过。"""
+    with http_open(RELEASES_LATEST_PAGE, timeout=20) as response:
+        match = re.search(r"/releases/tag/([^/?#]+)$", response.geturl())
+    latest = urllib.parse.unquote(match.group(1)) if match else ""
+    tags = [latest] if APP_TAG.fullmatch(latest) else []
+    if beta:
+        with http_open(RELEASES_ATOM, timeout=20) as response:
+            feed = response.read().decode("utf-8", "replace")
+        for found in re.findall(r"/releases/tag/([^\"'<>/?#]+)", feed):
+            found = urllib.parse.unquote(found)
+            if APP_TAG.fullmatch(found) and found not in tags:
+                tags.append(found)
+    # 版本号大的在前，一样大时正式版（latest）在前
+    tags.sort(key=lambda t: (parse_version(t), t == latest), reverse=True)
+    for tag in tags:
+        try:
+            return web_release(tag, prerelease=tag != latest)
+        except urllib.error.HTTPError as e:
+            if e.code != 404 or tag == latest:
+                raise
+    raise OSError("GitHub 上找不到发布的版本")
+
+
+def web_release(tag, prerelease=False):
+    """不走接口拼出 release_info 的样子：下载地址按发布页的规则拼，有哪些文件看 SHA256SUMS。
+    更新说明只在比现在装的新时才取（只有那时显示），见 release_notes。"""
+    base = f"{RELEASES_DOWNLOAD}/{urllib.parse.quote(tag)}"
+    with http_open(f"{base}/SHA256SUMS", timeout=20) as response:
+        sums = response.read().decode("utf-8", "replace")
+    assets = {"SHA256SUMS": f"{base}/SHA256SUMS"}
+    for line in sums.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2 and re.fullmatch(r"[0-9A-Fa-f]{64}", parts[0]):
+            name = parts[1].lstrip("*").strip()
+            if name and "/" not in name:
+                assets[name] = f"{base}/{urllib.parse.quote(name)}"
+    url = f"{HOMEPAGE}/releases/tag/{urllib.parse.quote(tag)}"
+    newer = parse_version(tag) > parse_version(current_version())
+    return {
+        "tag": tag,
+        "version": tag.lstrip("vV"),
+        "notes": release_notes(tag, base, url) if newer else "",
+        "url": url,
+        "prerelease": prerelease,
+        "assets": assets,
+    }
+
+
+def release_notes(tag, base, url):
+    """这一版的更新说明：先下发布页上的 RELEASE-NOTES.md（不算接口次数）；更早的版本没有这个文件，问一次接口；
+    都拿不到时一句「见发布页」。拿不到说明不算检查失败。"""
+    try:
+        with http_open(f"{base}/{RELEASE_NOTES_FILE}", timeout=20) as response:
+            return response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            return f"没取到更新说明，见[发布页]({url})。"
+    except OSError:
+        return f"没取到更新说明，见[发布页]({url})。"
+    try:
+        with http_open(RELEASE_TAG_API.format(tag=urllib.parse.quote(tag)), timeout=20) as response:
+            return json.load(response).get("body") or ""
+    except (OSError, ValueError):
+        return f"没取到更新说明，见[发布页]({url})。"
 
 
 def is_newer(release):
@@ -3622,7 +3795,7 @@ MODELS_DIR = os.path.join(DATA_DIR, "models")
 # 「翻译引擎」的选项和选中时的说明（和 macOS 的 TranslateEngine 一样），顺序同 translate_engine
 TRANSLATE_ENGINES = [
     ("本地翻译（离线）", "不联网、不用账号，打的字不出这台电脑；一句话等 1–3 秒"),
-    ("哔哩哔哩（免费，不用 API Key）", "哔哩哔哩的 Index-Translate，不用注册；要联网，一句话不到 1 秒"),
+    ("哔哩哔哩（免费）", "哔哩哔哩的 Index-Translate，不用注册、不用 API Key；要联网，一句话不到 1 秒"),
     ("自定义翻译服务", "填你自己的翻译接口（DeepSeek、通义千问、Ollama……），要联网"),
 ]
 BILIBILI_PRIVACY = "要翻译的文字会发到哔哩哔哩的服务器（index-translate.bilibili.com）"
@@ -5157,7 +5330,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         """
         self.stats_tab = "keys"
         self.stats_mtime = None
-        outer = Gtk.ScrolledWindow(vexpand=True)
+        # 不横着滚（窄窗口、200% 缩放时右边被裁掉）：里面的东西都能缩，键盘热力图太宽时只有它自己横着滚
+        outer = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
         # 统计页不是 PreferencesPage，自己铺一层背景：niri 等合成器给普通窗口开 xray blur 时，
         # 透明区域会透出模糊的桌面，文字对比度也会掉。
         outer.add_css_class("wt-stats-page")
@@ -5241,6 +5415,12 @@ class SettingsWindow(Adw.ApplicationWindow):
 
         switcher = Gtk.StackSwitcher()
         switcher.set_halign(Gtk.Align.START)
+        # 六个标签按钮去掉默认的最小宽度（libadwaita 每个至少约 100px，六个就撑到 800px 宽）；
+        # 再窄也放不下时标签条自己横着滚，不把整页撑宽
+        tabs = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+                                  vscrollbar_policy=Gtk.PolicyType.NEVER,
+                                  propagate_natural_width=True, propagate_natural_height=True)
+        tabs.set_child(switcher)
         stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.NONE)
         switcher.set_stack(stack)
         pages = (
@@ -5258,7 +5438,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         stack.set_visible_child_name(self.stats_tab)
         stack.connect("notify::visible-child-name", self.stats_tab_changed)
         self.stats_stack = stack
-        self.stats_box.append(switcher)
+        self.stats_box.append(tabs)
         self.stats_box.append(stack)
         return False
 
@@ -5359,28 +5539,30 @@ class SettingsWindow(Adw.ApplicationWindow):
         card.append(note)
 
         maximum = max(counts.values())
-        keys = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        keys.set_halign(Gtk.Align.CENTER)
+        # 键盘用等宽列的网格画：一份键宽是 4 列，键按份数占列，整块跟着卡片的宽度缩放
+        # （以前按固定键宽画，约 540px，窄窗口、200% 缩放时右边被裁掉）
+        keys = Gtk.Grid(column_homogeneous=True, row_spacing=4, column_spacing=0, hexpand=True)
         keys.set_margin_top(2)
-        for row in stats_rows():
-            line = Gtk.Box(spacing=4)
-            line.set_halign(Gtk.Align.CENTER)
+        for r, row in enumerate(stats_rows()):
+            column = 0
             for code, label, weight in row:
-                width = max(1, int(weight * STATS_UNIT) - 4)
-                if code is None:
-                    spacer = Gtk.Box()
-                    spacer.set_size_request(width, 32)
-                    line.append(spacer)
-                    continue
-                count = counts.get(code, 0)
-                cap = Gtk.Label(label=label, ellipsize=Pango.EllipsizeMode.END)
-                cap.add_css_class("wt-key")
-                cap.add_css_class(f"wt-key-{stats_heat_level(count, maximum)}")
-                cap.set_size_request(width, 32)
-                cap.set_tooltip_text(f"{stats_key_name(code)}，{count:,} 次")
-                line.append(cap)
-            keys.append(line)
-        card.append(keys)
+                span = max(1, round(weight * 4))
+                if code is not None:
+                    count = counts.get(code, 0)
+                    cap = Gtk.Label(label=label, ellipsize=Pango.EllipsizeMode.END, hexpand=True)
+                    cap.add_css_class("wt-key")
+                    cap.add_css_class(f"wt-key-{stats_heat_level(count, maximum)}")
+                    cap.set_size_request(-1, 32)
+                    cap.set_margin_start(2)
+                    cap.set_margin_end(2)
+                    cap.set_tooltip_text(f"{stats_key_name(code)}，{count:,} 次")
+                    keys.attach(cap, column, r, span, 1)
+                column += span
+        # 键宽的上限还是 STATS_UNIT：宽窗口里不拉得太宽
+        units = max(sum(weight for _code, _label, weight in row) for row in stats_rows())
+        keys_clamp = Adw.Clamp(maximum_size=int(units * STATS_UNIT), tightening_threshold=int(units * STATS_UNIT))
+        keys_clamp.set_child(keys)
+        card.append(keys_clamp)
 
         drawn = stats_drawn_ids()
         others = sorted(((code, count) for code, count in counts.items() if code not in drawn),
@@ -5448,8 +5630,9 @@ class SettingsWindow(Adw.ApplicationWindow):
             area = Gtk.DrawingArea()
             area.set_content_height(150)
             area.set_hexpand(True)
+            color = accent_colors(self.values.get("SettingsAccent"))[0]
             area.set_draw_func(lambda _area, cr, width, height:
-                               self.stats_draw_bars(cr, width, height, series))
+                               self.stats_draw_bars(cr, width, height, series, color))
             page.append(area)
         else:
             page.append(self.stats_empty("画图表要装 python3-gi-cairo（PyGObject 的 cairo 支持）。"))
@@ -5468,11 +5651,11 @@ class SettingsWindow(Adw.ApplicationWindow):
         page.append(note)
 
     @staticmethod
-    def stats_draw_bars(cr, width, height, series):
+    def stats_draw_bars(cr, width, height, series, color="#0EAF76"):
         maximum = max((count for _key, count in series), default=0) or 1
         gap = 3
         bar = max(1.0, (width - gap * (len(series) - 1)) / len(series))
-        cr.set_source_rgba(0.055, 0.686, 0.463, 0.9)
+        cr.set_source_rgba(*(int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)), 0.9)
         for index, (_key, count) in enumerate(series):
             if count <= 0:
                 continue
@@ -5693,6 +5876,26 @@ class SettingsWindow(Adw.ApplicationWindow):
         look.add(self.font_row)
         page.add(look)
 
+        # 设置窗口自己的样子（不管候选框）。macOS、Windows 的设置窗口也有这两项，名字和选项一样
+        window_look = Adw.PreferencesGroup(title="设置窗口")
+        self.settings_theme_names = [value for _label, value in SETTINGS_THEMES]
+        self.settings_theme_row = Adw.ComboRow(
+            title="主题", subtitle="跟随系统，或者固定浅色 / 深色",
+            model=Gtk.StringList.new([label for label, _value in SETTINGS_THEMES]))
+        self.add_info(self.settings_theme_row,
+                      "只改这个设置窗口，不影响候选框。系统是深色、窗口却是浅色（或者反过来），"
+                      "字看不清时，固定成浅色或深色。")
+        self.settings_accent_names = [value for _label, value, *_colors in SETTINGS_ACCENTS]
+        self.settings_accent_row = Adw.ComboRow(
+            title="强调色", subtitle="选中的页面、按钮和开关的颜色",
+            model=Gtk.StringList.new([label for label, *_rest in SETTINGS_ACCENTS]))
+        self.refresh_window_look()
+        self.settings_theme_row.connect("notify::selected", self.on_window_look_changed)
+        self.settings_accent_row.connect("notify::selected", self.on_window_look_changed)
+        window_look.add(self.settings_theme_row)
+        window_look.add(self.settings_accent_row)
+        page.add(window_look)
+
         # 帮助：小技巧折起来；macOS 设置窗口的「帮助」和这里一样（打开数据目录代替导出日志）
         help_group = Adw.PreferencesGroup(title="帮助")
         tips = Adw.ExpanderRow(title="小技巧")
@@ -5729,7 +5932,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         group.set_header_suffix(self.info_button(
             "换词库几秒后生效，自定义词和学到的习惯都会保留。\n\n"
             "雾凇拼音在安装包里，跟着 WowType 一起更新。\n\n"
-            "万象拼音词更多，比雾凇多占约 300 MB 内存；从 amzxyz/rime_wanxiang（CC BY 4.0）转换，只用了它的词条。"
+            "万象拼音词更多，比雾凇多占约 60 MB 内存；从 amzxyz/rime_wanxiang（CC BY 4.0）转换，只用了它的词条。"
             f"装在 {_home(WANXIANG_DIR)}。",
             [("万象拼音项目主页", WANXIANG_PAGE)]))
         self.lexicon_busy = False
@@ -5972,7 +6175,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         # 选了这个方案才出的设置
         self.scheme_rows = {
             "Shuangpin": [self.scheme_row, self.make_switch(
-                "ShuangpinShowKeys", "编辑区显示打的键", "不翻成全拼，中英混打时看得出打了什么")],
+                "ShuangpinShowKeys", "编辑区显示打的键", "不翻成全拼，中英混打时看得出打了什么"),
+                self.shuangpin_abbrev_row()],
             "Wubi86": [self.make_switch("WubiAutoCommit", "四码唯一自动上屏", "打满四码、只有一个字词时直接上屏"),
                        self.make_switch("WubiHint", "编码提示", "候选后面显示还要打的码")],
         }
@@ -5991,6 +6195,35 @@ class SettingsWindow(Adw.ApplicationWindow):
         for scheme, check in self.scheme_checks.items():
             check.connect("toggled", self.on_scheme_toggled, scheme)
         page.add(mode)
+
+        defaults = Adw.PreferencesGroup(title="默认状态")
+        defaults.set_header_suffix(self.info_button(
+            "换到新窗口、新应用时用哪种模式。默认「和上次一样」，中英文照旧全局保持；"
+            "选了中文或英文，每次换到新窗口、新应用都先定成它。"))
+        self.window_names = [name for _, name in WINDOW_MODES]
+        self.window_row = Adw.ComboRow(
+            title="默认中/英文",
+            subtitle="换到新窗口、新应用时；和上次一样就不变",
+            model=Gtk.StringList.new([label for label, _ in WINDOW_MODES]))
+        current = self.values.get("WindowMode", "Same")
+        self.window_row.set_selected(
+            self.window_names.index(current) if current in self.window_names else 0)
+        self.window_row.connect("notify::selected", lambda row, _p: self.set_value(
+            "WindowMode", self.window_names[row.get_selected()]))
+        defaults.add(self.window_row)
+        self.punct_names = [name for _, name in PUNCT_STYLES]
+        self.punct_row = Adw.ComboRow(
+            title="默认全角/半角",
+            subtitle="中文标点还是英文标点",
+            model=Gtk.StringList.new([label for label, _ in PUNCT_STYLES]))
+        self.add_info(self.punct_row, "数字后面的符号总是半角的，比如 3.14。")
+        current = self.values.get("PunctuationStyle", "Fullwidth")
+        self.punct_row.set_selected(
+            self.punct_names.index(current) if current in self.punct_names else 0)
+        self.punct_row.connect("notify::selected", lambda row, _p: self.set_value(
+            "PunctuationStyle", self.punct_names[row.get_selected()]))
+        defaults.add(self.punct_row)
+        page.add(defaults)
 
         switch = Adw.PreferencesGroup(title="中英文切换")
         switch.set_header_suffix(self.info_button(
@@ -6015,7 +6248,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.initial_names = [name for _, name in INITIAL_MODES]
         self.initial_row = Adw.ComboRow(
             title="切到 WowType 时",
-            subtitle="从别的输入法切过来、开机后第一次用时；换窗口不变",
+            subtitle="从别的输入法切过来、开机后第一次用时；换窗口见「默认中/英文」",
             model=Gtk.StringList.new([label for label, _ in INITIAL_MODES]))
         current = self.values.get("InitialMode", "Chinese")
         self.initial_row.set_selected(
@@ -6045,16 +6278,6 @@ class SettingsWindow(Adw.ApplicationWindow):
         rare = self.make_switch("RareExtChars", "更多生僻字", "要装能显示它们的字体，比如 fonts-hanazono")
         self.add_info(rare, "候选里也列出极少用的生僻字。系统自带的字体一般显示不了，会是方块。")
         pinyin.add(rare)
-        self.punct_names = [name for _, name in PUNCT_STYLES]
-        self.punct_row = Adw.ComboRow(
-            title="标点样式", model=Gtk.StringList.new([label for label, _ in PUNCT_STYLES]))
-        self.add_info(self.punct_row, "数字后面的符号总是半角的，比如 3.14。")
-        current = self.values.get("PunctuationStyle", "Fullwidth")
-        self.punct_row.set_selected(
-            self.punct_names.index(current) if current in self.punct_names else 0)
-        self.punct_row.connect("notify::selected", lambda row, _p: self.set_value(
-            "PunctuationStyle", self.punct_names[row.get_selected()]))
-        pinyin.add(self.punct_row)
         auto_pair = self.make_switch("AutoPairPunct", "中文标点自动配对", "打（【《「“‘ 时自动补上右半边")
         self.add_info(auto_pair, "中文标点下打左括号、左引号，上屏成对的，光标放到中间；"
                                  "在里面打完再按右半边，跳过补好的那个，不会多出一个。"
@@ -6252,6 +6475,23 @@ class SettingsWindow(Adw.ApplicationWindow):
                 "font", font_with_size(self.kimpanel.get_string("font") or KIMPANEL_DEFAULT_FONT, size))
         log(f"候选字号改成 {size:g}")
 
+    def refresh_window_look(self):
+        """「设置窗口」那一组对齐到 self.values（恢复默认、文件在别处改了以后）。"""
+        theme, accent = self.values["SettingsTheme"], self.values["SettingsAccent"]
+        self.settings_theme_row.set_selected(
+            self.settings_theme_names.index(theme) if theme in self.settings_theme_names else 0)
+        self.settings_accent_row.set_selected(
+            self.settings_accent_names.index(accent) if accent in self.settings_accent_names else 0)
+
+    def on_window_look_changed(self, *_args):
+        theme = self.settings_theme_names[self.settings_theme_row.get_selected()]
+        accent = self.settings_accent_names[self.settings_accent_row.get_selected()]
+        self.set_value("SettingsTheme", theme)
+        self.set_value("SettingsAccent", accent)
+        app = self.get_application()
+        if app is not None and hasattr(app, "set_look"):
+            app.set_look(theme, accent)
+
     def on_theme_toggled(self, row, _param):
         on = row.get_active()
         self.fcitx.set_config(CLASSICUI_URI, classicui_theme_values(on))
@@ -6382,6 +6622,12 @@ class SettingsWindow(Adw.ApplicationWindow):
                     self.toast("没改成：fcitx5 没响应")
                 self.refresh_shift_conflict()
         self.fcitx.set_hotkeys(lists, done)
+
+    def shuangpin_abbrev_row(self):
+        row = self.make_switch("ShuangpinAbbrev", "简拼", "只打声母也出词，sm 出「什么」")
+        self.add_info(row, "每个键都是声母时也当成只打了声母（zh ch sh 用方案里的声母键，自然码、小鹤是 v i u）。"
+                      "同样的键按双拼也读得通时（小鹤的 zg 是 zeng），先出双拼读出来的字，简拼的词排在后面。")
+        return row
 
     def make_switch(self, key, title, subtitle):
         row = SwitchRow(title=title)
@@ -7692,8 +7938,8 @@ class SettingsWindow(Adw.ApplicationWindow):
 
     def on_reset(self, *_args):
         dialog = AlertDialog(heading="恢复默认设置？",
-                                 body="排列方向、模糊音、语音键等回到默认值。自定义词和翻译服务"
-                                      "（地址、模型、Key）不受影响。")
+                                 body="排列方向、模糊音、语音键、设置窗口的主题和强调色等回到默认值。"
+                                      "自定义词和翻译服务（地址、模型、Key）不受影响。")
         dialog.add_response("cancel", "取消")
         dialog.add_response("reset", "恢复默认")
         dialog.set_response_appearance("reset", ResponseAppearance.DESTRUCTIVE)
@@ -7722,6 +7968,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             for key, row in self.key_rows.items():
                 row.set_selected(row.key_names.index(DEFAULTS[key]))
             self.target_row.set_selected(0)
+            self.refresh_window_look()
             self.toast("已恢复默认设置")
         dialog.connect("response", answered)
         dialog.present(self)
@@ -7792,10 +8039,16 @@ class SettingsApp(Adw.Application):
         settings = Gtk.Settings.get_default()
         settings.connect("notify::gtk-font-name", lambda *_: self.update_font_css())
         self.update_font_css()
-        # 微信输入法风格的配色，深色模式换一套
+        # 微信输入法风格的配色；主题、强调色在「常规 → 设置窗口」里改（SettingsTheme、SettingsAccent）
         self.style_css = Gtk.CssProvider()
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), self.style_css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        # 主题固定时盖过 ~/.config/gtk-4.0/gtk.css（USER 优先级）的颜色，见 FORCED_COLORS
+        self.forced_css = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), self.forced_css, Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
+        values = read_config()[0]
+        self.look = (values["SettingsTheme"], values["SettingsAccent"])
         manager = Adw.StyleManager.get_default()
         manager.connect("notify::dark", lambda *_: self.update_style_css())
         self.update_style_css()
@@ -7807,17 +8060,29 @@ class SettingsApp(Adw.Application):
         quoted = ", ".join('"' + f.replace('"', "") + '"' for f in families)
         css_load(self.font_css, f"window {{ font-family: {quoted}; }}")
 
+    def set_look(self, theme, accent):
+        """换设置窗口的主题、强调色（SettingsTheme、SettingsAccent 的值），马上生效。"""
+        if (theme, accent) != self.look:
+            self.look = (theme, accent)
+            self.update_style_css()
+
     def update_style_css(self):
-        # niri 等非 GNOME 桌面不一定把 color-scheme 报给 GTK，但用户可能选了深色 GTK 主题；
-        # 主题名里带 dark 也按深色走，否则深色主题的白色文字会画在浅色卡片上，整页发灰。
-        settings = Gtk.Settings.get_default()
-        theme_name = (settings.props.gtk_theme_name or "").lower() if settings else ""
-        dark = Adw.StyleManager.get_default().get_dark() or "dark" in theme_name
-        accent_text = "#3CCB93" if dark else "#0a8a5c"
-        css = (STYLE_DARK if dark else STYLE_LIGHT) + STYLE_ACCENT % accent_text
-        if (Gtk.get_major_version(), Gtk.get_minor_version()) >= (4, 16):
-            css += STYLE_ACCENT_VARS % accent_text
-        css_load(self.style_css, css)
+        theme, accent = self.look
+        manager = Adw.StyleManager.get_default()
+        scheme = {"Light": Adw.ColorScheme.FORCE_LIGHT, "Dark": Adw.ColorScheme.FORCE_DARK}.get(
+            theme, Adw.ColorScheme.DEFAULT)
+        if manager.get_color_scheme() != scheme:
+            manager.set_color_scheme(scheme)  # 会再发 notify::dark，再进来一次
+        # 底色和文字都跟着主题（theme_css），dark 只管旧版 libadwaita 上强调色当字用时的颜色。
+        # niri 等非 GNOME 桌面不一定把 color-scheme 报给 GTK，但用户可能选了深色 GTK 主题：主题名里带 dark 也按深色走。
+        if theme in ("Light", "Dark"):
+            dark = theme == "Dark"
+        else:
+            settings = Gtk.Settings.get_default()
+            theme_name = (settings.props.gtk_theme_name or "").lower() if settings else ""
+            dark = manager.get_dark() or "dark" in theme_name
+        css_load(self.style_css, theme_css(dark, accent))
+        css_load(self.forced_css, forced_css(dark) if theme in ("Light", "Dark") else "")
 
     def do_command_line(self, command_line):
         options = command_line.get_options_dict().end().unpack()

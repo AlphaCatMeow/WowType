@@ -60,6 +60,8 @@ jobs:
       - run: cargo test --workspace --locked
       - name: C ABI 冒烟测试
         run: ./scripts/abi-smoke.sh
+      - name: Windows 外壳里和平台无关的部分（组字、设置、语音键、自定义词、统计）在 Linux 上也测
+        run: windows/test.sh
 
   core-macos:
     # 核心和 C 接口在 macOS 上一直能编、能过测试。不在 release 的 needs 里，挂了不挡 Linux 发版。
@@ -72,6 +74,268 @@ jobs:
       - run: cargo test --workspace --locked
       - name: C ABI 冒烟测试
         run: ./scripts/abi-smoke.sh
+
+  windows:
+    # Windows 输入法（windows/，TSF 文本服务，见 docs/WINDOWS.md）：核心在 Windows 上的测试、
+    # 编 x64 的核心静态库和输入法 DLL、按键测试（小词库 + 真实词库）、设置契约、打 zip、
+    # 用安装脚本真装一遍（regsvr32 注册、建一个文本服务对象）再卸载。
+    # x64 的安装程序（WowType-<版本>-windows-x64-setup.exe）随发版进 Release（artifact 叫 pkg-windows-x64）。
+    name: Windows 输入法（x64）
+    needs: data
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 核心测试
+        run: cargo test -p wowtype-core --locked
+      - name: 编核心静态库（带语音，静态 C 运行库）
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --locked -p wowtype-core --target-dir target/windows
+      - name: 编输入法 DLL、按键测试、设置导出
+        run: |
+          cmake -S windows -B build/windows -A x64 -DWOWTYPE_CORE_LIB="$(pwd -W)/target/windows/release/wowtype_core.lib"
+          cmake --build build/windows --config Release
+      - uses: actions/download-artifact@v4
+        with:
+          name: data
+          path: dist/data
+      - name: 代码签名（仓库配了证书才签）
+        # 仓库的 Secrets 里放 WINDOWS_SIGNING_PFX（.pfx 的 base64）和 WINDOWS_SIGNING_PASSWORD 就会签 DLL、设置窗口，
+        # 后面编完安装程序也签；没配就跳过（安装程序没签名，SmartScreen 会拦一下，见 docs/WINDOWS.md）
+        shell: pwsh
+        env:
+          SIGN_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+          SIGN_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: |
+          if (-not $env:SIGN_PFX) { Write-Host '没配签名证书，跳过'; exit 0 }
+          $pfx = Join-Path $env:RUNNER_TEMP 'sign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX))
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          "SIGNTOOL=$signtool" >> $env:GITHUB_ENV
+          "SIGN_PFX_PATH=$pfx" >> $env:GITHUB_ENV
+          & $signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $pfx /p $env:SIGN_PASSWORD `
+            build/windows/Release/wowtype.dll build/windows/Release/wowtype-settings.exe
+          if ($LASTEXITCODE -ne 0) { throw "签名失败：$LASTEXITCODE" }
+      - name: 按键测试（和 macOS、fcitx5 的同名用例一样；小词库 + 真实词库）
+        run: |
+          build/windows/Release/wowtype-windows-harness.exe
+          build/windows/Release/wowtype-windows-harness.exe dist/data/lexicon.tsv
+      - name: 下载续传（设置窗口下模型、新版用的；配一个会掐断连接的服务器）
+        shell: pwsh
+        run: |
+          $served = Join-Path $env:RUNNER_TEMP 'served.bin'
+          $server = Start-Process python -ArgumentList 'windows/tests/range_server.py', '18765', "`"$served`"" -PassThru -NoNewWindow
+          for ($i = 0; $i -lt 40 -and -not (Test-Path $served); $i++) { Start-Sleep -Milliseconds 250 }
+          Start-Sleep -Seconds 1
+          $want = (Get-FileHash $served -Algorithm SHA256).Hash.ToLower()
+          $exe = (Resolve-Path build/windows/Release/wowtype-windows-download-test.exe).Path
+          $dir = Join-Path $env:RUNNER_TEMP 'download-test'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          try {
+            # 一次下载里断了好几次：自动从断的地方接着下
+            & $exe 'http://127.0.0.1:18765/flaky' (Join-Path $dir 'flaky.bin') $want
+            if ($LASTEXITCODE -ne 0) { throw "断了几次没接上：$LASTEXITCODE" }
+            # 服务器不认 Range：从头下
+            & $exe 'http://127.0.0.1:18765/norange' (Join-Path $dir 'norange.bin') $want
+            if ($LASTEXITCODE -ne 0) { throw "服务器不认 Range 时没从头下好：$LASTEXITCODE" }
+            # 这一次下不完：留着 .part；再下一次从断的地方接着下完
+            $broken = Join-Path $dir 'broken.bin'
+            & $exe 'http://127.0.0.1:18765/broken' $broken $want
+            if ($LASTEXITCODE -ne 1) { throw "第一次应该下不完：$LASTEXITCODE" }
+            $part = (Get-Item "$broken.part").Length
+            if ($part -le 0) { throw '没下完的部分没留着' }
+            $out = & $exe 'http://127.0.0.1:18765/broken' $broken $want | Out-String
+            Write-Host $out
+            if ($LASTEXITCODE -ne 0) { throw "第二次没下完：$LASTEXITCODE" }
+            if ($out -notmatch "从 $part 开始") { throw "第二次不是从上次断的 $part 字节接着下的" }
+            if (Test-Path "$broken.part") { throw '下完了 .part 还在' }
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
+      - name: 设置契约（spec/config.json）
+        run: python scripts/test-config-contract.py --windows build/windows/Release/wowtype-windows-config-dump.exe
+      - name: 打 zip
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then export WOWTYPE_VERSION=${GITHUB_REF_NAME#v}; fi
+          windows/package.sh dist/data build/windows/Release/wowtype.dll dist/windows
+      - name: 用安装脚本装一遍、建一个文本服务对象、再卸载
+        shell: pwsh
+        run: |
+          $pkg = (Get-ChildItem dist/windows -Directory | Select-Object -First 1).FullName
+          $target = Join-Path $env:RUNNER_TEMP 'WowType'
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$pkg\install.ps1" -Target $target
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 失败：$LASTEXITCODE" }
+          $dll = Join-Path $target 'wowtype.dll'
+          $clsid = 'HKLM:\SOFTWARE\Classes\CLSID\{A895B83F-8F60-4990-A48F-17821E3BC14A}'
+          $server = (Get-ItemProperty "$clsid\InprocServer32").'(default)'
+          if ($server -ne $dll) { throw "InprocServer32 不对：$server" }
+          $tip = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{A895B83F-8F60-4990-A48F-17821E3BC14A}'
+          if (-not (Test-Path $tip)) { throw '没注册到 TSF' }
+          Get-ChildItem -Recurse $tip | Select-Object -ExpandProperty Name
+          $link = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\WowType 设置.lnk'
+          if (-not (Test-Path -LiteralPath $link)) { throw '开始菜单里没有「WowType 设置」' }
+          # 类工厂和 QueryInterface：建一个文本服务对象（不激活）
+          $service = [Activator]::CreateInstance([type]::GetTypeFromCLSID([guid]'A895B83F-8F60-4990-A48F-17821E3BC14A'))
+          if ($null -eq $service) { throw '建不了文本服务对象' }
+          [void][Runtime.InteropServices.Marshal]::ReleaseComObject($service)
+          # 再装一遍（DLL 被这个进程载入着：旧的改名，新的照样装上）
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$pkg\install.ps1" -Target $target
+          if ($LASTEXITCODE -ne 0) { throw "第二次 install.ps1 失败：$LASTEXITCODE" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$pkg\install.ps1" -Uninstall -Target $target
+          if ($LASTEXITCODE -ne 0) { throw "卸载失败：$LASTEXITCODE" }
+          if (Test-Path $clsid) { throw '卸载以后 CLSID 还在' }
+          if (Test-Path -LiteralPath $link) { throw '卸载以后开始菜单里还有快捷方式' }
+          if (Test-Path "$tip\LanguageProfile\0x00000804\{8106DB80-2DC6-4558-B368-86D26F78EC68}") { throw '卸载以后 TSF 里还有这个输入法' }
+      - name: 编安装程序（Inno Setup）
+        shell: pwsh
+        env:
+          SIGN_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          $pkg = (Get-ChildItem dist/windows -Directory -Filter '*-windows-x64').FullName
+          $version = $pkg -replace '.*WowType-(.+)-windows-x64$', '$1'
+          & $iscc /Q "/DAppVersion=$version" /DArch=x64 "/DSourceDir=$pkg" "/DOutputDir=$((Resolve-Path dist/windows).Path)" windows/installer/wowtype.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC 失败：$LASTEXITCODE" }
+          if ($env:SIGN_PFX_PATH) {
+            & $env:SIGNTOOL sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $env:SIGN_PFX_PATH /p $env:SIGN_PASSWORD (Get-ChildItem dist/windows/*-x64-setup.exe).FullName
+            if ($LASTEXITCODE -ne 0) { throw "签名失败：$LASTEXITCODE" }
+          }
+          Get-ChildItem dist/windows/*-setup.exe
+      - name: 用安装程序装一遍、建一个文本服务对象、升级一遍、卸载
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist/windows/*-x64-setup.exe).FullName
+          $app = Join-Path $env:ProgramFiles 'WowType'
+          $dll = Join-Path $app 'wowtype.dll'
+          $clsid = 'HKLM:\SOFTWARE\Classes\CLSID\{A895B83F-8F60-4990-A48F-17821E3BC14A}'
+          $tipProfile = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{A895B83F-8F60-4990-A48F-17821E3BC14A}\LanguageProfile\0x00000804\{8106DB80-2DC6-4558-B368-86D26F78EC68}'
+          $uninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8AF92801-E722-42A0-A358-07EFD5436DF4}_is1'
+          $link = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\WowType 设置.lnk'
+          function Invoke-Setup([string]$log) {
+            $p = Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$log" -Wait -PassThru
+            if ($p.ExitCode -ne 0) { Get-Content $log -ErrorAction SilentlyContinue; throw "安装程序失败：$($p.ExitCode)" }
+          }
+          Invoke-Setup "$env:RUNNER_TEMP\setup1.log"
+          if ((Get-ItemProperty "$clsid\InprocServer32").'(default)' -ne $dll) { throw 'InprocServer32 不对' }
+          if (-not (Test-Path $tipProfile)) { throw '没注册到 TSF' }
+          if (-not (Test-Path -LiteralPath $link)) { throw '开始菜单里没有「WowType 设置」' }
+          if (-not (Test-Path $uninstallKey)) { throw '「设置 → 应用」里没有卸载项' }
+          if (-not (Test-Path (Join-Path $app 'data\lexicon.tsv'))) { throw '没装词库' }
+          (Get-ItemProperty $uninstallKey).DisplayName
+          # 端到端打字：开一个输入框，切到 WowType，用 SendInput 按真的键，看输入框里的字和候选框
+          $typing = (Resolve-Path build/windows/Release/wowtype-windows-typing-test.exe).Path
+          # 候选框、任务栏的截图（下面的 artifact 里看画得对不对）
+          $env:WOWTYPE_SCREENSHOT_DIR = Join-Path $env:RUNNER_TEMP 'screenshots'
+          New-Item -ItemType Directory -Force -Path $env:WOWTYPE_SCREENSHOT_DIR | Out-Null
+          $p = Start-Process $typing -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) {
+            Get-Content (Join-Path $env:LOCALAPPDATA 'WowType\wowtype.log') -Tail 200 -ErrorAction SilentlyContinue
+            throw "打字测试有 $($p.ExitCode) 项没过"
+          }
+          # 两个进程（两个应用）之间的学习：B 开着，A 学到 shi 的第三个候选；B 不用重开，再打一次就是 A 学到的
+          # 接着 A 用 Ctrl+退格忘掉它：B 也忘了；B 存过盘以后 A 再合并也不会回来
+          $peer = Join-Path $env:RUNNER_TEMP 'peer'
+          New-Item -ItemType Directory -Force -Path $peer | Out-Null
+          $b = Start-Process $typing -ArgumentList '--peer-wait', "`"$peer`"" -PassThru -NoNewWindow
+          for ($i = 0; $i -lt 240 -and -not (Test-Path (Join-Path $peer 'ready')); $i++) { Start-Sleep -Milliseconds 500 }
+          $a = Start-Process $typing -ArgumentList '--peer-learn', "`"$peer`"" -PassThru -NoNewWindow
+          $a.WaitForExit(); $b.WaitForExit()
+          if ($a.ExitCode -ne 0 -or $b.ExitCode -ne 0) {
+            Get-Content (Join-Path $env:LOCALAPPDATA 'WowType\wowtype.log') -Tail 300 -ErrorAction SilentlyContinue | Select-String -NotMatch 'vk='
+            Get-Content (Join-Path $env:LOCALAPPDATA 'WowType\history.tsv') -ErrorAction SilentlyContinue | Select-String '时|是'
+            throw "两个进程之间的学习没过（A $($a.ExitCode)，B $($b.ExitCode)）"
+          }
+          # 设置窗口几页的截图：先放一份假的打字统计，统计页的柱状图、热力图才有东西
+          $days = [ordered]@{}
+          for ($i = 29; $i -ge 0; $i--) {
+            $d = (Get-Date).AddDays(-$i).ToString('yyyy-MM-dd')
+            $n = 200 + (($i * 37) % 900)
+            $days[$d] = @{ chars = $n; kinds = @{ han = [int]($n * 0.8); latin = [int]($n * 0.1) }; activeMs = 600000
+                           keys = @{ KeyA = 40 + $i; KeyN = 90; KeyI = 70; KeyH = 60; KeyO = 50; Space = 120; Backspace = 30; KeyS = 20 } }
+          }
+          $statsDir = Join-Path $env:LOCALAPPDATA 'WowType'
+          @{ version = 1; cleared = 0; days = $days } | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 (Join-Path $statsDir 'stats.json')
+          Add-Type -AssemblyName System.Drawing
+          Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool GetWindowRect(System.IntPtr h, out RECT r); public struct RECT { public int Left, Top, Right, Bottom; }'
+          foreach ($page in '常规', '候选', '翻译', '自定义词', '统计') {
+            $s = Start-Process (Join-Path $app 'wowtype-settings.exe') -ArgumentList '--page', $page -PassThru
+            for ($i = 0; $i -lt 40 -and $s.MainWindowHandle -eq 0; $i++) { Start-Sleep -Milliseconds 250; $s.Refresh() }
+            Start-Sleep 1
+            $r = New-Object W.U+RECT
+            [void][W.U]::GetWindowRect($s.MainWindowHandle, [ref]$r)
+            if ($r.Right -gt $r.Left) {
+              $bmp = New-Object System.Drawing.Bitmap ($r.Right - $r.Left), ($r.Bottom - $r.Top)
+              $g = [System.Drawing.Graphics]::FromImage($bmp)
+              $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size)
+              $bmp.Save((Join-Path $env:WOWTYPE_SCREENSHOT_DIR "settings-$page.png"))
+              $g.Dispose(); $bmp.Dispose()
+            }
+            Stop-Process -Id $s.Id -Force
+          }
+          # 建一个文本服务对象：这个进程载入了 DLL，接着升级要能换掉它
+          $service = [Activator]::CreateInstance([type]::GetTypeFromCLSID([guid]'A895B83F-8F60-4990-A48F-17821E3BC14A'))
+          if ($null -eq $service) { throw '建不了文本服务对象' }
+          Invoke-Setup "$env:RUNNER_TEMP\setup2.log"
+          if (-not (Get-ChildItem $app -Filter 'wowtype.dll.old-*')) { throw '升级时被用着的旧 DLL 没改名换下来' }
+          if ((Get-ItemProperty "$clsid\InprocServer32").'(default)' -ne $dll) { throw '升级以后 InprocServer32 不对' }
+          [void][Runtime.InteropServices.Marshal]::ReleaseComObject($service)
+          # 卸载程序会把自己拷到临时目录再跑：等卸载项没了
+          Start-Process (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          for ($i = 0; $i -lt 60 -and (Test-Path $uninstallKey); $i++) { Start-Sleep 1 }
+          if (Test-Path $uninstallKey) { throw '卸载以后卸载项还在' }
+          if (Test-Path $clsid) { throw '卸载以后 CLSID 还在' }
+          if (Test-Path $tipProfile) { throw '卸载以后 TSF 里还有这个输入法' }
+          if (Test-Path -LiteralPath $link) { throw '卸载以后开始菜单里还有快捷方式' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          # 候选框、任务栏输入指示器、设置窗口的截图（真打字的时候截的）
+          name: windows-screenshots
+          path: ${{ runner.temp }}/screenshots
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: ARM64：编核心和 DLL、打 zip（没有 ARM64 的 runner，只编不跑）
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          rustup target add aarch64-pc-windows-msvc
+          cargo build --release --locked -p wowtype-core --target aarch64-pc-windows-msvc --target-dir target/windows
+          cmake -S windows -B build/windows-arm64 -A ARM64 -DWOWTYPE_WINDOWS_TESTS=OFF \
+            -DWOWTYPE_CORE_LIB="$(pwd -W)/target/windows/aarch64-pc-windows-msvc/release/wowtype_core.lib"
+          cmake --build build/windows-arm64 --config Release
+          WOWTYPE_WINDOWS_ARCH=arm64 windows/package.sh dist/data build/windows-arm64/Release/wowtype.dll dist/windows
+      - name: ARM64：编安装程序（只编不装）
+        shell: pwsh
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          $pkg = (Get-ChildItem dist/windows -Directory -Filter '*-windows-arm64').FullName
+          $version = $pkg -replace '.*WowType-(.+)-windows-arm64$', '$1'
+          & $iscc /Q "/DAppVersion=$version" /DArch=arm64 "/DSourceDir=$pkg" "/DOutputDir=$((Resolve-Path dist/windows).Path)" windows/installer/wowtype.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC 失败：$LASTEXITCODE" }
+      - uses: actions/upload-artifact@v4
+        with:
+          # 叫 pkg-*：发版任务按 pkg-* 收安装包（x64 的安装程序进 Release）
+          name: pkg-windows-x64
+          path: dist/windows/*-x64-setup.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          # 开发、试用：zip 解开以后以管理员身份运行 install.ps1（docs/WINDOWS.md）；ARM64 没有在真机上试过，不进 Release
+          name: windows-x64
+          path: dist/windows/*-x64.zip
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-arm64
+          path: |
+            dist/windows/*-arm64.zip
+            dist/windows/*-arm64-setup.exe
+          retention-days: 7
 
   macos-app:
     # macOS 输入法外壳（macos/）：按键测试、打通用安装包、用安装包里的词库自检、真装一遍 pkg。
@@ -231,6 +495,14 @@ jobs:
           fi
       - name: 评测（回归集必须全过，其余各组和基线比）
         run: scripts/eval.sh "$EVAL_DATA"
+      - name: 排序不变量（全部用例逐键打，一条都不许违反）
+        # 「照着打的拼音不被纠错抢第一」「第一个音节的单字一直在」这类规则，见 docs/ENGINE-INVARIANTS.md。
+        # 复用上一步编好的 wowtype-eval；不带神经语言模型（data 任务不下载 nnlm.bin），带模型的本地跑：
+        # scripts/invariants.sh <数据目录> --nnlm <nnlm.bin>
+        if: ${{ !cancelled() }}
+        env:
+          WOWTYPE_EVAL_BIN: target/release/wowtype-eval
+        run: scripts/invariants.sh "$EVAL_DATA"
 
   addon:
     name: 插件 · ${{ matrix.distro }} · ${{ matrix.arch }}
@@ -496,6 +768,8 @@ jobs:
           if-no-files-found: error
 
   opensuse:
+    # 走 install.sh 的 openSUSE 路径：zypper 装编译依赖、解开源码包、用词库包编译安装、加进输入法列表。
+    # 源码包是这次提交的 git archive（发版时是 tag 的源码），词库包是 data 任务打的那个。
     name: 源码安装 · openSUSE Tumbleweed
     needs: data
     runs-on: ubuntu-24.04
@@ -504,26 +778,26 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: 系统依赖
+      - name: checkout 和 install.sh 自己要的工具
         run: |
           zypper --non-interactive refresh
-          zypper --non-interactive install --no-recommends \
-            rust cargo gcc-c++ make cmake extra-cmake-modules pkgconf-pkg-config \
-            fcitx5 fcitx5-devel alsa-devel python3 python3-gobject python3-gobject-Gdk \
-            typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1 git ca-certificates file findutils
+          zypper --non-interactive install --no-recommends git ca-certificates curl tar gzip file findutils
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: data
-          path: dist/data
-      - name: 编译并安装到系统 Fcitx 目录
+          name: pkg-data
+          path: dist/assets
+      - name: install.sh（本地源码包和词库包）
         run: |
-          cargo build --release --locked -p wowtype-core
-          cmake -S fcitx5-addon -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
-          cmake --build build -j"$(nproc)"
-          cmake --install build
-          install -m755 target/release/wowtype-check target/release/wowtype-show /usr/bin/
-          install -m644 dist/data/lexicon.tsv dist/data/english.txt dist/data/words.lm dist/data/wubi86.tsv /usr/share/wowtype/
+          git config --global --add safe.directory "$PWD"
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' core/Cargo.toml)
+          git archive --prefix="WowType-$version/" -o dist/source.tar.gz HEAD
+          (cd dist/assets && sha256sum -- *.tar.gz > SHA256SUMS && cat SHA256SUMS)
+          bash install.sh --print-plan
+          WOWTYPE_YES=1 WOWTYPE_VERSION="v$version" WOWTYPE_BASE_URL="file://$PWD/dist/assets" \
+            WOWTYPE_SOURCE_URL="file://$PWD/dist/source.tar.gz" bash install.sh
+          # fcitx5 没在跑：wowtype-config --setup 直接写进 fcitx5 的输入法列表
+          grep -qx 'Name=wowtype' "$HOME/.config/fcitx5/profile"
       - name: 插件路径、依赖、真实词库和设置界面
         run: |
           addon_dir="$(pkg-config --variable=libdir Fcitx5Core)/fcitx5"
@@ -568,7 +842,7 @@ jobs:
   release:
     name: 发布
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [installer, core, data, data-wanxiang, addon, arch, fedora, nix, macos-app]
+    needs: [installer, core, data, data-wanxiang, addon, arch, fedora, nix, macos-app, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -605,12 +879,11 @@ jobs:
           cat > notes.md <<EOF
           ## 这一版要注意
 
-          - 升级以后要重启一次输入法才用上新版：设置界面会提醒，点「重启」就行（一键安装脚本也会问）。
-          - 互译多了免费的「哔哩哔哩」翻译引擎（Index-Translate，不用 API Key）：「WowType 设置 → 翻译 → 翻译引擎」里选。要翻译的文字会发到哔哩哔哩的服务器；默认还是本地翻译，已经配好的不会自动换。
-          - 新功能默认都关着，要用到设置里打开：打字统计（只记总数，不记打的内容）、中文标点自动配对（打 ( 出（），光标在中间）。
-          - 双拼 lo / luo 同键的读法合在一起排（loji 出「逻辑」），选过的单字会排到第一个候选后面，lia 直接出「俩」。
-          - GNOME 45、46 上的语音浮条修好了，更新后注销重新登录一次 GNOME 才会载入新扩展。
-          - macOS 补齐了 Linux 有的功能：切到 WowType 时的中英文、标点配对、鼠标点候选和翻页、翻译测试连接、更新内容；候选框不会再往左挤出屏幕。
+          - 升级以后要重启一次输入法才用上新版：设置界面会提醒，点「重启」就行（一键安装脚本也会问）。第一次启动会重建一次词库快照（格式换了），多等一两秒。
+          - 占的内存少了四分之三：默认词库约 124 MB（以前约 515 MB），万象词库约 180 MB（以前约 876 MB）；启动时载入词库从约 1 秒变成几十毫秒。候选一个不变。
+          - 设置的统计页在窄窗口、高缩放下不再被裁掉：标签和键盘热力图跟着窗口宽度缩放。
+          - 翻译引擎的「哔哩哔哩」选项缩短成「哔哩哔哩（免费）」，200% 缩放下拉菜单不再截断；Windows 设置也有了「本地 / 哔哩哔哩 / 自定义」三选一和测试连接。
+          - 0.7.3 的内容：逐键提速、最近常选的字当首选、连不上 GitHub 时的安装办法。
 
           ## 安装（Ubuntu / Debian、deepin、Arch Linux、Fedora、NixOS）
 
@@ -624,7 +897,7 @@ jobs:
           Ubuntu / Debian 的 deb 和 Fedora RPM 有 x86_64（amd64）和 arm64（aarch64）两种，一键脚本按本机架构选；Arch 包和 deepin 包只有 x86_64。
           Arch Linux / EndeavourOS / Garuda / CachyOS：一键脚本用 pacman 安装对应包，不替你整机升级；依赖装不上时按提示先运行 \`sudo pacman -Syu\`。
           Fedora 43 / 44 / 45：自动选择与系统版本一致的 RPM。Debian 13、Ubuntu 22.04 / 24.04 / 26.04 及明确声明兼容基线的衍生版、deepin 23 / 25 使用对应 deb。
-          Manjaro：按安装说明在本机用 makepkg 打包；openSUSE Tumbleweed：按安装说明从源码构建。
+          Manjaro：按安装说明在本机用 makepkg 打包；openSUSE Tumbleweed：同一行命令会问过后用 zypper 装编译依赖，在本机从源码编译安装。
           NixOS（x86_64、aarch64）：flake 输入写 \`github:${GITHUB_REPOSITORY}/release\`（跟正式版）或 \`github:${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}\`（锁这一版），把 \`inputs.wowtype.packages.<system>.default\` 加进 \`i18n.inputMethod.fcitx5.addons\`，见[安装说明](https://github.com/${GITHUB_REPOSITORY}/blob/main/docs/INSTALL.md#nixos--nix)。
           完整步骤见 [README](https://github.com/${GITHUB_REPOSITORY}#安装)。
 
@@ -638,6 +911,13 @@ jobs:
 
           或者下载 \`WowType-${GITHUB_REF_NAME#v}-macos.pkg\` 双击安装。安装包没有 Apple 开发者签名：第一次打开时系统会说无法验证，点「完成」，再到「系统设置 → 隐私与安全性」往下找到 WowType，点「仍要打开」。
 
+          ## 安装（Windows 10 1803 以上 / Windows 11，x64，预览版）
+
+          下载 \`WowType-${GITHUB_REF_NAME#v}-windows-x64-setup.exe\` 双击安装（会问一次管理员权限），装好后按 \`Win + 空格\` 切到 WowType。
+          安装程序没有代码签名：Windows 提示「Windows 已保护你的电脑」时点「更多信息」→「仍要运行」。
+          输入行为和 Linux、macOS 是同一份，但 Windows 版还没在很多电脑、很多应用上试过；设置窗口「常规」页的「复制诊断信息」贴进 issue 就好。
+          还没有的（检查更新、代码签名等）见 [docs/WINDOWS.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/docs/WINDOWS.md)。
+
           安装包里的词库来自 [rime-ice](https://github.com/iDvel/rime-ice)（GPL-3.0），词频另用了 [Tatoeba](https://tatoeba.org) 的中文句子（CC BY 2.0 FR）统计，词级语言模型 words.lm 和整句增强模型 nnlm.bin 是 CC BY-SA 4.0；详见安装包里的 DATA-SOURCE.txt。
           五笔 86 码表 wubi86.tsv 来自 [rime-wubi](https://github.com/rime/rime-wubi)（LGPL-3.0），作者和钉死的提交见随包的 WUBI-AUTHORS、WUBI-SOURCE.txt。
 
@@ -645,6 +925,10 @@ jobs:
           想用的话在「WowType 设置 → 输入 → 词库」里选「万象拼音」并下载，或运行 \`wowtype-config --install-lexicon wanxiang\`；随时可以切回默认的雾凇。
 
           EOF
+          # 「这一版要注意」单独传一份（RELEASE-NOTES.md）：各端检查更新从这里取更新说明，不用问 GitHub 接口
+          #（不登录时每个 IP 每小时只能问 60 次）。不进 SHA256SUMS，各端按名字直接下
+          awk '/^## 这一版要注意/{on=1} on && /^## / && !/^## 这一版要注意/{exit} on' notes.md > dist/RELEASE-NOTES.md
+          grep -q '^## 这一版要注意' dist/RELEASE-NOTES.md
           extra=()
           if [ -n "$PRERELEASE" ]; then
             extra=(--prerelease --latest=false)

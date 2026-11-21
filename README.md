@@ -97,14 +97,15 @@
 ### 系统要求
 
 - Linux x86_64 或 arm64（aarch64），输入法框架 **fcitx5 5.0 或更新**。Arch 的安装包只有 x86_64
-- 有现成安装包的发行版：**Ubuntu 22.04 / 24.04 / 26.04、Debian 13、deepin 23 / 25**（deb）、**Arch Linux** 及 EndeavourOS / Garuda / CachyOS（pkg.tar.zst）、**Fedora**（[rpm](#fedora)）、**NixOS**（[flake](#nixos--nix)）。其他发行版请[从源码构建](docs/INSTALL.md)
+- 有现成安装包的发行版：**Ubuntu 22.04 / 24.04 / 26.04、Debian 13、deepin 23 / 25**（deb）、**Arch Linux** 及 EndeavourOS / Garuda / CachyOS（pkg.tar.zst）、**Fedora**（[rpm](#fedora)）、**NixOS**（[flake](#nixos--nix)）。**openSUSE Tumbleweed** 没有安装包，一行命令会在本机从源码编译安装。其他发行版请[从源码构建](docs/INSTALL.md)
 - Ubuntu 22.04 的 GNOME 是 42：绿色候选框主题和语音浮条（GNOME 扩展，要 GNOME 45+）用不了，见[安装说明](docs/INSTALL.md#ubuntu-2204fcitx5-50)
 - deepin 的安装包只有 x86_64
 - **macOS 12 或更新**（Apple 芯片和 Intel 都行），见下面的 [macOS](#macos)
+- **Windows 10（1803 起）/ 11**，x64：预览版，见下面的 [Windows](#windows)
 
 ### 一行命令安装（推荐）
 
-Ubuntu 22.04 / 24.04 / 26.04、Debian 13、deepin 23 / 25、Arch Linux（及衍生版）、Fedora、macOS 上，在终端里运行：
+Ubuntu 22.04 / 24.04 / 26.04、Debian 13、deepin 23 / 25、Arch Linux（及衍生版）、Fedora、openSUSE Tumbleweed、macOS 上，在终端里运行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/main/install.sh | bash
@@ -113,7 +114,7 @@ curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/main/install.sh |
 在 Linux 上它会（macOS 上见[下面](#macos)）：
 
 1. 下载和你系统对应的最新安装包（词库已经在包里，约 29 MB），按 `SHA256SUMS` 校验
-2. 用系统的包管理器（`apt-get`、`pacman`、`dnf`）装上，顺带装好 fcitx5 和设置界面要用的 GTK 4 / libadwaita。Arch 不会替你整机升级，提示依赖不满足时先 `sudo pacman -Syu`
+2. 用系统的包管理器（`apt-get`、`pacman`、`dnf`）装上，顺带装好 fcitx5 和设置界面要用的 GTK 4 / libadwaita。Arch 不会替你整机升级，提示依赖不满足时先 `sudo pacman -Syu`。openSUSE Tumbleweed 没有安装包：先列出要用 `zypper` 装的编译依赖问你一句，再下载这一版的源码和发布页上的词库包（校验 `SHA256SUMS`），在本机编译安装（要几分钟）
 3. 输入法框架还不是 fcitx5（Ubuntu 默认是 IBus）时，问你要不要用 `im-config` 切过去（deepin 默认就是 fcitx5，不动）
 4. 把 WowType 加进 fcitx5 的输入法列表；fcitx5 正在运行的话会先重启它一次（3、4 两步是 `wowtype-config --setup` 做的，直接装包的话在「WowType 设置」第一页点「一键设置」一样）
 5. GNOME 上软件源里有 Input Method Panel 扩展（Debian 13、Fedora 45 起）时，问你要不要装上并启用
@@ -123,6 +124,12 @@ curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/main/install.sh |
 
 > 想先看看脚本做了什么：[install.sh](install.sh)，或者 `bash install.sh --print-plan` 只看会装哪个包、不动系统。
 > 不想让它改输入法框架或重启 fcitx5，可以加环境变量，例如 `curl -fsSL … | WOWTYPE_NO_IM_CONFIG=1 WOWTYPE_NO_RESTART=1 bash`。
+>
+> **连不上 GitHub**（报 `curl: (35) Recv failure: 连接被对方重置`、`Connection reset by peer` 或超时，不是链接失效）：
+> 脚本可以从 jsDelivr 下载：`curl -fsSL https://cdn.jsdelivr.net/gh/Gloridust/WowType@main/install.sh | bash`。
+> 安装包也下不来时，可以自己选一个 GitHub 下载代理，加上 `WOWTYPE_GITHUB_MIRROR=https://<代理地址>/`：
+> 代理是第三方服务，WowType 不提供也不推荐具体哪个；安装包仍按 `SHA256SUMS` 校验。
+> 详见[安装说明的「连不上 GitHub」](docs/INSTALL.md#连不上-github)。
 >
 > GNOME（Ubuntu 默认桌面）在 Wayland 下，建议再装 GNOME Shell 扩展
 > [Input Method Panel](https://extensions.gnome.org/extension/261/kimpanel/)，
@@ -160,6 +167,22 @@ curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/main/install.sh |
 - 卸载：设置窗口「常规」页最下面的「卸载 WowType」（或者终端里
   `"$HOME/Library/Input Methods/WowType.app/Contents/MacOS/WowType" --uninstall`）。自定义词、学到的词和设置留在
   `~/Library/Application Support/WowType`，不要了自己删掉
+
+### Windows
+
+Windows 10 1803 或更新、Windows 11，x64。**预览版**：输入行为和 Linux、macOS 是同一份代码，但还没在很多电脑、很多应用上试过，
+遇到问题请[提 issue](https://github.com/Gloridust/WowType/issues)（设置窗口「常规」页的「复制诊断信息」贴进去）。
+
+到 [Releases](https://github.com/Gloridust/WowType/releases) 下载 `WowType-<版本>-windows-x64-setup.exe`，双击安装（会问一次管理员权限）。
+安装程序**没有代码签名**，第一次运行时 Windows 可能提示「Windows 已保护你的电脑」：点「更多信息」→「仍要运行」。
+装好以后按 `Win + 空格` 切到 WowType，打 `nihao` 试试。
+
+- 设置：开始菜单里的「WowType 设置」，或任务栏上「中」按钮右键 →「WowType 设置…」。设置文件是
+  `%LOCALAPPDATA%\WowType\wowtype.conf`，键名和 Linux、macOS 一样
+- 升级：有新版本时任务栏「中」按钮的右键菜单里会多一项，点它在设置窗口里下载并安装；也可以下载新版的安装程序再装一次。
+  正在用着输入法的应用重新打开以后用新版
+- 卸载：「设置 → 应用 → 已安装的应用」里找到「WowType 输入法」。学到的词和设置留在 `%LOCALAPPDATA%\WowType`
+- 还没有的、和另两端不一样的地方见 [docs/WINDOWS.md](docs/WINDOWS.md)
 
 ### 手动安装
 
@@ -285,7 +308,7 @@ wowtype-show  --lexicon /usr/share/wowtype/lexicon.tsv nihao
 | `'` | 分隔音节，比如 `xi'an` → 西安 |
 | `[` `]` | 以词定字：只上屏光标处候选的第一个、最后一个字（`nihao` `[` → 你）；设置里能关，翻页键设成 `[ ]` 时是翻页 |
 | `Super` + `.` | 表情面板：打拼音或英文搜 emoji 和符号，见下 |
-| 单按 `Shift` | 切到英文（字母、半角标点直接上屏），再按一下回中文；打了一半的字母原样上屏。左右 Shift 都行，设置里能改成只用一边或关掉。设置好[互译](#互译)后是 中 → 英 → 译 → 中（设了互译的快捷键时只切中英）。两个平台各自还有别的切法，见[中英文切换](#中英文切换)。要是按 Shift 只在 WowType 和 en 之间来回，见[下面](#shift-被-fcitx5-占了) |
+| 单按 `Shift` | 切到英文（字母、半角标点直接上屏），再按一下回中文；打了一半的字母原样上屏。左右 Shift 都行，设置里能改成只用一边或关掉。快速连按两下（双击）不切，JetBrains 的双击 Shift（到处搜索）照常用；为了认出双击，没接着打字时「中 / 英」提示晚 0.35 秒出来。设置好[互译](#互译)后是 中 → 英 → 译 → 中（设了互译的快捷键时只切中英）。两个平台各自还有别的切法，见[中英文切换](#中英文切换)。要是按 Shift 只在 WowType 和 en 之间来回，见[下面](#shift-被-fcitx5-占了) |
 | 右 `Alt` | 语音输入，见下 |
 | `v` + 空格 | 工具栏：剪贴板历史、常用语、符号、表情（数字键选，退格返回，`Esc` 关闭），见 [docs/CONFIG.md](docs/CONFIG.md#v--空格工具栏) |
 
@@ -318,6 +341,8 @@ wowtype-show  --lexicon /usr/share/wowtype/lexicon.tsv nihao
 | 互译的快捷键 | 设置「输入」页选，比如 `Ctrl` + `Shift` + `Y`：进「译」，再按回到原来的模式；设了以后单按 Shift 只切中英 | 同左（`Control` + `Shift` + `Y`） |
 
 设置文件里的键名两端一样（`ShiftToggle`、`ToggleKey`、`TranslateModeKey`，见 [docs/CONFIG.md](docs/CONFIG.md)）。系统自己的快捷键（fcitx5 的、macOS 的）先处理，设成它们 WowType 收不到。
+
+想让**每个新窗口、新应用**都先回到中文或英文（比如每次切回终端都是英文，省得再按 Shift），在设置「输入 → 默认状态 → 默认中/英文」里选中文或英文；默认「和上次一样」（和以前一样：Linux 上所有窗口一个中英文，macOS、Windows 上每个应用记着自己的）。Linux、macOS、Windows 都有（Windows 设置窗口在「常规」页）。见 [#254](https://github.com/Gloridust/WowType/issues/254)。
 
 #### Shift 被 fcitx5 占了
 
@@ -367,7 +392,7 @@ end })
 vim.api.nvim_create_autocmd("InsertEnter", { callback = function() vim.fn.system({ bin, "--mode", mode }) end })
 ```
 
-中文标点自动转全角（`,` → ，`?` → ？，`^` → ……，`_` → ——，`$` → ￥，`` ` `` → ·，`{` `}` → 「」），引号左右交替（`"` → “ ”，`'` → ‘ ’），数字后面的符号保持英文（`3.14`、`20:22`、`3,000`、`50%`）；设置「输入 → 标点样式」可以改成半角（英文标点）。`/`、`+`、`=`、`@`、`#`、`%`、`&`、`*` 这类符号原样上屏；打拼音途中按它们，先上屏当前候选。
+中文标点自动转全角（`,` → ，`?` → ？，`^` → ……，`_` → ——，`$` → ￥，`` ` `` → ·，`{` `}` → 「」），引号左右交替（`"` → “ ”，`'` → ‘ ’），数字写法里的符号保持英文（`3.14`、`20:22`、`3,000`、`50%`、`3~5`），顿号、问号这类没有半角形态的照常全角（`1\` → `1、`）；设置「输入 → 默认状态 → 默认全角/半角」可以改成半角（英文标点）。`/`、`+`、`=`、`@`、`#`、`%`、`&`、`*` 这类符号原样上屏；打拼音途中按它们，先上屏当前候选。
 
 设置「输入」页可以打开**中文标点自动配对**（默认关）：打 `(` `[` `<` `{` `"` `'` 上屏成对的（）【】《》「」“”‘’，光标放到中间；在里面打完再按右半边跳过补好的那个，里面空着时按退格两个一起删。macOS 上要应用告诉输入法光标在哪（终端这类应用里不配对，照常一个一个上屏）。
 
@@ -468,8 +493,8 @@ vim.api.nvim_create_autocmd("InsertEnter", { callback = function() vim.fn.system
 
 | 页面 | 能改什么 |
 |---|---|
-| 常规 | 候选排列（横排 / 竖排）、每页个数（3–9）、WowType 绿色主题（见[主题](#主题)）、候选字号。还会检查 WowType 有没有加进 fcitx5 的输入法列表，没有的话一键添加；底下的「帮助」能[导出日志](#出问题时导出日志) |
-| 输入 | 词库（默认雾凇，可下载切换到[万象](docs/CONFIG.md#可选词库万象拼音)）、输入方案（拼音、双拼、五笔）、双拼方案（自然码、小鹤、微软、搜狗、智能 ABC、紫光、拼音加加）、五笔的四码唯一自动上屏和编码提示、单按哪个 Shift 切中英文（和 fcitx5 抢 Shift 时提示并能一键让出）、另设一个切换中英文的快捷键、互译的快捷键、切到 WowType 时是中文还是英文、模糊音（16 组分别开关：z=zh、c=ch、s=sh、n=l、f=h、r=l、an=ang、an=ai、ian=iang、uan=uang、huang=wang、en=eng、eng=ong、in=ing、un=ong、un=iong）、按错键自动纠正、繁体字、中文标点自动配对、日期时间、计算器、v + 空格工具栏、剪贴板历史、联想、中英文之间自动加空格、分号引号选第 2/3 个候选 |
+| 常规 | 候选排列（横排 / 竖排）、每页个数（3–9）、WowType 绿色主题（见[主题](#主题)）、候选字号、设置窗口自己的主题和强调色。还会检查 WowType 有没有加进 fcitx5 的输入法列表，没有的话一键添加；底下的「帮助」能[导出日志](#出问题时导出日志) |
+| 输入 | 词库（默认雾凇，可下载切换到[万象](docs/CONFIG.md#可选词库万象拼音)）、输入方案（拼音、双拼、五笔）、双拼方案（自然码、小鹤、微软、搜狗、智能 ABC、紫光、拼音加加）、五笔的四码唯一自动上屏和编码提示、默认中/英文（换到新窗口、新应用时用；默认和上次一样）、默认全角/半角、单按哪个 Shift 切中英文（和 fcitx5 抢 Shift 时提示并能一键让出）、另设一个切换中英文的快捷键、互译的快捷键、切到 WowType 时是中文还是英文、模糊音（16 组分别开关：z=zh、c=ch、s=sh、n=l、f=h、r=l、an=ang、an=ai、ian=iang、uan=uang、huang=wang、en=eng、eng=ong、in=ing、un=ong、un=iong）、按错键自动纠正、繁体字、中文标点自动配对、日期时间、计算器、v + 空格工具栏、剪贴板历史、联想、中英文之间自动加空格、分号引号选第 2/3 个候选 |
 | 表情 | 打字时推荐 emoji、表情面板快捷键 |
 | 语音 | 下载 / 删除识别模型（有进度、能取消）；下载好模型后才能打开语音输入；语音键（右 Alt / 右 Ctrl / 菜单键 / F8–F10）、识别结果同时复制到剪贴板 |
 | 翻译 | [互译](#互译)开关、翻成哪种语言、正式语气；翻译引擎：本地翻译（默认，下载、闲置释放）、哔哩哔哩（免费，不用 Key；挑模型、测试连接）或自定义翻译服务（服务商、地址、Key、模型、测试连接） |
@@ -510,6 +535,9 @@ WowType 默认用自己的绿色主题：选中的词是图标里的那种绿，
 
 主题文件在 `themes/`：`themes/fcitx5/` 是经典界面主题，图片由 `themes/src/*.svg` 经 `themes/render.sh` 生成；`themes/gnome-shell/` 是 GNOME 扩展。
 
+**设置窗口自己也能换主题和颜色**（不影响候选框）：「WowType 设置 → 常规 → 设置窗口」里选「跟随系统 / 浅色 / 深色」和强调色，
+改完马上生效，macOS、Windows 的设置窗口也有。系统是深色、设置窗口却显示成浅色时，固定成深色就好，见 [docs/CONFIG.md](docs/CONFIG.md#设置窗口的主题和强调色)。
+
 ### 更新
 
 用 deb 包装的会自动检查更新：切到 WowType 时在后台查一下（最多一小时一次），
@@ -526,7 +554,7 @@ WowType 默认用自己的绿色主题：选中的词是图标里的那种绿，
 | KDE Wayland 下已经开着的程序能打字，新打开的程序打不了 | fcitx5 是用 `fcitx5 -r` 或托盘「重新启动」重启的，没经过 KWin。运行 `wowtype-config --restart-fcitx`，或注销再登录 |
 | 某个程序里打不了中文，别的程序可以 | 重启 fcitx5 以后 Chrome / Electron 程序要彻底退出再打开 |
 | 能打，但候选很少、很多常用词没有 | 没找到词库，用的是演示词库。用安装包装的话重装一遍（安装包自带词库）；从源码装的先跑 `scripts/make-data.sh "" dist/data`，再 `sudo cmake --install build`（词库跟着一起装） |
-| 第一次切到 WowType 时要等一两秒 | 正常：第一次要载入词库并生成快照，之后约 0.3 秒 |
+| 第一次切到 WowType 时要等一两秒 | 正常：第一次要载入词库并生成快照，之后约 0.1 秒 |
 | 按右 Alt 提示「没有语音模型」 | 到 WowType 设置的「语音」页点「下载」（或运行 `wowtype-config --install-voice-model`） |
 | 按右 Alt 提示「开不了麦克风」 | 在系统设置的「声音」里确认有输入设备；`arecord -l` 应该能列出麦克风 |
 | 按 Super + . 打不开表情面板 | 只在 WowType 是当前输入法时有效；桌面或别的程序占了这个键的话，到设置里换成 Ctrl + ; |

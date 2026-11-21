@@ -20,10 +20,11 @@ class WowTypeInputController: IMKInputController {
     private var lastMarked = (text: "", cursor: 0)
     /// 最近上屏或交给应用的最后一个字。很多应用读不到光标前的字（attributedSubstring 返回 nil），用它兜底。
     private var lastInserted: UInt32 = 0
-    /// 上一次单按 Shift 切换时那个事件的时刻（NSEvent.timestamp）
+    /// 上一次松开 Shift 那个事件的时刻（NSEvent.timestamp）
     private var lastShiftTap: TimeInterval = -.infinity
-    /// 单按切换以后这么久以内又「按下」的 Shift 不算：Electron 的应用有时把一次按下松开报成两遍
-    /// （或者晚一点重发原来的事件），人连按两下没有这么快
+    /// 松开 Shift 以后这么久以内又「按下」的 Shift 不算：Electron 的应用有时把一次按下松开报成两遍
+    /// （或者晚一点重发原来的事件），人连按两下没有这么快。单按先等双击（#253）、松开时还没切，
+    /// 所以每次松开都记，不然重报的那一遍会被当成双击，单按就切不了
     static let shiftBounce: TimeInterval = 0.05
     /// 照哪一版设置配的会话（AppState.configGeneration）
     private var configGeneration = -1
@@ -56,10 +57,19 @@ class WowTypeInputController: IMKInputController {
     private func startTranslatePolling() {
         guard translateTimer == nil else { return }
         let timer = Timer(timeInterval: Self.translatePollInterval, repeats: true) { [weak self] timer in
-            guard let self, self.composer.pollTranslation() else {
+            guard let self else {
                 timer.invalidate()
-                self?.translateTimer = nil
                 return
+            }
+            let mode = self.composer.mode
+            let more = self.composer.pollTranslation()
+            if self.composer.mode != mode {
+                // 单按 Shift 等双击等到了时间（#253）：这时才切，弹「中 / 英」提示
+                self.showModeHint()
+            }
+            if !more {
+                timer.invalidate()
+                self.translateTimer = nil
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -223,7 +233,8 @@ class WowTypeInputController: IMKInputController {
         if down && event.timestamp - lastShiftTap < Self.shiftBounce {
             return
         }
-        if composer.shiftChanged(down: down, otherModifiers: flags & others != 0, now: composer.clock(), right: right) {
+        composer.shiftChanged(down: down, otherModifiers: flags & others != 0, now: composer.clock(), right: right)
+        if !down {
             lastShiftTap = event.timestamp
         }
     }
@@ -235,16 +246,45 @@ class WowTypeInputController: IMKInputController {
         syncComposer(force: true)
         // 从别的输入法切回来（不是换应用、换窗口）、这个进程里第一次用到这个输入框：按「切到 WowType 时」定中 / 英
         // （InitialMode，和 Linux 一样；macOS 每个应用一份模式，新的一轮里每个输入框定一次）
-        let generation = AppState.shared.noteActivated()
+        let (generation, switchedBack) = AppState.shared.noteActivated()
         if initialModeGeneration != generation {
             initialModeGeneration = generation
             composer.applyInitialMode()
+        }
+        // 换到别的应用、别的窗口：设了「默认中/英文」就定一次（WindowMode，#254；默认和上次一样，不动）。
+        // 刚从别的输入法切回来的这一下按上面的 InitialMode，别让两边抢着定
+        if AppState.shared.config.windowMode != .same {
+            let moved = AppState.shared.noteWindow(focusKey())
+            if moved && !switchedBack {
+                composer.applyWindowMode()
+            }
         }
         AppState.shared.activeController = self
         // 剪贴板历史（设置里打开时）：切换输入框时看一眼（和 Linux 一样，另外打开工具栏的剪贴板页时也看）
         AppState.shared.sampleClipboard()
         // 每天最多查一次有没有新版本（后台，有新版时菜单里多一项）
         AppState.shared.checkUpdateIfDue()
+    }
+
+    /// 现在用 WowType 的是哪个应用的哪个窗口（WindowMode）：应用的 bundle id + 它最前面的普通窗口的窗口号。
+    /// 窗口号不要「屏幕录制」权限（只看窗口号和所属进程，不读标题）；问不到时只看应用。
+    private func focusKey() -> String {
+        let app = textInput?.bundleIdentifier() ?? ""
+        return WindowFocus.key(app: app, window: Self.frontWindow(of: app))
+    }
+
+    private static func frontWindow(of bundle: String) -> Int? {
+        guard !bundle.isEmpty,
+              let pid = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first?.processIdentifier,
+              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                       kCGNullWindowID) as? [[String: Any]] else { return nil }
+        // 从前往后排的，第一个是这个应用最前面的窗口；只看普通窗口那一层（菜单、浮条不算）
+        for info in windows {
+            guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
+                  (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0 else { continue }
+            return (info[kCGWindowNumber as String] as? NSNumber)?.intValue
+        }
+        return nil
     }
 
     override func deactivateServer(_ sender: Any!) {
@@ -388,19 +428,32 @@ extension WowTypeInputController: TextClient {
         modeHintTimer = timer
     }
 
-    /// 应用告诉的光标前一个字；读不到是 nil。打字途中光标在编辑区里，要看编辑区前面那个字。
+    /// 应用告诉的光标前一个字；光标在开头、应用说得清（见 caretAtStartIsKnown）是 0；读不到是 nil。
+    /// 打字途中光标在编辑区里，要看编辑区前面那个字。
     private var clientPreviousCharacter: UInt32? {
         guard let client = textInput else { return nil }
         let marked = client.markedRange()
         let location = marked.location != NSNotFound && marked.length > 0
             ? marked.location : client.selectedRange().location
-        guard location != NSNotFound, location > 0,
-              let text = client.attributedSubstring(from: NSRange(location: location - 1, length: 1))?.string,
+        guard location != NSNotFound else { return nil }
+        if location == 0 {
+            return caretAtStartIsKnown(client) ? 0 : nil
+        }
+        guard let text = client.attributedSubstring(from: NSRange(location: location - 1, length: 1))?.string,
               let scalar = text.unicodeScalars.last
         else {
             return nil
         }
         return scalar.value
+    }
+
+    /// 光标在位置 0 时光标前确实没有字（输入框清空了、光标挪到了开头）：应用读得出开头的字，或者整个输入框是空的。
+    /// 会话拿它清掉自己记的上文，和 fcitx5、Windows 一样。终端不算（位置是假的）；什么都不说的应用位置是 NSNotFound，到不了这里
+    private func caretAtStartIsKnown(_ client: IMKTextInput & NSObjectProtocol) -> Bool {
+        if WowTypeInputController.terminalApps.contains(client.bundleIdentifier() ?? "") {
+            return false
+        }
+        return client.length() == 0 || readable(client, NSRange(location: 0, length: 1))
     }
 
     var previousCharacterIsReliable: Bool {

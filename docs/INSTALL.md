@@ -19,7 +19,7 @@ WowType 是 Fcitx 5 的输入法插件。安装时需要让插件、Fcitx 5 和�
 | deepin 23 / 25 | 对应版本 deb | 只有 amd64；不改输入法框架（deepin 默认就是 fcitx5） |
 | Mint / Pop!_OS 等衍生版 | 明确声明兼容基线时使用 deb | `jammy → ubuntu22.04`、`noble → ubuntu24.04`、`resolute → ubuntu26.04`、`trixie → debian13` |
 | Fedora 43 / 44 / 45 | 对应 `.fc<版本>` RPM | x86_64、aarch64；一键安装只匹配当前系统版本 |
-| openSUSE Tumbleweed | 本机源码安装 | 独立的 zypper 依赖和 Fcitx 插件路径 |
+| openSUSE Tumbleweed | 一键安装（本机源码编译）或手动源码安装 | 脚本问过后用 zypper 装编译依赖，下载这一版源码和词库包编译安装 |
 | NixOS / Home Manager | flake | x86_64、aarch64；与系统共用 nixpkgs，注册到 Fcitx 插件列表 |
 | Fedora Atomic | 宿主 `rpm-ostree` 分层 | 普通 dnf 安装脚本会给出手动说明 |
 
@@ -39,6 +39,10 @@ curl -fsSL https://raw.githubusercontent.com/Gloridust/WowType/main/install.sh |
 下载目标来自当前仓库，按系统和 CPU 架构选择 `.deb`、`.pkg.tar.zst` 或 `.rpm`，每个文件都校验 SHA256。
 缺少匹配包、校验记录重复、哈希不符或下载失败时，脚本在安装前停止。
 Arch 不会替你升级整个系统；提示依赖不满足时，先运行 `sudo pacman -Syu` 再重新安装。
+openSUSE Tumbleweed 没有预编译包：脚本先列出下面[第 1 节](#opensuse-tumbleweed)的 zypper 编译依赖并询问，
+再下载所选版本 tag 的源码压缩包和 Release 里的词库包 `wowtype-data-rime-ice-*.tar.gz`（词库包按 SHA256 校验），
+按[第 4 节](#4-通用源码编译与安装)编译、`sudo cmake --install` 装到 `/usr`，最后同样把 WowType 加进 Fcitx 5 输入法列表。
+已经装了 `cargo`（比如用 rustup）时不再装 `rust`、`cargo` 包。编译依赖装不上时先 `sudo zypper dup` 再重新安装。
 
 查看安装目标、固定版本或保留当前桌面设置：
 
@@ -53,6 +57,33 @@ WOWTYPE_NO_IM_CONFIG=1 WOWTYPE_NO_RESTART=1 bash install.sh
 `--print-plan` 不查询网络、不安装软件、不修改配置。`WOWTYPE_YES=1` 可用于非交互安装。
 `WOWTYPE_REPO=owner/repo` 可选择其他发布仓库；系统和版本的匹配规则仍然生效。
 对应发行版的 Release 资产不存在时，请从本仓库源码构建。
+
+### 连不上 GitHub
+
+在中国大陆等地，`raw.githubusercontent.com` 和 Release 下载常被重置或超时，第一行命令就会报
+`curl: (35) Recv failure: 连接被对方重置`、`Connection reset by peer` 或超时。这不是链接失效，是连不上 GitHub。
+
+脚本本身可以从 jsDelivr 下载（它镜像本仓库的文件，`@main` 可能比 GitHub 晚几个小时）：
+
+```bash
+curl -fsSL https://cdn.jsdelivr.net/gh/Gloridust/WowType@main/install.sh | bash
+```
+
+安装包、`SHA256SUMS`、查最新版本和 openSUSE 的源码包仍从 GitHub 下载。这些也连不上时，可以自己选一个
+GitHub 下载代理，用 `WOWTYPE_GITHUB_MIRROR` 告诉脚本：
+
+```bash
+curl -fsSL https://cdn.jsdelivr.net/gh/Gloridust/WowType@main/install.sh | WOWTYPE_GITHUB_MIRROR=https://<代理地址>/ bash
+```
+
+- 代理要支持「代理地址 + 完整 GitHub 地址」这种用法，例如 `https://<代理地址>/https://github.com/...`。
+  脚本给 github.com、raw.githubusercontent.com 和 Release 文件的地址都加上这个前缀，别的地址不动。
+  WowType 不提供、也不推荐具体的代理：这类服务都是第三方的，能看到你下载了什么，也可能停用。用哪个由你决定。
+- 设了代理，脚本会先说一句下载走第三方代理。`SHA256SUMS` 仍然先直接从 GitHub 下载，安装包按它校验；
+  直连失败才改从代理下载，这时脚本会说明：校验值也来自代理，只能发现下载损坏，发现不了代理改包。
+- 没设代理时下载遇到连接错误，脚本会提示上面这两种办法。
+- 用 `bash install.sh --print-plan` 可以确认代理前缀（会显示「GitHub 代理」一行）。
+- 只对 install.sh 有效：设置界面里的检查更新和 macOS 的检查更新不认这个变量，还是直连 GitHub。
 
 ## 从源码构建
 
@@ -121,15 +152,17 @@ GTK 和 Qt 前端显式安装各自的版本子包，适用于禁用弱依赖的
 
 #### openSUSE Tumbleweed
 
+一键安装脚本会自动做这一节和第 2、4 节（词库用 Release 里的词库包）；下面是手动构建的步骤。
+
 ```bash
 sudo zypper refresh
 sudo zypper install rust cargo gcc-c++ make cmake extra-cmake-modules pkgconf-pkg-config git curl xz \
-  fcitx5 fcitx5-devel fcitx5-configtool fcitx5-gtk3 fcitx5-gtk4 alsa-devel \
+  fcitx5 fcitx5-devel fcitx5-configtool fcitx5-gtk3 fcitx5-gtk4 fcitx5-qt5 fcitx5-qt6 alsa-devel \
   python3 python3-gobject python3-gobject-Gdk \
   typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1
 ```
 
-Qt 应用还需要与应用 Qt 版本对应的 Fcitx 前端，可用 `zypper search fcitx5-qt` 查看仓库提供的子包。
+GTK 和 Qt 前端显式安装各自的版本子包（`fcitx5-qt5`、`fcitx5-qt6`）。
 Python 的实际版本包名会随 Tumbleweed 更新；上面的通用名字采用 [PyGObject 官方安装说明](https://pygobject.gnome.org/getting_started.html#opensuse)。
 
 ### 2. 获取源码与词库

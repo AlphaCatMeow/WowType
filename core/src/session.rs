@@ -110,7 +110,7 @@ pub struct Key {
     /// 松开（按下是 false）。
     pub release: bool,
     /// 应用里光标前一个字符（外壳读周围文字得到），读不到是 None（带 [`key_hints::SURROUNDING`] 时是光标前没有字）。
-    /// 数字后面的标点保持英文、自动空格、核对上文都看它；读不到时标点看会话自己记的上一个字，自动空格不补。
+    /// 数字写法里的标点保持英文、自动空格、核对上文都看它；读不到时标点看会话自己记的上一个字，自动空格不补。
     pub prev_char: Option<char>,
     /// 外壳认出来的全局热键（翻页、移光标），没有是 None。
     pub action: KeyAction,
@@ -240,7 +240,14 @@ pub enum ShiftToggle {
 struct ShiftTap {
     /// 按下的是哪个 Shift（keysym）、按键码、什么时候按下的。
     down: Option<(u32, u32, u64)>,
+    /// 等着看是不是双击（[`Config::shift_double_tap`]）：上一下单按松开的时刻，这一下还没切。
+    pending: Option<u64>,
 }
+
+/// 双击 Shift 的间隔（毫秒，[`Config::shift_double_tap`]）：单按松开以后这么久以内又按下 Shift、
+/// 再单按一下，两下都不算（JetBrains 的双击 Shift 是「到处搜索」，#253）。系统的双击间隔多在 300–500，
+/// 再长单按以后不接着打字时「中 / 英」提示就晚得看得出来。
+pub const SHIFT_DOUBLE_TAP_MS: u64 = 350;
 
 impl Key {
     /// 按下一个键，不带修饰键。
@@ -361,11 +368,12 @@ pub struct Frame {
     pub learned: bool,
     /// 这次调用以后的输入模式。
     pub mode: Mode,
-    /// 这次调用切换了输入模式（单按 Shift、set_mode）：外壳更新状态栏、提示。
+    /// 这次调用切换了输入模式（单按 Shift、set_mode）：外壳更新状态栏、提示。开着
+    /// [`Config::shift_double_tap`] 时等着双击的那一下单按在 tick、别的键（OBSERVE 也算）里切。
     pub mode_changed: bool,
     /// 互译中（「译」、有翻译器、输入框能翻译）：外壳画原文、译文、提示。
     pub translate: Option<TranslateView>,
-    /// 大于 0：过这么久（毫秒）调一次 [`Session::tick`]（等译文、等发请求）。
+    /// 大于 0：过这么久（毫秒）调一次 [`Session::tick`]（等译文、等发请求、单按 Shift 等双击）。
     pub wake_after_ms: u32,
     /// 候选框上方的提示（工具栏、表情面板），没有是空串。
     pub aux: String,
@@ -521,6 +529,13 @@ pub struct Config {
     pub shift_toggle: ShiftToggle,
     /// 按住 Shift 多久以内松开才算单按（毫秒）：按久了多半是想打大写或者犹豫了。
     pub shift_tap_ms: u32,
+    /// 双击 Shift 不切换（#253，JetBrains 的双击 Shift 是「到处搜索」）：单按以后先不切，等
+    /// [`SHIFT_DOUBLE_TAP_MS`]；这么久以内又单按一下就两下都不算，模式不变、frame 里也没有切换。
+    /// 没等到第二下：按了别的键（这个键照切了以后的模式处理）、到了时间（[`Session::tick`]）、
+    /// 第二下没算成单按时才切。外壳要会按 frame 的 `wake_after_ms` 调 tick，并且跟着 tick、
+    /// OBSERVE、Shift 的 frame 里的 `mode_changed`，所以默认关（C 接口里旧外壳没给这一项时也是关）。
+    /// 按键没带时刻（`time_ms` 为 0）时照旧立刻切。
+    pub shift_double_tap: bool,
     /// 有「译」（外壳配好了翻译服务才开）：单按 Shift 的循环里有它（中 → 英 → 译 → 中），
     /// [`KeyAction::ToggleTranslate`] 进得去。
     pub translate_mode: bool,
@@ -565,6 +580,7 @@ impl Default for Config {
             auto_space: 0,
             shift_toggle: ShiftToggle::Both,
             shift_tap_ms: 500,
+            shift_double_tap: false,
             translate_mode: false,
             translate_key: false,
             toolbar: true,
@@ -677,6 +693,9 @@ pub struct Session<'e> {
     /// 会话自己记的上一个字：上屏的最后一个字，或者交给应用的数字、标点。
     /// 外壳读不到周围文字时，标点看它（3.14 的点）。
     last_char: Option<char>,
+    /// 上一个键是交给应用的退格：那时外壳报的光标前的字（#260）。应用删字、再报新的周围文字是异步的，
+    /// 紧接着的下一个键报来的要是还和退格时一样，多半还是删之前的（删掉的那个数字），不能当真。
+    backspace_prev: Option<Option<char>>,
     /// 这次按键时外壳给的输入框情况（[`key_hints`]）。
     hints: u32,
     mode: Mode,
@@ -749,6 +768,7 @@ impl Default for Session<'_> {
             quotes: [false; 2],
             prev_char: None,
             last_char: None,
+            backspace_prev: None,
             hints: 0,
             mode: Mode::Chinese,
             mode_changed: false,
@@ -858,6 +878,23 @@ impl<'e> Session<'e> {
         if key.release {
             return self.frame(false);
         }
+        // 退格交给了应用以后，下一个键报来的光标前的字还和退格时一样：多半是应用还没报新的（删掉的数字还在），
+        // 当作不知道（#260：删掉数字以后标点还是半角）。连按两个一样的字再删一个（11 删成 1）也会这样当，
+        // 只是那一下标点按汉字后面的算，比一直半角好
+        let stale = !is_modifier_keysym(key.keysym)
+            && self.backspace_prev.take().is_some_and(|before| key.prev_char.is_some() && before == key.prev_char);
+        let key = &if stale {
+            Key {
+                prev_char: None,
+                hints: key.hints & !key_hints::SURROUNDING,
+                ..*key
+            }
+        } else {
+            *key
+        };
+        if stale {
+            self.last_char = None;
+        }
         self.prev_char = key.prev_char;
         self.next_char = key.next_char;
         self.hints = key.hints;
@@ -889,6 +926,10 @@ impl<'e> Session<'e> {
             }
             if !self.composing() {
                 self.set_context("");
+            }
+            if key.keysym == keysym::BACKSPACE && !self.composing() {
+                self.backspace_prev = Some(key.prev_char);
+                self.last_char = None;
             }
             self.pair_key_passed(key);
         }
@@ -1122,6 +1163,11 @@ impl<'e> Session<'e> {
         if (u32::from(b'a')..=u32::from(b'z')).contains(&sym)
             || (u32::from(b'A')..=u32::from(b'Z')).contains(&sym)
         {
+            // 开着大写锁定、没在打字时，字母照英文直接上屏（API、HTTP），不进拼音（#271、#264，和主流输入法一样）。
+            // 打字途中照旧进编辑区；Shift + 字母（Hello、iPhone）不受影响
+            if key.modifiers & modifier::CAPS != 0 && !self.composing() {
+                return self.english_key(key);
+            }
             let c = char::from(sym as u8);
             if self.wubi() && !self.temp_pinyin() {
                 self.wubi_letter(c);
@@ -1183,6 +1229,11 @@ impl<'e> Session<'e> {
     pub fn tick(&mut self, now_ms: u64) -> Frame {
         self.last_choice = None;
         self.now_ms = now_ms;
+        // 单按 Shift 等双击等到了时间：切（第二下正按着时等它松开再说）
+        let due = self.shift.pending.is_some_and(|at| now_ms.saturating_sub(at) >= SHIFT_DOUBLE_TAP_MS);
+        if due && self.shift.down.is_none() {
+            self.flush_shift_tap();
+        }
         self.poll_translation();
         self.frame(true)
     }
@@ -1757,6 +1808,8 @@ impl<'e> Session<'e> {
     /// 切到 mode（外部命令、设置里的默认模式、外壳全局的模式）。切到英文时打到一半的原样上屏。
     pub fn set_mode(&mut self, mode: Mode) -> Frame {
         self.last_choice = None;
+        // 外面直接定了模式：还在等双击的那一下单按不再切
+        self.shift.pending = None;
         self.switch_mode(mode);
         self.frame(true)
     }
@@ -1814,9 +1867,17 @@ impl<'e> Session<'e> {
     /// 和以前 Linux 外壳的规矩一样：按下时带着 Ctrl / Alt / Super、外壳开着面板时不算；
     /// 按住不放的自动重复不重新计时；松开时按键码认（没有键码时按符号）；
     /// 按下以后按了别的键（按下或松开）就不算；按住超过 shift_tap_ms 不算。
+    ///
+    /// 开着 [`Config::shift_double_tap`] 时单按先记下不切：别的键（OBSERVE 也算）、不算单按的
+    /// Shift、过了双击间隔才按下的 Shift 都让它先切（这个键照切了以后的模式接着处理）；
+    /// 间隔以内又单按一下，两下都不算。
     fn shift_key(&mut self, key: &Key) -> Option<bool> {
         let sym = key.keysym;
         let is_shift = sym == keysym::SHIFT_L || sym == keysym::SHIFT_R;
+        if !is_shift {
+            // 别的键：等双击的那一下单按不等了，先切
+            self.flush_shift_tap();
+        }
         if !key.release {
             if !is_shift {
                 self.shift.down = None;
@@ -1833,10 +1894,16 @@ impl<'e> Session<'e> {
             if wanted && !other && !panel {
                 let held = matches!(self.shift.down, Some((s, _, _)) if s == sym) && key.repeat;
                 if !held {
+                    // 过了双击间隔才按下：上一下单按照切，这一下重新算
+                    let late = |at: u64| key.time_ms.saturating_sub(at) > SHIFT_DOUBLE_TAP_MS;
+                    if key.time_ms != 0 && self.shift.pending.is_some_and(late) {
+                        self.flush_shift_tap();
+                    }
                     self.shift.down = Some((sym, key.code, key.time_ms));
                 }
             } else {
                 self.shift.down = None;
+                self.flush_shift_tap();
             }
             return None;
         }
@@ -1858,10 +1925,38 @@ impl<'e> Session<'e> {
         self.shift.down = None;
         let held_ms = key.time_ms.saturating_sub(down_at);
         if key.time_ms != 0 && down_at != 0 && held_ms > u64::from(self.config.shift_tap_ms) {
+            // 第二下按太久不算单按：第一下照切
+            self.flush_shift_tap();
+            return Some(false);
+        }
+        if self.shift.pending.take().is_some() {
+            // 双击：第二下在间隔以内按下（晚了的在按下时已经切过了），两下都不算
+            return Some(false);
+        }
+        if self.config.shift_double_tap && key.time_ms != 0 {
+            // 先不切，等等看有没有第二下（frame 的 wake_after_ms 叫外壳到时间调 tick）
+            self.shift.pending = Some(key.time_ms);
             return Some(false);
         }
         self.toggle_mode();
         Some(true)
+    }
+
+    /// 还在等双击的那一下单按：现在切（没等来第二下）。
+    fn flush_shift_tap(&mut self) {
+        if self.shift.pending.take().is_some() {
+            self.toggle_mode();
+        }
+    }
+
+    /// 等双击时外壳过多久调 tick；不在等是 0。第二下正按着时不用叫：松开时就知道了。
+    fn shift_wake_ms(&self) -> u32 {
+        match self.shift.pending {
+            Some(at) if self.shift.down.is_none() => {
+                (at + SHIFT_DOUBLE_TAP_MS).saturating_sub(self.now_ms).clamp(1, SHIFT_DOUBLE_TAP_MS) as u32
+            }
+            _ => 0,
+        }
     }
 
     /// 英文模式、没在打字：按键交给应用；汉字后面打字母、数字要补空格时自己连空格一起上屏。
@@ -1883,7 +1978,7 @@ impl<'e> Session<'e> {
     /// 字母、隔音符以外的可见 ASCII 字符（标点、符号、数字），会话的选词、翻页规则都没用上它时。
     ///
     /// - 正在输入：先上屏候选（光标停在句首词上时接着选，直到整句上屏），再上屏这个字符
-    ///   （全角样式下有中文标点的换成中文标点，数字后面的保持英文）
+    ///   （全角样式下有中文标点的换成中文标点，数字写法里的符号保持英文）
     /// - 没在输入：有中文标点的换成中文标点上屏；数字前面要补空格（汉字后面打数字）就自己上屏；
     ///   别的交给应用
     fn symbol_key(&mut self, c: char, key: &Key) -> bool {
@@ -1906,7 +2001,7 @@ impl<'e> Session<'e> {
             return true;
         }
         if self.translating() {
-            // 互译时打的字都进原文：数字、没有中文写法的符号、数字后面的点（3.14）也是
+            // 互译时打的字都进原文：数字、没有中文写法的符号、数字写法里的点（3.14）也是
             let text = self.punct_text(c, self.last_char).unwrap_or_else(|| c.to_string());
             self.emit(&text);
             return true;
@@ -1938,7 +2033,7 @@ impl<'e> Session<'e> {
     ///
     /// - 右标点正好是最里面那一对的右半边：不上屏，光标右移跳过补好的那个。不管前面是什么字，
     ///   数字后面也跳（（3）），应用说光标后面不是它时（光标早挪走了）配对作废、照常上屏
-    /// - 左标点（数字后面的照常是半角，不配对）：上屏成对的，光标左移一格放到中间
+    /// - 左标点（数字后面保持半角的不配对）：上屏成对的，光标左移一格放到中间
     fn auto_pair_key(&mut self, c: char, prev: Option<char>) -> bool {
         if !self.config.auto_pair_punct || self.config.punct_style != PunctStyle::Fullwidth || self.translating() {
             return false;
@@ -1952,7 +2047,8 @@ impl<'e> Session<'e> {
                 self.pairs.clear();
             }
         }
-        if prev.is_some_and(|p| p.is_ascii_digit()) {
+        // 数字后面保持半角的（a[3] 的 [）不配对；括号、引号数字后面也是中文的（#250），照常配对
+        if prev.is_some_and(|p| p.is_ascii_digit()) && crate::symbols::numeric_punct(c) {
             return false;
         }
         let Some((open, close)) = crate::symbols::auto_pair(c) else {
@@ -2041,7 +2137,7 @@ impl<'e> Session<'e> {
         }
     }
 
-    /// c 在全角样式下换成的中文标点；半角样式、数字后面、没有中文标点的是 None。
+    /// c 在全角样式下换成的中文标点；半角样式、数字写法里的符号、没有中文标点的是 None。
     fn punct_text(&mut self, c: char, prev: Option<char>) -> Option<String> {
         crate::symbols::punct_with(c, self.config.punct_style, prev, &mut self.quotes).map(str::to_owned)
     }
@@ -2674,7 +2770,7 @@ impl<'e> Session<'e> {
             mode: self.mode,
             mode_changed: std::mem::take(&mut self.mode_changed),
             translate: None,
-            wake_after_ms: 0,
+            wake_after_ms: self.shift_wake_ms(),
             aux: String::new(),
             preedit_cursor,
             preedit,
@@ -2695,7 +2791,9 @@ impl<'e> Session<'e> {
         }
         if let Some((view, wake)) = self.translate_view() {
             frame.translate = Some(view);
-            frame.wake_after_ms = wake;
+            if wake > 0 && (frame.wake_after_ms == 0 || wake < frame.wake_after_ms) {
+                frame.wake_after_ms = wake;
+            }
         }
         frame.aux = self.notice(n);
         if n == 0 {
@@ -3499,31 +3597,8 @@ fn utf8_tail(text: &str, max_bytes: usize) -> &str {
 }
 
 /// 本地时间（日期时间候选用）。
-#[cfg(unix)]
 pub fn system_time() -> Option<LocalTime> {
-    let mut now: libc::time_t = 0;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: time 和 localtime_r 只写我们给的两个变量
-    unsafe {
-        libc::time(&mut now);
-        if libc::localtime_r(&now, &mut tm).is_null() {
-            return None;
-        }
-    }
-    Some(LocalTime {
-        year: tm.tm_year + 1900,
-        month: (tm.tm_mon + 1).max(0) as u32,
-        day: tm.tm_mday.max(0) as u32,
-        hour: tm.tm_hour.max(0) as u32,
-        minute: tm.tm_min.max(0) as u32,
-        second: tm.tm_sec.max(0) as u32,
-        weekday: tm.tm_wday.max(0) as u32,
-    })
-}
-
-#[cfg(not(unix))]
-pub fn system_time() -> Option<LocalTime> {
-    None
+    crate::platform::local_now()
 }
 
 #[cfg(test)]
@@ -3564,6 +3639,51 @@ mod tests {
         };
         assert!(!session.key(&release).handled);
         assert_eq!(session.input(), "ni");
+    }
+
+    #[test]
+    fn caps_lock_letters_go_straight_to_the_app() {
+        // #271、#264：开着大写锁定打 API，不进拼音编辑区，字母交给应用（或者自己上屏）
+        let mut session = Session::new();
+        for c in ['A', 'P', 'I'] {
+            let caps = Key {
+                keysym: c as u32,
+                modifiers: modifier::CAPS,
+                ..Key::default()
+            };
+            let frame = session.key(&caps);
+            assert!(!session.composing(), "{c} 进了编辑区");
+            assert!(!frame.handled || frame.commit.as_deref() == Some(&c.to_string()[..]), "{c}: {frame:?}");
+        }
+        // 打字途中照旧进编辑区；没开大写锁定时 Shift + 字母也照旧（Hello）
+        let mut session = typed("ni");
+        let caps_a = Key { keysym: u32::from(b'A'), modifiers: modifier::CAPS, ..Key::default() };
+        session.key(&caps_a);
+        assert_eq!(session.input(), "niA");
+        assert_eq!(typed("Hello").input(), "Hello");
+    }
+
+    #[test]
+    fn deleted_digit_does_not_keep_punctuation_half_width() {
+        // #260：打了 1、退格删掉，应用还没报新的周围文字（还说光标前是 1），接着打逗号要是中文逗号
+        let with_prev = |keysym: u32, prev: char| Key {
+            keysym,
+            prev_char: Some(prev),
+            hints: key_hints::SURROUNDING,
+            ..Key::default()
+        };
+        let mut session = Session::new();
+        session.key(&with_prev(u32::from(b'1'), '好'));
+        assert!(!session.key(&with_prev(keysym::BACKSPACE, '1')).handled);
+        let frame = session.key(&with_prev(u32::from(b','), '1'));
+        assert_eq!(frame.commit.as_deref(), Some("，"), "{frame:?}");
+        // 应用报了新的（光标前是「好」）：照常中文标点；真的在数字后面（没按退格）：照旧半角
+        let mut session = Session::new();
+        session.key(&with_prev(keysym::BACKSPACE, '1'));
+        assert_eq!(session.key(&with_prev(u32::from(b','), '好')).commit.as_deref(), Some("，"));
+        let mut session = Session::new();
+        let frame = session.key(&with_prev(u32::from(b','), '1'));
+        assert!(!frame.handled || frame.commit.as_deref() == Some(","), "{frame:?}");
     }
 
     #[test]

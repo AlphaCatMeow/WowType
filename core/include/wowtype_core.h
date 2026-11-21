@@ -16,7 +16,7 @@
  * 删函数或改参数含义时升主版本。外壳启动时用 wowtype_abi_version() 比对主版本。
  * 规则见 docs/ABI.md。 */
 #define WOWTYPE_ABI_VERSION_MAJOR 1
-#define WOWTYPE_ABI_VERSION_MINOR 12
+#define WOWTYPE_ABI_VERSION_MINOR 15
 
 #ifdef __cplusplus
 extern "C" {
@@ -78,6 +78,11 @@ int wowtype_engine_set_shuangpin(WowtypeEngineHandle *engine, int on);
  * 返回 0 成功，-1 不认识。 */
 int wowtype_engine_set_shuangpin_scheme(WowtypeEngineHandle *engine, const char *name);
 
+/* 双拼的简拼（1.15 起），默认开：每个键都是声母时（sm、自然码的 vg）也当成只打了声母的简拼
+ * （什么、中国）。同样的键按双拼也读得通、有词时（小鹤的 zg 是 zeng），双拼读出来的排在前面，
+ * 简拼的词只往后加。返回 0 成功。 */
+int wowtype_engine_set_shuangpin_abbrev(WowtypeEngineHandle *engine, int on);
+
 /* 这个双拼方案有没有用分号键（微软、搜狗、紫光的 ing）。 */
 int wowtype_shuangpin_uses_semicolon(const char *name);
 
@@ -100,7 +105,7 @@ int wowtype_engine_load_wubi(WowtypeEngineHandle *engine, const char *path);
 const char *wowtype_fullwidth_punct(int ascii_codepoint);
 
 /* 按标点样式转换：style 0 全角、1 半角；prev 是光标前一个字符（不知道传 0）。
- * 返回 NULL 表示原样上屏这个 ASCII 字符（半角样式、数字后面的符号）。 */
+ * 返回 NULL 表示原样上屏这个 ASCII 字符（半角样式、数字写法里的符号）。 */
 const char *wowtype_punct(int ascii_codepoint, int style, int prev_codepoint);
 
 /* 中英文之间自动补空格（ABI 1.2 起）：prev 是光标前一个字，next 是要上屏的第一个字；
@@ -169,7 +174,10 @@ int wowtype_engine_load_user_dict(WowtypeEngineHandle *engine, const char *path)
 int wowtype_engine_load_custom_words(WowtypeEngineHandle *engine, const char *path);
 
 /* 用户输入习惯：选过的词的热度（30 天半衰期）和词搭配（上一个词 -> 这个词），
- * 参与排序，存成 TSV。save 返回 0 成功；load 返回条数，-1 表示出错。 */
+ * 参与排序，存成 TSV。save 返回 0 成功；load 返回条数，-1 表示出错。
+ * 1.13 起 load 和引擎里已有的合并：同一个词、同一个搭配留最近用过的那份（新建的引擎上读和以前一样）。
+ * load_user_dict 本来就是加进去（并集），1.13 起已经有的词留大的那个频次。几个进程各有一个引擎时（Windows），
+ * 文件变了就读回来合并（别人存的、自己存的都行，不会往回改）。 */
 int wowtype_engine_save_history(WowtypeEngineHandle *engine, const char *path);
 int wowtype_engine_load_history(WowtypeEngineHandle *engine, const char *path);
 
@@ -394,7 +402,7 @@ typedef struct {
     uint32_t modifiers; /* WOWTYPE_MOD_* */
     uint32_t release;   /* 0 按下，1 松开 */
     uint32_t prev_char; /* 应用里光标前一个字符（Unicode 码位），读不到给 0。1.10 起会话按它决定
-                         * 数字后面的标点保持英文（读不到时看会话自己记的上一个字）、要不要自动补空格
+                         * 数字写法里的标点保持英文（读不到时看会话自己记的上一个字）、要不要自动补空格
                          * （读不到就不补），带 WOWTYPE_KEY_HINT_SURROUNDING 时还拿它核对会话记的上文 */
     uint32_t action;    /* WOWTYPE_KEY_ACTION_*（1.6 起） */
     uint32_t hints;     /* 1.10 起：WOWTYPE_KEY_HINT_*，输入框的情况 */
@@ -484,6 +492,12 @@ typedef struct {
                           * frame->cursor_delta 让外壳把光标挪到中间；在里面打完再按右半边跳过补好的那个
                           * （cursor_delta 为 +1），空的一对按退格两个一起删（frame->delete_next）。
                           * 默认 0：外壳要会挪光标、删字才开，设置里 AutoPairPunct 的默认值也是关 */
+    int shift_double_tap; /* 1.14 起：双击 Shift 不切换（JetBrains 的双击 Shift 是「到处搜索」，#253）：单按以后
+                           * 先不切，frame->wake_after_ms 叫外壳过一会儿调 wowtype_session_tick；0.35 秒以内又单按
+                           * 一下就两下都不算（模式不变，没有 mode_changed）。没等到第二下时，按别的键（OBSERVE
+                           * 也算，这个键照切了以后的模式处理）、到了时间（tick）、第二下没算成单按时切，这几个
+                           * frame 都可能带 mode_changed（和 commit：打到一半切英文）。按键没带 time_ms 时照旧立刻切。
+                           * 默认 0：外壳要会这些才开 */
 } WowtypeSessionConfig;
 
 /* 一次调用之后外壳要做的事。归会话所有，和里面的字符串一起在同一个会话的下一次调用前有效。
@@ -505,13 +519,14 @@ typedef struct {
     size_t cand_count;     /* 候选框里显示几个（一页，或展开面板的一屏）；用 wowtype_session_candidate 取 */
     int cand_cursor;       /* 光标在显示的这些里的位置；-1 不在这一页上（翻页按钮翻走以后） */
     int has_prev, has_next; /* 前面 / 后面还有一页（展开面板是一屏） */
-    uint32_t wake_after_ms; /* >0：这么久后再调会话（还没用，恒为 0） */
+    uint32_t wake_after_ms; /* >0：这么久后调 wowtype_session_tick（互译等译文；1.14 起单按 Shift 等双击） */
     int forgot;             /* 1.7 起：这次按键（Ctrl+Delete）让引擎忘掉了一个学过的词，
                              * 外壳该马上存用户词库和输入习惯（和上屏后存的一样） */
     int learned;            /* 1.10 起：这次上屏里有引擎学到的选词（选了引擎的候选、原样上屏输入），
                              * 外壳攒够次数存一次用户词库；只上屏了标点、emoji、计算结果、日期时间是 0 */
     int mode;               /* 1.10 起：这次调用以后的输入模式，WOWTYPE_MODE_* */
-    int mode_changed;       /* 1.10 起：这次调用切换了输入模式（单按 Shift、wowtype_session_set_mode） */
+    int mode_changed;       /* 1.10 起：这次调用切换了输入模式（单按 Shift、wowtype_session_set_mode；
+                             * 1.14 起开着 shift_double_tap 时也可能在 tick、OBSERVE 的 frame 里） */
     int translating;        /* 1.10 起：互译中（「译」、有翻译器、输入框能翻译）。上屏的字攒成原文，
                              * 不进 commit；下面四段字只在互译时有内容，否则是空串（不为 NULL） */
     const char *translate_source; /* 攒着的原文（编辑区里画在拼音前面） */
@@ -689,7 +704,9 @@ int wowtype_stats_set_enabled(WowtypeStats *stats, int enabled);
 int wowtype_stats_enabled(const WowtypeStats *stats);
 
 /* 一次物理按键。platform：0 = X11/fcitx5（code 是 XKB 键码，松开也要传，用来认长按），
- * 1 = macOS（NSEvent.keyCode，只传按下，自动重复外壳自己挡掉）。down 非 0 表示按下。
+ * 1 = macOS（NSEvent.keyCode，只传按下，自动重复外壳自己挡掉），
+ * 2 = Windows（1.13 起；键盘消息 lParam 里的扫描码，带扩展键位的或上 0xE000，只传按下，自动重复外壳挡掉）。
+ * down 非 0 表示按下。
  * 关着、密码框、热力图上没有的键不算。返回 0 成功，-1 参数为 NULL。 */
 int wowtype_stats_key(WowtypeStats *stats, int platform, unsigned int code, int down,
                       unsigned int flags, int64_t now_ms);

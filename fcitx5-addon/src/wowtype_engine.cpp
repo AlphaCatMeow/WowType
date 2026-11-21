@@ -652,12 +652,16 @@ public:
         raw.next_char = nextChar;
         return wowtype_session_key(session_, &raw);
     }
-    void clear() {
-        wowtype_session_reset(session_, 0);
+    /// 清掉编辑区。返回 true：单按 Shift 还在等双击（#253），这一下照切了，外壳的全局模式要跟上。
+    bool clear() {
+        const WowtypeFrame *reset = wowtype_session_reset(session_, 0);
+        bool modeChanged = reset && reset->mode_changed;
         // 按下了 Shift 还没松开，输入框就被重置、失去焦点（Shift+点鼠标选字、按着 Shift 换窗口）：和按住
         // Shift 时按了别的键一样报给会话，再松开就不算单按 Shift、不切中英文
-        sessionKey(FcitxKey_VoidSymbol, 0, WOWTYPE_KEY_ACTION_OBSERVE);
+        const WowtypeFrame *observed = sessionKey(FcitxKey_VoidSymbol, 0, WOWTYPE_KEY_ACTION_OBSERVE);
+        modeChanged = modeChanged || (observed && observed->mode_changed);
         forgetCandidates();
+        return modeChanged;
     }
 
     /// 只丢掉外壳抄的候选和候选框状态，会话的编辑区不动。
@@ -1106,6 +1110,7 @@ void WowtypeEngine::applyConfig() {
     toolbar_ = envOr("WOWTYPE_TOOLBAR", *config_.toolbar);
     clipboardHistory_ = envOr("WOWTYPE_CLIPBOARD_HISTORY", *config_.clipboardHistory);
     shuangpinShowKeys_ = *config_.shuangpinShowKeys;
+    shuangpinAbbrev_ = envOr("WOWTYPE_SHUANGPIN_ABBREV", *config_.shuangpinAbbrev);
     if (!clipboardHistory_) {
         wowtype_clipboard_clear();
     }
@@ -1135,6 +1140,13 @@ void WowtypeEngine::applyConfig() {
                        : name == "off" || name == "0" ? WowtypeShiftToggle::Off
                                                       : WowtypeShiftToggle::Both;
     }
+    // 双击 Shift 不切换（#253，JetBrains 的双击 Shift）：单按先等 0.35 秒再切。设成 0 立刻切
+    // （按键测试里大多数用例按这个测，见 key_harness）
+    shiftDoubleTap_ = true;
+    if (const char *env = std::getenv("WOWTYPE_SHIFT_DOUBLE_TAP"); env && *env) {
+        const std::string value = env;
+        shiftDoubleTap_ = !(value == "0" || value == "off");
+    }
     toggleKey_ = *config_.toggleKey;
     translateModeKey_ = *config_.translateModeKey;
     if (!canToggleMode()) { // 切不回中文了，回到中文
@@ -1142,6 +1154,7 @@ void WowtypeEngine::applyConfig() {
         translateMode_ = false;
     }
     initialMode_ = *config_.initialMode;
+    windowMode_ = *config_.windowMode;
     punctStyle_ = *config_.punctStyle;
     if (const char *env = std::getenv("WOWTYPE_PUNCT_STYLE"); env && *env) {
         const std::string name = env;
@@ -1217,7 +1230,7 @@ void WowtypeEngine::applyConfig() {
     WLOG_I() << "WowType: 设置 " << (horizontal_ ? "横排" : "竖排")
              << (arrowKeys_ == WowtypeArrowKeys::Caret ? " 左右键移光标" : "") << " 每页" << pageSize_
              << " 模糊音=" << fuzzy_ << "(" << fuzzyGroups_ << ")" << " 纠错=" << typo_ << " 扩展区生僻字=" << rareExt_ << " 双拼=" << shuangpin_
-             << "(" << shuangpinScheme_ << ")" << " 五笔=" << wubi_ << " Shift切换=" << static_cast<int>(shiftToggle_)
+             << "(" << shuangpinScheme_ << (shuangpinAbbrev_ ? "，简拼" : "") << ")" << " 五笔=" << wubi_ << " Shift切换=" << static_cast<int>(shiftToggle_)
              << " 繁体=" << traditional_ << " 语音键=" << voiceKey_.toString()
              << " emoji推荐=" << emojiSuggest_ << " 表情键=" << emojiKey_.toString()
              << " 中英键=" << toggleKey_.toString() << " 互译键=" << translateModeKey_.toString()
@@ -1243,6 +1256,7 @@ void WowtypeEngine::applyCoreSettings() {
         WLOG_W() << "WowType: 不认识双拼方案 " << shuangpinScheme_ << "，用自然码";
         wowtype_engine_set_shuangpin_scheme(core_, "ziranma");
     }
+    wowtype_engine_set_shuangpin_abbrev(core_, shuangpinAbbrev_ ? 1 : 0);
     wowtype_engine_set_typo_correction(core_, typo_ ? 1 : 0);
     wowtype_engine_set_rare_ext_chars(core_, rareExt_ ? 1 : 0);
     if (traditional_ && !conversionLoaded_) {
@@ -1522,6 +1536,8 @@ void WowtypeEngine::syncSession(WowtypeState *state) {
     config.wubi_hint = *config_.wubiHint ? 1 : 0;
     config.association = association_ ? 1 : 0;
     config.auto_pair_punct = autoPairPunct_ ? 1 : 0;
+    // 等双击的单按在定时器（tickTranslate）、别的键的 OBSERVE（handleShiftKey）、重置（reset）里切，三处都跟上
+    config.shift_double_tap = shiftDoubleTap_ ? 1 : 0;
     wowtype_session_configure(state->session_, &config);
 }
 
@@ -1635,8 +1651,17 @@ void WowtypeEngine::sendAppKeys(fcitx::InputContext *ic, fcitx::KeySym sym, int 
     if (!ic || count <= 0) {
         return;
     }
-    // 只给 keysym、键码留 0（不同键盘、前端的键码不一样）：D-Bus 前端只传 keysym，要键码的前端按 keysym 找
-    const fcitx::Key key(sym);
+    // 带上 XKB 键码（evdev 的扫描码 + 8，Linux 上各种键盘布局都一样）：Electron、XWayland 这些前端
+    // 不认键码为 0 的键，挪光标、删字都没反应（#259）。D-Bus 前端只看 keysym，带不带都一样
+    int code = 0;
+    switch (sym) {
+    case FcitxKey_BackSpace: code = 22; break;
+    case FcitxKey_Left: code = 113; break;
+    case FcitxKey_Right: code = 114; break;
+    case FcitxKey_Delete: code = 119; break;
+    default: break;
+    }
+    const fcitx::Key key(sym, fcitx::KeyStates(), code);
     for (int i = 0; i < count; ++i) {
         ic->forwardKey(key, false);
         ic->forwardKey(key, true);
@@ -2065,7 +2090,8 @@ void WowtypeEngine::fillAssociation(fcitx::InputPanel &panel, WowtypeState *stat
 
 /// 展开的候选面板：竖排列表的每一项是一行（kGridCols 个词），一屏 kGridRows 行。
 ///
-/// 照微信输入法的样子：光标所在行标 １–６，光标处的词用〔〕框起来；同一屏里各列
+/// 照微信输入法的样子：光标所在行标 １–６，光标处的词用【】框起来（GNOME 的 kimpanel 只会把整行涂绿，
+/// 以前的〔〕太细，一行汉字里找不到光标在哪个词上，#270）；同一屏里各列
 /// 按最宽的词补齐，这样上下键在同一列里走。classic UI 和 kimpanel 都只会画一行或
 /// 一列，画不了真正的网格，所以用全角字符拼出来。
 void WowtypeEngine::fillGridPanel(fcitx::InputContext *ic, WowtypeState *state) {
@@ -2097,9 +2123,9 @@ void WowtypeEngine::fillGridPanel(fcitx::InputContext *ic, WowtypeState *state) 
                 const std::size_t index = r * kGridCols + c;
                 const bool here = index == state->gridCursor_;
                 const fcitx::Text shown = shownCandidate(all[index]);
-                std::string after = here ? "\u3015" : "";
+                std::string after = here ? "\u3011" : "";
                 padTo(after, displayWidth(shown.toString()), widths[c]);
-                line.append(std::string(r == cursorRow ? kLabels[c] : "\u3000") + (here ? "\u3014" : "\u3000"));
+                line.append(std::string(r == cursorRow ? kLabels[c] : "\u3000") + (here ? "\u3010" : "\u3000"));
                 for (std::size_t i = 0; i < shown.size(); ++i) {
                     line.append(shown.stringAt(i), shown.formatAt(i));
                 }
@@ -2334,7 +2360,7 @@ void WowtypeEngine::keyEvent(const fcitx::InputMethodEntry & /*entry*/,
     }
 
     // 没在打字时也交给会话：字母（大写原样保留，Hello、iPhone 要用到）开始编辑区；
-    // 标点换成中文标点（半角样式、数字后面的、没有中文写法的 / + 交给应用）；
+    // 标点换成中文标点（半角样式、数字写法里的符号、没有中文写法的 / + 交给应用）；
     // 汉字后面打数字要补空格时会话自己上屏（第5章）
     if (const WowtypeFrame *frame = sessionKey(ic, state, key); frame && frame->handled) {
         applySessionFrame(ic, state, frame);
@@ -2355,7 +2381,7 @@ void WowtypeEngine::activate(const fcitx::InputMethodEntry & /*entry*/,
     clearTranslation(state);
     coreReady();
     // 从别的输入法切回来（不是换窗口获得焦点）、启动后第一次用：按「切到 WowType 时」定中 / 英
-    // （#158：切走时是英文，切回来还是英文，打不了中文）。换窗口不动，模式照旧全局保持；
+    // （#158：切走时是英文，切回来还是英文，打不了中文）。换窗口默认不动，模式照旧全局保持；
     // 进出密码框时 fcitx5 自己换成键盘布局再换回来（CapabilityChanged），也不算用户切回来。
     bool switchedBack = false;
     if (event.type() == fcitx::EventType::InputContextSwitchInputMethod) {
@@ -2365,6 +2391,11 @@ void WowtypeEngine::activate(const fcitx::InputMethodEntry & /*entry*/,
     if (switchedBack || !initialModeApplied_) {
         initialModeApplied_ = true;
         applyInitialMode(ic, state);
+    }
+    // 换窗口、换应用获得焦点：设了「默认中/英文」就定一次（#254；默认和上次一样，不动）。
+    // 切换输入法的事件优先，别让两边抢着定。
+    if (!switchedBack && event.type() == fcitx::EventType::InputContextFocusIn) {
+        applyWindowMode(ic, state);
     }
     // 最近用过的 emoji 在核心里（所有输入框共用），存在 ~/.local/share/wowtype/emoji-recent.txt
     wowtype_recent_emoji_path(recentEmojiPath().c_str());
@@ -2433,7 +2464,11 @@ void WowtypeEngine::reset(const fcitx::InputMethodEntry & /*entry*/,
     // 原文和拼音一样只在输入法里：应用重置输入框（点了别处、失去焦点）就丢掉，
     // 会话记的上文也作废（回来时光标可能在别处）。编辑区标了 DontCommit，工具包不会自己上屏。
     auto *state = ic->propertyFor(&factory_);
-    state->clear();
+    if (state->clear()) {
+        // 单按 Shift 还在等双击时输入框重置了（点了别处、换了窗口）：那一下照切，全局模式跟上（不弹提示）
+        const int mode = wowtype_session_mode(state->session_);
+        switchMode(ic, state, mode == WOWTYPE_MODE_ENGLISH, mode == WOWTYPE_MODE_TRANSLATE, false);
+    }
     clearTranslation(state);
     ic->inputPanel().reset();
     ic->updatePreedit();
@@ -2483,6 +2518,10 @@ bool WowtypeEngine::handleShiftKey(fcitx::InputContext *ic, WowtypeState *state,
     raw.time_ms = static_cast<uint64_t>(fcitx::now(CLOCK_MONOTONIC) / 1000);
     const bool wasExpanded = state->expanded_;
     const WowtypeFrame *frame = wowtype_session_key(state->session_, &raw);
+    if (isShift && frame && frame->wake_after_ms > 0) {
+        // 单按 Shift 等双击（#253）：到时间没有第二下就在 tickTranslate 里切
+        scheduleTick(ic, frame->wake_after_ms);
+    }
     if (!frame || !frame->mode_changed) {
         if (isShift) {
             // Shift 只走这一条路（再交给会话一次会把按下的时刻、键码冲掉）。展开面板里按下 Shift：
@@ -2496,6 +2535,10 @@ bool WowtypeEngine::handleShiftKey(fcitx::InputContext *ic, WowtypeState *state,
         return false;
     }
     followSessionMode(ic, state, frame);
+    if (!isShift) {
+        // 等双击的单按被这个键打断（#253）：上面先切了，这个键照切了以后的模式接着处理
+        return false;
+    }
     // 这一下是松开 Shift（切了模式）：不接受，照常交给应用。外壳只在输入法没接受的时候才把键
     // 转给应用（Wayland 上经 KWin 的虚拟键盘），吞掉松开的 Shift，应用会以为它还按着：之后
     // shift+单击开新窗口、滚轮变横向、快捷键错乱（#225）。按下那一下本来就没接受（见上），
@@ -2528,6 +2571,18 @@ void WowtypeEngine::applyInitialMode(fcitx::InputContext *ic, WowtypeState *stat
     }
     // 切不回中文时不进英文
     const bool english = initialMode_ == WowtypeInitialMode::English && canToggleMode();
+    if (english == asciiMode_ && !translateMode_) {
+        return;
+    }
+    switchMode(ic, state, english, false, false);
+}
+
+void WowtypeEngine::applyWindowMode(fcitx::InputContext *ic, WowtypeState *state) {
+    if (windowMode_ == WowtypeWindowMode::Same) {
+        return;
+    }
+    // 和 applyInitialMode 一样：切不回中文时不进英文；「译」里换窗口也回到默认的中 / 英
+    const bool english = windowMode_ == WowtypeWindowMode::English && canToggleMode();
     if (english == asciiMode_ && !translateMode_) {
         return;
     }
@@ -2968,6 +3023,12 @@ uint32_t WowtypeEngine::tickTranslate() {
     const WowtypeFrame *frame = wowtype_session_tick(state->session_, nowMs());
     if (!frame) {
         return 0;
+    }
+    if (frame->mode_changed) {
+        // 单按 Shift 等双击等到了时间（#253）：现在切，弹「中 / 英」提示（打到一半切英文时字母在 frame 里）
+        const uint32_t wake = frame->wake_after_ms;
+        followSessionMode(ic, state, frame);
+        return wake;
     }
     if (frame->commit) {
         // 按过回车，译好了：上屏译文（正在打的拼音留着，不清编辑区）

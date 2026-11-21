@@ -37,7 +37,27 @@ enum LexiconPackInstaller {
 
     // MARK: 下载
 
+    /// 最新正式版。先走网页（fromWeb，不算接口次数）；网页那条路走不通时再问接口
     static func fetchLatest() throws -> Release {
+        do {
+            return try fromWeb(beta: false)
+        } catch let webError {
+            guard let release = try? fetchLatestAPI() else { throw webError }
+            return release
+        }
+    }
+
+    /// Beta 计划：最近的发布里版本号最大的（预发布也算）。先走网页，走不通再问接口
+    static func fetchNewest() throws -> Release {
+        do {
+            return try fromWeb(beta: true)
+        } catch let webError {
+            guard let release = try? fetchNewestAPI() else { throw webError }
+            return release
+        }
+    }
+
+    static func fetchLatestAPI() throws -> Release {
         let data = try get(releaseAPI, timeout: 20)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw PackError("发布页的内容看不懂")
@@ -45,8 +65,8 @@ enum LexiconPackInstaller {
         return release(json)
     }
 
-    /// Beta 计划：最近的发布里版本号最大的（预发布也算，见 AppUpdate.pickNewest）；一个都挑不出来时退回最新正式版
-    static func fetchNewest() throws -> Release {
+    /// 接口的发布列表里版本号最大的（见 AppUpdate.pickNewest）；一个都挑不出来时退回最新正式版
+    static func fetchNewestAPI() throws -> Release {
         let data = try get(releasesAPI, timeout: 20)
         guard let list = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             throw PackError("发布页的内容看不懂")
@@ -55,8 +75,52 @@ enum LexiconPackInstaller {
             AppUpdate.Listed(tag: $0["tag_name"] as? String ?? "", prerelease: $0["prerelease"] as? Bool ?? false,
                              draft: $0["draft"] as? Bool ?? false)
         }
-        guard let i = AppUpdate.pickNewest(listed) else { return try fetchLatest() }
+        guard let i = AppUpdate.pickNewest(listed) else { return try fetchLatestAPI() }
         return release(list[i])
+    }
+
+    /// 不走接口拼出 Release（见 AppUpdate.webCandidates）：文件列表从这一版的 SHA256SUMS 读，下载地址按发布页的规则拼。
+    /// releases.atom 里只推了 tag、还没发出来的版本没有 SHA256SUMS（404），跳过。
+    /// 更新说明只在比现在装的新时才取（只有那时显示），见 notes(tag:)
+    static func fromWeb(beta: Bool) throws -> Release {
+        let (_, final) = try fetch(URL(string: AppUpdate.latestPage)!, timeout: 20)
+        let latest = final.flatMap { AppUpdate.tag(fromLatestURL: $0.absoluteString) }
+        let feed = beta ? String(decoding: try get(URL(string: AppUpdate.atomFeed)!, timeout: 20), as: UTF8.self) : nil
+        for tag in AppUpdate.webCandidates(latest: latest, feed: feed) {
+            guard let sumsURL = URL(string: AppUpdate.downloadURL(tag: tag, file: LexiconPack.checksumFile)) else { continue }
+            let sums: Data
+            do {
+                sums = try get(sumsURL, timeout: 20)
+            } catch let error as HTTPStatus where error.code == 404 && tag != latest {
+                continue
+            }
+            var assets: [String: URL] = [LexiconPack.checksumFile: sumsURL]
+            for name in AppUpdate.assetNames(sums: String(decoding: sums, as: UTF8.self)) {
+                if let url = URL(string: AppUpdate.downloadURL(tag: tag, file: name)) { assets[name] = url }
+            }
+            let newer = AppUpdate.version(tag: tag).map { AppUpdate.isNewer($0, than: appVersion) } ?? false
+            return Release(tag: tag, assets: assets, prerelease: tag != latest, notes: newer ? notes(tag: tag) : "")
+        }
+        throw PackError("GitHub 上找不到发布的版本")
+    }
+
+    /// 这一版的更新说明：先下发布页上的 RELEASE-NOTES.md（不算接口次数）；更早的版本没有这个文件，问一次接口；
+    /// 都拿不到时一句「见发布页」。拿不到说明不算检查失败
+    static func notes(tag: String) -> String {
+        let fallback = "没取到更新说明，见发布页：\(AppUpdate.tagPage(tag))"
+        guard let fileURL = URL(string: AppUpdate.downloadURL(tag: tag, file: AppUpdate.notesFile)) else { return fallback }
+        do {
+            return String(decoding: try get(fileURL, timeout: 20), as: UTF8.self)
+        } catch let error as HTTPStatus where error.code == 404 {
+            // 更早的版本：问一次接口
+        } catch {
+            return fallback
+        }
+        guard let apiURL = URL(string: AppUpdate.tagAPI(tag)),
+              let data = try? get(apiURL, timeout: 20),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return fallback }
+        return json["body"] as? String ?? ""
     }
 
     /// GitHub 一个发布的 JSON -> Release
@@ -95,21 +159,35 @@ enum LexiconPackInstaller {
         return file
     }
 
+    /// 服务器回的不是 2xx。403 / 429 是接口限流（rateLimited）
+    struct HTTPStatus: Error, CustomStringConvertible {
+        let code: Int
+        var rateLimited: Bool { code == 403 || code == 429 }
+        var description: String {
+            rateLimited ? "GitHub 返回 \(code)（访问次数到了上限，过一会儿再试）" : "GitHub 返回 \(code)"
+        }
+    }
+
     /// GET 一个小文件（发布页的 JSON、SHA256SUMS）；UpdateInstaller 也用
     static func get(_ url: URL, timeout: TimeInterval) throws -> Data {
+        try fetch(url, timeout: timeout).data
+    }
+
+    /// GET，连同跟着跳转以后最后的地址（releases/latest 跳到哪个 tag 页）
+    static func fetch(_ url: URL, timeout: TimeInterval) throws -> (data: Data, url: URL?) {
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.setValue(url.host == "api.github.com" ? "application/vnd.github+json" : "*/*",
                          forHTTPHeaderField: "Accept")
         request.setValue("WowType", forHTTPHeaderField: "User-Agent")
         let done = DispatchSemaphore(value: 0)
-        var result: Result<Data, Error> = .failure(PackError("连不上 GitHub"))
+        var result: Result<(data: Data, url: URL?), Error> = .failure(PackError("连不上 GitHub"))
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error {
                 result = .failure(error)
             } else if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                result = .failure(PackError("GitHub 返回 \(http.statusCode)"))
+                result = .failure(HTTPStatus(code: http.statusCode))
             } else {
-                result = .success(data ?? Data())
+                result = .success((data ?? Data(), response?.url))
             }
             done.signal()
         }.resume()

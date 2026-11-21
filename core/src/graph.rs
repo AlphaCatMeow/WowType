@@ -283,7 +283,7 @@ fn build_completion_edges(input: &ParsedInput, edges: &mut [Vec<Edge>]) {
         for text in crate::syllable::SYLLABLES {
             let bytes = text.as_bytes();
             if bytes.len() > tail.len() && bytes.starts_with(tail) {
-                if let Some(syllable) = Syllable::from_text(text) {
+                if let Some(syllable) = syllable_of(bytes) {
                     let mut edge = full_edge(start, n, syllable, false);
                     edge.completion = (bytes.len() - tail.len()) as u8;
                     add_edge(edges, edge);
@@ -331,9 +331,7 @@ fn is_neighbor(a: u8, b: u8) -> bool {
 }
 
 fn syllable_of(bytes: &[u8]) -> Option<Syllable> {
-    std::str::from_utf8(bytes)
-        .ok()
-        .and_then(Syllable::from_text)
+    crate::syllable::syllable_from_bytes(bytes)
 }
 
 /// 纠错边：每条边只纠一处。
@@ -478,7 +476,7 @@ fn build_full_edges(input: &ParsedInput, allow_erhua: bool, edges: &mut [Vec<Edg
             }
             // parse 保证是 ASCII，这里可以安全地做字节切片。
             let text = std::str::from_utf8(&input.letters[start..end]).expect("ASCII 输入");
-            if let Some(syllable) = Syllable::from_text(text) {
+            if let Some(syllable) = syllable_of(text.as_bytes()) {
                 add_edge(edges, full_edge(start, end, syllable, false));
                 if input.has_erhua(end) {
                     add_edge(edges, full_edge(start, end, syllable, true));
@@ -488,12 +486,26 @@ fn build_full_edges(input: &ParsedInput, allow_erhua: bool, edges: &mut [Vec<Edg
             // 尾部 r 儿化：huar -> hua + 儿化。er 本身是独立音节，不当作 e 的儿化。
             if allow_erhua && text.len() > 1 && text.ends_with('r') && text != "er" {
                 let stem = &text[..text.len() - 1];
-                if let Some(syllable) = Syllable::from_text(stem) {
+                if let Some(syllable) = syllable_of(stem.as_bytes()) {
                     add_edge(edges, full_edge(start, end, syllable, true));
                 }
             }
         }
     }
+}
+
+/// 用隔音符单独隔出来的两字母声母（`zh'g` 的 zh、`g'sh` 的 sh）：只当一个声母，不再拆成 z、h 两个简拼。
+/// 双拼的简拼一个键翻成一段（自然码 `vg` -> `zh'g`），拆开就成了三个音节。没有隔音符的 `zh` 照旧两种都算。
+fn isolated_digraph(input: &ParsedInput, pos: usize) -> bool {
+    let letters = &input.letters;
+    let end = pos + 2;
+    if end > letters.len() || jianpin_digraph(letters[pos], letters[pos + 1]).is_none() {
+        return false;
+    }
+    let forced = |p: usize| input.forced_boundaries.contains(&p);
+    (pos == 0 || forced(pos))
+        && (end == letters.len() || forced(end))
+        && (forced(pos) || forced(end))
 }
 
 fn build_jianpin_edges(input: &ParsedInput, edges: &mut [Vec<Edge>]) {
@@ -516,7 +528,9 @@ fn build_jianpin_edges(input: &ParsedInput, edges: &mut [Vec<Edge>]) {
                 }
             }
         }
-        if is_jianpin_letter(letter) {
+        let in_digraph =
+            isolated_digraph(input, pos) || (pos > 0 && isolated_digraph(input, pos - 1));
+        if is_jianpin_letter(letter) && !in_digraph {
             add_edge(
                 edges,
                 Edge {
@@ -602,6 +616,13 @@ mod tests {
         // 隔音符隔开就不算 zh
         let g = graph("z'h", GraphMode::Jianpin);
         assert!(g.segmentations(8).iter().all(|p| p.len() == 2));
+        // 隔音符单独隔出来的 zh 只当一个声母（双拼的简拼 vg -> zh'g）
+        let g = graph("zh'g", GraphMode::Jianpin);
+        let segs = g.segmentations(8);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0][0].query(), SyllableQuery::Jianpin { letter: b'Z' });
+        let g = graph("g'sh'm", GraphMode::Jianpin);
+        assert!(g.segmentations(8).iter().all(|p| p.len() == 3));
         // 混着全拼：zh + chi
         let g = graph("zhchi", GraphMode::Mixed);
         assert!(g

@@ -3,9 +3,12 @@
 
   python3 scripts/test-config-contract.py                                   # 规格自检 + 设置界面
   python3 scripts/test-config-contract.py --fcitx5 <wowtype-config-dump>    # 再对照 fcitx5 插件
+  python3 scripts/test-config-contract.py --windows <wowtype-windows-config-dump>  # 规格自检 + Windows 外壳
 
 wowtype-config-dump 是 scripts/addon-test.sh 编出来的（fcitx5-addon/test/config_dump.cpp），导出插件里
 WowtypeConfig 的键、类型、默认值、范围、可选值。macOS 那端在 macos/test.sh 里对照同一份规格。
+wowtype-windows-config-dump 是 windows/test.sh（或 CI 里 CMake）编出来的（windows/tests/config_dump.cpp），
+导出 Windows 外壳的设置项表、按文件读出来的值。--windows 只对照规格和 Windows（Windows 上没有 GTK 的设置界面可导）。
 
 设置界面（settings/wowtype-config）没有 .py 后缀，用 importlib 按路径导入。不用装 GTK：导入前塞一个假的 gi，
 它在模块顶层只用到 gi.require_version、几个当基类的控件和 GObject.Property。XDG 目录都指到临时目录，不碰自己的配置。
@@ -28,7 +31,7 @@ import types
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_DIR = ROOT / "spec"
 SETTINGS = ROOT / "settings" / "wowtype-config"
-ENDS = ("fcitx5", "settings", "macos")
+ENDS = ("fcitx5", "settings", "macos", "windows")
 TYPES = ("bool", "int", "enum", "string", "key")
 # fcitx5 配置说明里的类型名
 FCITX_TYPES = {"Boolean": "bool", "Integer": "int", "Enum": "enum", "String": "string", "Key": "key"}
@@ -143,6 +146,19 @@ def check_spec(spec, pack):
         check(policy.get(end) in ("default", "keep", "clamp"), f"规格：readRules.outOfRange 没写 {end} 或写错了",
               policy.get(end))
 
+    # 设置窗口的强调色：三端都用规格里的颜色，这里核对对比度（见 SettingsAccent 的 note）
+    for v in by_key["SettingsAccent"]["values"]:
+        colors = [v.get(name, "") for name in ("color", "strong", "light")]
+        if not check(all(re.fullmatch(r"#[0-9A-F]{6}", c) for c in colors),
+                     f"规格：强调色 {v['value']} 的颜色要写成 #RRGGBB（大写）", colors):
+            continue
+        check(contrast(v["strong"], "#FFFFFF") >= 4.7, f"规格：强调色 {v['value']} 的 strong 和白字的对比度不到 4.7",
+              f"{contrast(v['strong'], '#FFFFFF'):.2f}")
+        check(contrast(v["strong"], "#FAFAFB") >= 4.5,
+              f"规格：强调色 {v['value']} 的 strong 在浅色窗口底色上当字用，对比度不到 4.5", f"{contrast(v['strong'], '#FAFAFB'):.2f}")
+        check(contrast(v["light"], "#353539") >= 4.5,
+              f"规格：强调色 {v['value']} 的 light 在深色卡片上当字用，对比度不到 4.5", f"{contrast(v['light'], '#353539'):.2f}")
+
     bili = spec["translateBilibili"]
     ids = [m["id"] for m in bili["models"]]
     check(ids and ids[0] == bili["default"], "规格：translateBilibili.default 要是 models 的第一个", ids)
@@ -251,7 +267,8 @@ def check_settings(spec, wc, home):
     # 选项列表：(界面上的名字, 存盘名)
     lists = {"InputScheme": wc.INPUT_SCHEMES, "ShuangpinScheme": wc.SHUANGPIN_SCHEMES,
              "ShiftToggle": wc.SHIFT_TOGGLES,
-             "InitialMode": wc.INITIAL_MODES, "ArrowKeys": wc.ARROW_KEYS,
+             "InitialMode": wc.INITIAL_MODES, "WindowMode": wc.WINDOW_MODES,
+             "ArrowKeys": wc.ARROW_KEYS,
              "SelectKeys": wc.SELECT_KEYS, "PunctuationStyle": wc.PUNCT_STYLES}
     for key, items in lists.items():
         same([value for _label, value in items], enum_values(by_key[key]), f"设置界面：{key} 的选项")
@@ -259,6 +276,10 @@ def check_settings(spec, wc, home):
          [(v["name"], v["value"]) for v in by_key["ShuangpinScheme"]["values"]], "设置界面：双拼方案的名字")
     same([(label, value) for label, value in wc.INPUT_SCHEMES],
          [(v["name"], v["value"]) for v in by_key["InputScheme"]["values"]], "设置界面：输入方案的名字")
+    same([tuple(item) for item in wc.SETTINGS_THEMES],
+         [(v["name"], v["value"]) for v in by_key["SettingsTheme"]["values"]], "设置界面：SETTINGS_THEMES")
+    same([tuple(item) for item in wc.SETTINGS_ACCENTS], accent_rows(by_key["SettingsAccent"]),
+         "设置界面：SETTINGS_ACCENTS")
     same([tuple(item) for item in wc.TRANSLATE_LANGUAGES],
          [(v["name"], v["value"], v["english"]) for v in by_key["TranslateTarget"]["values"]],
          "设置界面：TRANSLATE_LANGUAGES")
@@ -441,8 +462,27 @@ def check_settings_lexicon(pack, wc, home):
 # ---------------------------------------------------------------- fcitx5 插件（C++）
 
 
+def luminance(color):
+    """WCAG 的相对亮度，color 是 #RRGGBB。"""
+    def linear(c):
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (linear(int(color[i:i + 2], 16)) for i in (1, 3, 5))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast(first, second):
+    high, low = sorted((luminance(first), luminance(second)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def accent_rows(setting):
+    """强调色的表：(名字, 存盘名, color, strong, light)。"""
+    return [(v["name"], v["value"], v["color"], v["strong"], v["light"]) for v in setting["values"]]
+
+
 def run_dump(exe, *args):
-    result = subprocess.run([exe, *args], capture_output=True, text=True, timeout=30)
+    result = subprocess.run([exe, *args], capture_output=True, text=True, encoding="utf-8", timeout=30)
     if result.returncode != 0:
         raise SystemExit(f"{exe} {' '.join(args)} 失败：{result.stderr}")
     return json.loads(result.stdout)
@@ -496,20 +536,111 @@ def check_fcitx5(spec, exe):
                 same(values.get(key), expect, f"fcitx5：文件是 {case['file']!r} 时 {key}")
 
 
+def check_windows(spec, exe):
+    """Windows 外壳（windows/src/common/config.cpp）：键、类型、默认值、范围、可选值，按文件读出来的值。"""
+    table = {s["key"]: s for s in run_dump(exe)["settings"]}
+    mine = settings_for(spec, "windows")
+    same([s["key"] for s in run_dump(exe)["settings"]], [s["key"] for s in mine], "windows：认的键（顺序同规格）")
+    defaults = run_dump(exe, "--load")["values"]
+    for s in mine:
+        key = s["key"]
+        ours = table.get(key)
+        if ours is None:
+            continue
+        default = default_for(s, "windows")
+        same(ours["type"], s["type"], f"windows：{key} 的类型")
+        same(ours["default"], default, f"windows：{key} 的默认值（表里）")
+        same(defaults.get(key), default, f"windows：{key} 的默认值（空文件读出来）")
+        if s["type"] == "int":
+            same((ours["min"], ours["max"]), (s["min"], s["max"]), f"windows：{key} 的范围")
+        if s["type"] == "enum":
+            same(ours["values"], enum_values(s), f"windows：{key} 的可选值")
+            for v in enum_values(s):
+                same(run_dump(exe, "--load", f"{key}={v}")["values"].get(key), v, f"windows：{key} 认 {v}")
+        if s["type"] == "bool":
+            for v in ("True", "False"):
+                same(run_dump(exe, "--load", f"{key}={v}")["values"].get(key), v, f"windows：{key}={v}")
+        if s["type"] == "key":
+            same(run_dump(exe, "--load", f"{key}=")["values"].get(key), "", f"windows：{key} 留空是不用")
+            shared = file_text(s["default"])
+            if shared:
+                # 别的端的默认值拷过来，读成 Windows 的默认值（EmojiKey：Super 当 Control，原因见规格的 why）
+                same(run_dump(exe, "--load", f"{key}={shared}")["values"].get(key), default,
+                     f"windows：{key} 写 {shared} 读出来")
+        missing = s.get("whenMissing")
+        for case in missing["cases"] if missing else ():
+            values = run_dump(exe, "--load", *(f"{k}={v}" for k, v in case["file"].items()))["values"]
+            same(values.get(key), file_text(case["expect"]), f"windows：文件是 {case['file']} 时 {key}")
+    look = run_dump(exe, "--look")
+    by_key = {s["key"]: s for s in spec["settings"]}
+    same([(t["name"], t["value"]) for t in look["themes"]],
+         [(v["name"], v["value"]) for v in by_key["SettingsTheme"]["values"]], "windows：设置窗口主题的名字")
+    same([(a["name"], a["value"], a["color"], a["strong"], a["light"]) for a in look["accents"]],
+         accent_rows(by_key["SettingsAccent"]), "windows：强调色的表（look::accents）")
+    # 设置窗口「翻译」页的「翻译引擎」（windows/src/common/translate_engine）：选项、说明、哔哩哔哩的地址和模型，
+    # 和按文件推出来的引擎都和设置界面的一样
+    check("windows" in spec["translateEngines"]["platforms"], "规格：translateEngines 的 platforms 要有 windows")
+    tr = run_dump(exe, "--translate")
+    same([(e["id"], e["name"], e["note"]) for e in tr["engines"]],
+         [(e["id"], e["name"], e["note"]) for e in spec["translateEngines"]["items"]], "windows：翻译引擎的选项和说明")
+    bili = spec["translateBilibili"]
+    same({k: tr["bilibili"][k] for k in ("url", "host", "modelPrefix", "default", "privacy")},
+         {k: bili[k] for k in ("url", "host", "modelPrefix", "default", "privacy")},
+         "windows：哔哩哔哩的地址、主机、模型前缀、默认模型、隐私说明")
+    same([(m["id"], m["name"]) for m in tr["bilibili"]["models"]], [(m["id"], m["name"]) for m in bili["models"]],
+         "windows：哔哩哔哩的模型")
+    for values, want in (({"TranslateLocal": "True", "TranslateBaseUrl": bili["url"]}, "local"),
+                         ({"TranslateLocal": "False", "TranslateBaseUrl": bili["url"]}, "bilibili"),
+                         ({"TranslateLocal": "False", "TranslateBaseUrl": bili["url"] + "/chat/completions"}, "bilibili"),
+                         ({"TranslateLocal": "False",
+                           "TranslateBaseUrl": "HTTPS://Index-Translate.Bilibili.com/v1/chat/completions"}, "bilibili"),
+                         ({"TranslateLocal": "False",
+                           "TranslateBaseUrl": "https://index-translate.bilibili.com.example.org/v1"}, "custom"),
+                         ({"TranslateLocal": "False", "TranslateBaseUrl": "https://api.deepseek.com/v1"}, "custom"),
+                         ({"TranslateLocal": "False", "TranslateBaseUrl": ""}, "custom"),
+                         ({"TranslateBaseUrl": bili["url"]}, "bilibili"),
+                         ({}, "local")):
+        same(run_dump(exe, "--engine", *(f"{k}={v}" for k, v in values.items()))["engine"], want,
+             f"windows：{values} 是「{want}」")
+    policy = spec["readRules"]["outOfRange"]["windows"]
+    for s in mine:
+        if s["type"] == "int":
+            for raw, expect in out_of_range_cases(s, policy, "windows"):
+                values = run_dump(exe, "--load", f"{s['key']}={raw}")["values"]
+                same(values.get(s["key"]), expect, f"windows：{s['key']}={raw} 读出来")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "wowtype.conf")
+        for case in spec["readRules"]["cases"]["items"]:
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(case["file"] + "\n")
+            values = run_dump(exe, "--load-file", path)["values"]
+            for key, expect in case["expect"].items():
+                same(values.get(key), expect, f"windows：文件是 {case['file']!r} 时 {key}")
+
+
 def main(argv):
-    fcitx5 = None
+    # Windows 的控制台默认不是 UTF-8（cp1252 / cp936），中文的结果行会写不出来
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    fcitx5 = windows = None
     if argv[:1] == ["--fcitx5"] and len(argv) == 2:
         fcitx5 = argv[1]
+    elif argv[:1] == ["--windows"] and len(argv) == 2:
+        windows = argv[1]
     elif argv:
         print(__doc__)
         return 2
     spec, pack = load_spec("config.json"), load_spec("lexicon-pack.json")
     check_spec(spec, pack)
-    with tempfile.TemporaryDirectory() as home:
-        wc = import_settings(home)
-        check_settings(spec, wc, home)
-        check_settings_lexicon(pack, wc, home)
-    ends = "规格、设置界面"
+    if windows:
+        check_windows(spec, windows)
+        ends = "规格、Windows 外壳"
+    else:
+        with tempfile.TemporaryDirectory() as home:
+            wc = import_settings(home)
+            check_settings(spec, wc, home)
+            check_settings_lexicon(pack, wc, home)
+        ends = "规格、设置界面"
     if fcitx5:
         check_fcitx5(spec, fcitx5)
         ends += "、fcitx5 插件"
