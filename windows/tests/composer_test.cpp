@@ -25,6 +25,7 @@
 #include "stats_view.h"
 #include "keys.h"
 #include "look.h"
+#include "translate_engine.h"
 #include "utf.h"
 #include "voice.h"
 
@@ -307,6 +308,139 @@ int main(int argc, char **argv) {
         check(look::textColor(look::accent("Green"), true) == 0x1AB37D &&
                   look::textColor(look::accent("Green"), false) == 0x0A8358,
               "强调色当字用：深色用 light，浅色用 strong");
+    }
+
+    // ---------------------------------------------------------------- 「翻译引擎」（和 Linux 的 translate_engine、
+    // on_translate_engine_changed，macOS 的 setTranslateEngine 一样）
+    {
+        using translate::Engine;
+        using translate::EngineChoice;
+        const std::string bili = translate::kBilibiliUrl;
+        const auto engine = [](const std::string &file) { return translate::engineOf(Config::parse(file)); };
+        check(engine("") == Engine::Local, "默认是本地翻译");
+        check(engine("TranslateLocal=True\nTranslateBaseUrl=" + bili + "\n") == Engine::Local, "TranslateLocal 优先");
+        check(engine("TranslateLocal=False\nTranslateBaseUrl=" + bili + "\n") == Engine::Bilibili, "哔哩哔哩的地址");
+        check(engine("TranslateLocal=False\nTranslateBaseUrl=HTTPS://Index-Translate.Bilibili.com/v1/chat/completions\n") ==
+                  Engine::Bilibili,
+              "哔哩哔哩：不分大小写、带不带 /chat/completions");
+        check(engine("TranslateBaseUrl=" + bili + "\n") == Engine::Bilibili, "没写 TranslateLocal、填了哔哩哔哩");
+        check(engine("TranslateLocal=False\nTranslateBaseUrl=https://api.deepseek.com/v1\n") == Engine::Custom, "别的地址是自定义");
+        check(engine("TranslateLocal=False\n") == Engine::Custom, "地址空着也是自定义");
+        check(!translate::isBilibili("https://index-translate.bilibili.com.example.org/v1") &&
+                  translate::isBilibili("index-translate.bilibili.com/v1") &&
+                  translate::isBilibili("https://user@index-translate.bilibili.com:443/v1"),
+              "只认主机正好是哔哩哔哩的");
+        check(translate::urlHost("http://[::1]:11434/v1") == "::1" && translate::urlHost(" HTTP://Example.COM/x") == "example.com",
+              "主机名", translate::urlHost("http://[::1]:11434/v1"));
+
+        const auto applied = [](const EngineChoice &choice, const Config &base) {
+            Config c = base;
+            choice.apply(c);
+            return c;
+        };
+        const auto describe = [](const Config &c) {
+            return c.value("TranslateLocal") + " " + c.value("TranslateBaseUrl") + " " + c.value("TranslateModel");
+        };
+
+        // 自定义 → 哔哩哔哩 → 自定义：自己填的地址、模型照原样写回
+        const Config custom = Config::parse("TranslateLocal=False\nTranslateBaseUrl=https://api.deepseek.com/v1\n"
+                                            "TranslateModel=deepseek-chat\n");
+        EngineChoice choice;
+        choice.load(custom);
+        check(choice.engine() == Engine::Custom && applied(choice, custom) == custom, "没动过：写出来和读进来一样",
+              describe(applied(choice, custom)));
+        check(choice.customUrl() == "https://api.deepseek.com/v1" && choice.customModel() == "deepseek-chat",
+              "自定义的框照配置填");
+        choice.select(Engine::Bilibili);
+        Config now = applied(choice, custom);
+        check(now.value("TranslateLocal") == "False" && now.value("TranslateBaseUrl") == bili &&
+                  now.value("TranslateModel") == "Index-Translate-2B",
+              "换到哔哩哔哩：写上它的地址和默认模型（2B）", describe(now));
+        check(choice.customUrl() == "https://api.deepseek.com/v1", "换到哔哩哔哩时自定义的地址留着");
+        choice.pickBilibili(1);
+        check(applied(choice, custom).value("TranslateModel") == "Index-Translate-9B", "哔哩哔哩选 9B");
+        choice.select(Engine::Custom);
+        check(applied(choice, custom) == custom, "换回自定义：地址、模型照原样写回", describe(applied(choice, custom)));
+        choice.select(Engine::Bilibili);
+        check(applied(choice, custom).value("TranslateModel") == "Index-Translate-9B", "再换到哔哩哔哩还是上次选的 9B");
+
+        // 换到本地只改 TranslateLocal：地址和模型是上一个联网引擎的
+        choice.select(Engine::Local);
+        now = applied(choice, custom);
+        check(now.value("TranslateLocal") == "True" && now.value("TranslateBaseUrl") == bili &&
+                  now.value("TranslateModel") == "Index-Translate-9B",
+              "哔哩哔哩 → 本地：地址、模型不动", describe(now));
+        choice.select(Engine::Custom);
+        check(applied(choice, custom) == custom, "本地 → 自定义：写回自定义的", describe(applied(choice, custom)));
+        choice.setCustomUrl(" http://127.0.0.1:11434/v1 ");
+        choice.setCustomModel("qwen3:4b");
+        now = applied(choice, custom);
+        check(now.value("TranslateBaseUrl") == "http://127.0.0.1:11434/v1" && now.value("TranslateModel") == "qwen3:4b",
+              "自定义的框改了：去掉两边空白写进去", describe(now));
+        choice.select(Engine::Local);
+        check(applied(choice, custom).value("TranslateBaseUrl") == "http://127.0.0.1:11434/v1", "自定义 → 本地：地址不动");
+
+        // 打开时是哔哩哔哩：自定义的框空着（那不是自己填的）；模型空着就不写成 2B
+        const Config bilibili = Config::parse("TranslateLocal=False\nTranslateBaseUrl=" + bili + "/chat/completions\n");
+        EngineChoice b;
+        b.load(bilibili);
+        check(b.engine() == Engine::Bilibili && b.customUrl().empty() && b.customModel().empty(), "哔哩哔哩：自定义的框空着");
+        check(applied(b, bilibili) == bilibili && b.bilibiliIndex() == 0 && b.bilibiliSelected() == "Index-Translate-2B",
+              "哔哩哔哩没动过：地址原样、模型空着（下拉框显示 2B）", describe(applied(b, bilibili)));
+        b.select(Engine::Custom);
+        now = applied(b, bilibili);
+        check(now.value("TranslateLocal") == "False" && now.value("TranslateBaseUrl").empty() &&
+                  now.value("TranslateModel").empty() && translate::engineOf(now) == Engine::Custom,
+              "哔哩哔哩 → 自定义：地址、模型是空的框", describe(now));
+        b.setCustomUrl("https://api.openai.com/v1");
+        b.setCustomModel("gpt-4o-mini");
+        b.select(Engine::Bilibili);
+        now = applied(b, bilibili);
+        check(now.value("TranslateBaseUrl") == bili && now.value("TranslateModel") == "Index-Translate-2B",
+              "再换到哔哩哔哩：写上它的地址（不是读进来的那种写法）", describe(now));
+        // 保存后读回来（还是哔哩哔哩）：这次填过的自定义地址还在
+        b.load(now);
+        check(b.customUrl() == "https://api.openai.com/v1" && b.customModel() == "gpt-4o-mini",
+              "保存后读回来，这次填过的自定义地址、模型还在");
+        b.select(Engine::Custom);
+        check(applied(b, now).value("TranslateBaseUrl") == "https://api.openai.com/v1", "换回自定义写回这次填的");
+
+        // 手写进配置文件的别的哔哩哔哩模型：列出来，不悄悄换掉
+        const Config other = Config::parse("TranslateLocal=False\nTranslateBaseUrl=" + bili + "\nTranslateModel=Index-Translate-Next\n");
+        EngineChoice o;
+        o.load(other);
+        const auto options = o.bilibiliOptions();
+        check(options.size() == translate::bilibiliModels().size() + 1 && options.back().first == "Index-Translate-Next" &&
+                  o.bilibiliIndex() == static_cast<int>(options.size()) - 1 && applied(o, other) == other,
+              "配置里别的哔哩哔哩模型列在最后、选中它");
+
+        // 本地（用着时切去了本地的哔哩哔哩）：换到哔哩哔哩用上次给它选的模型；换到自定义框是空的
+        const Config localBili = Config::parse("TranslateLocal=True\nTranslateBaseUrl=" + bili + "\nTranslateModel=Index-Translate-9B\n");
+        EngineChoice l;
+        l.load(localBili);
+        check(l.engine() == Engine::Local && applied(l, localBili) == localBili && l.customUrl().empty(),
+              "本地（地址是哔哩哔哩的）：没动过写出来一样，自定义的框空着");
+        l.select(Engine::Bilibili);
+        check(applied(l, localBili).value("TranslateModel") == "Index-Translate-9B" &&
+                  applied(l, localBili).value("TranslateLocal") == "False",
+              "本地 → 哔哩哔哩：用上次给它选的 9B");
+        const Config localCustom = Config::parse("TranslateLocal=True\nTranslateBaseUrl=https://api.deepseek.com/v1\n");
+        l.load(localCustom);
+        check(l.customUrl() == "https://api.deepseek.com/v1" && applied(l, localCustom) == localCustom,
+              "本地（地址是自定义的）：自定义的框照配置填");
+        l.select(Engine::Custom);
+        check(applied(l, localCustom).value("TranslateBaseUrl") == "https://api.deepseek.com/v1" &&
+                  !applied(l, localCustom).flag("TranslateLocal"),
+              "本地 → 自定义：用配置里的地址");
+
+        // 选项、说明和规格一样（规格对照在 test-config-contract.py --windows）
+        check(translate::engines().size() == 3 && translate::engines()[1].engine == Engine::Bilibili &&
+                  std::string(translate::engines()[0].name) == "本地翻译（离线）",
+              "三个引擎，顺序固定");
+        check(translate::testSummary("Hello\n", 0.84) == "✓ 你好 → Hello（0.8 秒）", "测试连接的结果",
+              translate::testSummary("Hello\n", 0.84));
+        check(translate::testSummary("\nHi\nthere", 3.0) == "✓ 你好 → Hi（3.0 秒），有点慢，可以换个小一点的模型",
+              "测试连接：取第一行，慢了提一句", translate::testSummary("\nHi\nthere", 3.0));
     }
 
     // ---------------------------------------------------------------- 写回设置文件（和 macOS 的 serialized、merged 同名用例）

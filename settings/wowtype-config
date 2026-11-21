@@ -595,6 +595,7 @@ STYLE = """
 .wt-content preferencesgroup > box > box > label.heading { opacity: 0.8; }
 .wt-stats-page { background-color: {window_bg}; color: {window_fg}; }
 .wt-stats-page stackswitcher button:checked { color: {accent_text}; }
+.wt-stats-page stackswitcher button { min-width: 0; padding-left: 14px; padding-right: 14px; }
 .wt-stats-card {
   background: {card_bg}; color: {card_fg}; border-radius: 12px; box-shadow: 0 0 0 1px alpha(currentColor, 0.12);
   padding: 18px 20px;
@@ -5329,7 +5330,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         """
         self.stats_tab = "keys"
         self.stats_mtime = None
-        outer = Gtk.ScrolledWindow(vexpand=True)
+        # 不横着滚（窄窗口、200% 缩放时右边被裁掉）：里面的东西都能缩，键盘热力图太宽时只有它自己横着滚
+        outer = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
         # 统计页不是 PreferencesPage，自己铺一层背景：niri 等合成器给普通窗口开 xray blur 时，
         # 透明区域会透出模糊的桌面，文字对比度也会掉。
         outer.add_css_class("wt-stats-page")
@@ -5413,6 +5415,12 @@ class SettingsWindow(Adw.ApplicationWindow):
 
         switcher = Gtk.StackSwitcher()
         switcher.set_halign(Gtk.Align.START)
+        # 六个标签按钮去掉默认的最小宽度（libadwaita 每个至少约 100px，六个就撑到 800px 宽）；
+        # 再窄也放不下时标签条自己横着滚，不把整页撑宽
+        tabs = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+                                  vscrollbar_policy=Gtk.PolicyType.NEVER,
+                                  propagate_natural_width=True, propagate_natural_height=True)
+        tabs.set_child(switcher)
         stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.NONE)
         switcher.set_stack(stack)
         pages = (
@@ -5430,7 +5438,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         stack.set_visible_child_name(self.stats_tab)
         stack.connect("notify::visible-child-name", self.stats_tab_changed)
         self.stats_stack = stack
-        self.stats_box.append(switcher)
+        self.stats_box.append(tabs)
         self.stats_box.append(stack)
         return False
 
@@ -5531,28 +5539,30 @@ class SettingsWindow(Adw.ApplicationWindow):
         card.append(note)
 
         maximum = max(counts.values())
-        keys = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        keys.set_halign(Gtk.Align.CENTER)
+        # 键盘用等宽列的网格画：一份键宽是 4 列，键按份数占列，整块跟着卡片的宽度缩放
+        # （以前按固定键宽画，约 540px，窄窗口、200% 缩放时右边被裁掉）
+        keys = Gtk.Grid(column_homogeneous=True, row_spacing=4, column_spacing=0, hexpand=True)
         keys.set_margin_top(2)
-        for row in stats_rows():
-            line = Gtk.Box(spacing=4)
-            line.set_halign(Gtk.Align.CENTER)
+        for r, row in enumerate(stats_rows()):
+            column = 0
             for code, label, weight in row:
-                width = max(1, int(weight * STATS_UNIT) - 4)
-                if code is None:
-                    spacer = Gtk.Box()
-                    spacer.set_size_request(width, 32)
-                    line.append(spacer)
-                    continue
-                count = counts.get(code, 0)
-                cap = Gtk.Label(label=label, ellipsize=Pango.EllipsizeMode.END)
-                cap.add_css_class("wt-key")
-                cap.add_css_class(f"wt-key-{stats_heat_level(count, maximum)}")
-                cap.set_size_request(width, 32)
-                cap.set_tooltip_text(f"{stats_key_name(code)}，{count:,} 次")
-                line.append(cap)
-            keys.append(line)
-        card.append(keys)
+                span = max(1, round(weight * 4))
+                if code is not None:
+                    count = counts.get(code, 0)
+                    cap = Gtk.Label(label=label, ellipsize=Pango.EllipsizeMode.END, hexpand=True)
+                    cap.add_css_class("wt-key")
+                    cap.add_css_class(f"wt-key-{stats_heat_level(count, maximum)}")
+                    cap.set_size_request(-1, 32)
+                    cap.set_margin_start(2)
+                    cap.set_margin_end(2)
+                    cap.set_tooltip_text(f"{stats_key_name(code)}，{count:,} 次")
+                    keys.attach(cap, column, r, span, 1)
+                column += span
+        # 键宽的上限还是 STATS_UNIT：宽窗口里不拉得太宽
+        units = max(sum(weight for _code, _label, weight in row) for row in stats_rows())
+        keys_clamp = Adw.Clamp(maximum_size=int(units * STATS_UNIT), tightening_threshold=int(units * STATS_UNIT))
+        keys_clamp.set_child(keys)
+        card.append(keys_clamp)
 
         drawn = stats_drawn_ids()
         others = sorted(((code, count) for code, count in counts.items() if code not in drawn),

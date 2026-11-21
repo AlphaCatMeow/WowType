@@ -62,7 +62,7 @@ dbus-send --session --dest=org.fcitx.Fcitx5 /controller \
 
 ### 翻译引擎
 
-「翻译引擎」不是单独的设置项，是从下面几项推出来的（Linux 设置界面和 macOS 一样，见 `spec/config.json` 的 `translateEngines`）：
+「翻译引擎」不是单独的设置项，是从下面几项推出来的（Linux 设置界面、macOS、Windows 设置窗口都一样，见 `spec/config.json` 的 `translateEngines`）：
 
 | 引擎 | 配置文件里 | 说明 |
 |---|---|---|
