@@ -5932,7 +5932,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         group.set_header_suffix(self.info_button(
             "换词库几秒后生效，自定义词和学到的习惯都会保留。\n\n"
             "雾凇拼音在安装包里，跟着 WowType 一起更新。\n\n"
-            "万象拼音词更多，比雾凇多占约 300 MB 内存；从 amzxyz/rime_wanxiang（CC BY 4.0）转换，只用了它的词条。"
+            "万象拼音词更多，比雾凇多占约 60 MB 内存；从 amzxyz/rime_wanxiang（CC BY 4.0）转换，只用了它的词条。"
             f"装在 {_home(WANXIANG_DIR)}。",
             [("万象拼音项目主页", WANXIANG_PAGE)]))
         self.lexicon_busy = False
